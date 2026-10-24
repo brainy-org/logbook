@@ -15,8 +15,8 @@ crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet
                                                                 → docs/pipeline.md
 crates/server/   logbook-server: WebSocket /live (axum), a thread per session,
                  one batcher thread for every transcription      → docs/protocol.md
-crates/cli/      logbook: play (a file at the pace of speech), live (microphone),
-                 bench (many sessions at once, latency by quarter of the recording)
+crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
+                 with --system, the call), devices, bench (many sessions at once)
 vendor/          libparakeet for this machine (not committed): README.md, "Setup"
 docs/            pipeline.md, protocol.md, decisions/
 ```
@@ -45,6 +45,11 @@ cargo run --release -p logbook -- play FILE          # or: live, bench FILE --se
 - **Phrases leave a channel in the order they were spoken**, and only once
   diarization has reached their end (`Channel::ready`). Sending a phrase
   before then gives its words the speaker of an earlier turn.
+- **Every live channel is on the session's clock** (`Timeline`, cli
+  `audio.rs`): sample 0 is the session's start, gaps are filled with
+  silence. macOS's system tap delivers nothing while nothing plays; without
+  it the call's times drift from the mic's and pauses vanish
+  (`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
 - **Same models as brainy-worker** (`MODELS_REVISION` = its
   `audio_revision`): one download, one set of licences
   (brainy-worker's `docs/decisions/2026-10-10-licences-of-code-and-weights.md`).

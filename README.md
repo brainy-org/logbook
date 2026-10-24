@@ -5,8 +5,8 @@ holds the models (parakeet.cpp: Silero VAD, NVIDIA parakeet-tdt-0.6b-v3,
 Nemotron-3-Diarization) and transcribes the audio that `logbook` streams
 to it, phrase by phrase, about a second after each is spoken.
 
-A prototype: a server and a CLI. The desktop app, capture of the call's
-audio and the final pass into brainy are still to come.
+A prototype: a server and a CLI. The desktop app, echo cancellation and
+the final pass into brainy are still to come.
 
 ## Setup
 
@@ -37,7 +37,9 @@ PARAKEET_LIB=vendor/libparakeet.dylib cargo run --release -p logbook-server
 
 cargo run --release -p logbook -- play meeting.m4a       # a recording, at the pace of speech
 cargo run --release -p logbook -- live                   # the microphone, until Ctrl-C
-cargo run --release -p logbook -- live --diarize         # the microphone in a room
+cargo run --release -p logbook -- live --system          # the microphone and the call
+cargo run --release -p logbook -- live --diarize-mic     # the microphone in a room
+cargo run --release -p logbook -- devices                # what live can record from
 cargo run --release -p logbook -- bench meeting.m4a --sessions 8
 ```
 
@@ -49,6 +51,16 @@ cargo run --release -p logbook -- bench meeting.m4a --sessions 8
 The figure in brackets is the latency: from the phrase's last word to its
 text. `bench` gives it by quarter of the recording; a latency that grows
 along it means the server does not keep up.
+
+### The call's audio
+
+`--system` records what the computer plays as a second channel, whose
+speakers are told apart; the microphone stays "mic". macOS asks once for
+permission to record system audio (14.6 or later); Windows records the
+default output through WASAPI loopback; on Linux pick PipeWire's monitor
+with `--system-device "Monitor of"` (Windows and Linux not tried yet). Wear headphones: without them the
+microphone hears the call too and every phrase comes twice
+(`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
 
 ### Server options
 

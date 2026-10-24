@@ -1,5 +1,5 @@
-//! Where the audio comes from: a file played at the pace of speech, or the
-//! microphone.
+//! Where the audio comes from: a file played at the pace of speech, the
+//! microphone, or what the computer plays.
 
 use std::path::Path;
 use std::process::Command;
@@ -56,46 +56,57 @@ pub async fn play(
     }
 }
 
-/// Records the default input device on channel 0 until `stop` is dropped.
-/// cpal's stream lives on a thread of its own (it is not Send on macOS).
-pub fn microphone(
+/// Where live audio is recorded from.
+#[derive(Clone, Copy, Debug)]
+pub enum Source {
+    /// An input device: your voice.
+    Microphone,
+    /// What the computer plays: the other people in the call. An output
+    /// device recorded as input: a Core Audio process tap on macOS (14.6+),
+    /// WASAPI loopback on Windows; on Linux, PipeWire's "Monitor of" input
+    /// devices, picked by name.
+    System,
+}
+
+/// Records `source` on `channel` until `stop` is dropped; returns the
+/// device's name. `device` picks one by part of its name (`logbook
+/// devices`), else the default input or output. The channel's sample 0 is
+/// `start`, the session's start (`Timeline`). cpal's stream lives on a
+/// thread of its own (it is not Send on macOS).
+pub fn capture(
+    source: Source,
+    device: Option<String>,
+    channel: u8,
+    start: Instant,
     tx: UnboundedSender<(u8, Vec<i16>)>,
     stop: std::sync::mpsc::Receiver<()>,
 ) -> Result<String> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<String>>();
     std::thread::spawn(move || {
         let started = (|| -> Result<(cpal::Stream, String)> {
-            let device = cpal::default_host()
-                .default_input_device()
-                .context("no input device")?;
-            let name = device
-                .description()
-                .map(|d| d.to_string())
-                .unwrap_or_else(|_| "input".into());
-            let supported = device.default_input_config()?;
-            if supported.sample_format() != cpal::SampleFormat::F32 {
-                bail!(
-                    "{name} records {:?}; only f32 is supported",
-                    supported.sample_format()
-                );
-            }
+            let device = pick(source, device.as_deref())?;
+            let name = device_name(&device);
+            // An output device has no input config: cpal records it through
+            // a loopback (macOS, Windows) with the output's format.
+            let supported = if device.supports_input() {
+                device.default_input_config()?
+            } else {
+                device.default_output_config()?
+            };
+            let format = supported.sample_format();
             let config: cpal::StreamConfig = supported.into();
-            let channels = config.channels as usize;
-            let mut resampler = Resampler::new(config.sample_rate as f64, SAMPLE_RATE as f64);
-            let stream = device.build_input_stream(
-                config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mono = data
-                        .chunks(channels)
-                        .map(|f| f.iter().sum::<f32>() / channels as f32);
-                    let out = resampler.push(mono);
-                    if !out.is_empty() {
-                        let _ = tx.send((0, out));
-                    }
-                },
-                |error| eprintln!("microphone: {error}"),
-                None,
-            )?;
+            let stream = match format {
+                cpal::SampleFormat::F32 => {
+                    record::<f32>(&device, config, channel, start, tx, source)?
+                }
+                cpal::SampleFormat::I16 => {
+                    record::<i16>(&device, config, channel, start, tx, source)?
+                }
+                cpal::SampleFormat::I32 => {
+                    record::<i32>(&device, config, channel, start, tx, source)?
+                }
+                other => bail!("{name} records {other:?}, which is not supported"),
+            };
             stream.play()?;
             Ok((stream, name))
         })();
@@ -110,7 +121,137 @@ pub fn microphone(
             }
         }
     });
-    ready_rx.recv().context("the microphone thread ended")?
+    ready_rx
+        .recv()
+        .context("the recording thread ended")?
+        .with_context(|| format!("could not record the {source:?}"))
+}
+
+fn record<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    channel: u8,
+    start: Instant,
+    tx: UnboundedSender<(u8, Vec<i16>)>,
+    source: Source,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let channels = config.channels as usize;
+    let mut resampler = Resampler::new(config.sample_rate as f64, SAMPLE_RATE as f64);
+    let mut timeline = Timeline { start, sent: 0 };
+    Ok(device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            let mono = data.chunks(channels).map(|frame| {
+                frame
+                    .iter()
+                    .map(|&s| <f32 as cpal::FromSample<T>>::from_sample_(s))
+                    .sum::<f32>()
+                    / channels as f32
+            });
+            let out = resampler.push(mono);
+            if out.is_empty() {
+                return;
+            }
+            let silence = timeline.gap(Instant::now(), out.len());
+            if silence > 0 {
+                let _ = tx.send((channel, vec![0; silence]));
+            }
+            let _ = tx.send((channel, out));
+        },
+        move |error| eprintln!("{source:?}: {error}"),
+        None,
+    )?)
+}
+
+fn pick(source: Source, name: Option<&str>) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+    match name {
+        None => match source {
+            Source::Microphone => host
+                .default_input_device()
+                .context("no default input device"),
+            Source::System => host
+                .default_output_device()
+                .context("no default output device"),
+        },
+        Some(name) => {
+            let wanted = name.to_lowercase();
+            host.devices()?
+                .find(|d| device_name(d).to_lowercase().contains(&wanted))
+                .with_context(|| format!("no device named like {name:?}: see `logbook devices`"))
+        }
+    }
+}
+
+fn device_name(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|d| d.name().to_string())
+        .unwrap_or_else(|_| "unnamed device".into())
+}
+
+/// Every device, with what it can be used for.
+pub fn devices() -> Result<Vec<String>> {
+    let host = cpal::default_host();
+    let input = host.default_input_device().map(|d| device_name(&d));
+    let output = host.default_output_device().map(|d| device_name(&d));
+    Ok(host
+        .devices()?
+        .map(|d| {
+            let name = device_name(&d);
+            let mut uses = Vec::new();
+            if d.supports_input() {
+                uses.push(if input.as_deref() == Some(&name) {
+                    "microphone (default)"
+                } else {
+                    "microphone"
+                });
+            }
+            if d.supports_output() {
+                uses.push(if output.as_deref() == Some(&name) {
+                    "system (default)"
+                } else {
+                    "system"
+                });
+            }
+            format!("{name:<40} {}", uses.join(", "))
+        })
+        .collect())
+}
+
+/// A gap longer than this between the samples a channel has sent and the
+/// time elapsed is filled with silence; shorter ones are callback jitter.
+const MAX_GAP: f64 = 0.5;
+
+/// Keeps a channel on the session's clock. macOS stops an output device
+/// when nothing plays, and its process tap then delivers nothing, not
+/// silence: the system channel would start at the first sound and lose
+/// every quiet stretch, its times drifting from the microphone's, and the
+/// VAD would never see the pause that closes a phrase.
+/// (docs/decisions/2026-10-24-system-audio-through-cpal.md)
+struct Timeline {
+    start: Instant,
+    sent: u64,
+}
+
+impl Timeline {
+    /// Samples of silence to send before `n` samples that arrive at `now`.
+    fn gap(&mut self, now: Instant, n: usize) -> usize {
+        let elapsed = now.saturating_duration_since(self.start).as_secs_f64();
+        let due = (elapsed * SAMPLE_RATE as f64) as i64 - n as i64;
+        let missing = due - self.sent as i64;
+        let silence = if missing as f64 > MAX_GAP * SAMPLE_RATE as f64 {
+            missing as usize
+        } else {
+            0
+        };
+        self.sent += (silence + n) as u64;
+        silence
+    }
 }
 
 /// Linear resampling to 16 kHz, carried across callbacks. Enough for speech;
@@ -150,6 +291,21 @@ impl Resampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_channel_that_starts_late_or_pauses_is_padded_to_the_clock() {
+        let start = Instant::now();
+        let mut t = Timeline { start, sent: 0 };
+        // First samples 2 s after the start: 2 s of silence first.
+        assert_eq!(t.gap(start + Duration::from_secs(2), 1600), 32_000 - 1600);
+        // On time, or a little late: nothing.
+        assert_eq!(t.gap(start + Duration::from_millis(2100), 1600), 0);
+        assert_eq!(t.gap(start + Duration::from_millis(2400), 1600), 0);
+        // Three seconds without a callback.
+        let silence = t.gap(start + Duration::from_millis(5400), 1600);
+        assert_eq!(t.sent, 5400 * 16);
+        assert!(silence > 40_000, "{silence}");
+    }
 
     #[test]
     fn resampling_48k_gives_a_third_of_the_samples() {

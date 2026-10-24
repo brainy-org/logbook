@@ -1,6 +1,6 @@
 //! logbook: the client of logbook-server. `play` streams a file at the pace
-//! of speech, `live` the microphone, `bench` many files at once to find how
-//! many meetings a server keeps up with.
+//! of speech, `live` the microphone and what the computer plays, `bench`
+//! many files at once to find how many meetings a server keeps up with.
 
 mod audio;
 mod client;
@@ -39,12 +39,28 @@ enum Command {
         #[arg(long)]
         no_diarize: bool,
     },
-    /// Transcribe the microphone until Ctrl-C.
+    /// Transcribe the microphone, and with --system the call, until Ctrl-C.
     Live {
-        /// Tell the speakers apart (a room; not your own voice on headphones).
+        /// Also record what the computer plays (the call's other people), as
+        /// a second channel whose speakers are told apart.
         #[arg(long)]
-        diarize: bool,
+        system: bool,
+        /// Record only what the computer plays.
+        #[arg(long, requires = "system")]
+        no_mic: bool,
+        /// Tell the speakers apart on the microphone too (a room; not your
+        /// own voice on headphones).
+        #[arg(long)]
+        diarize_mic: bool,
+        /// Microphone by part of its name (`logbook devices`).
+        #[arg(long)]
+        mic_device: Option<String>,
+        /// Output device (or Linux monitor) by part of its name.
+        #[arg(long)]
+        system_device: Option<String>,
     },
+    /// List the audio devices live can record from.
+    Devices,
     /// Stream one recording as many sessions at once; report the latency.
     Bench {
         file: PathBuf,
@@ -68,7 +84,28 @@ async fn main() -> Result<()> {
             speed,
             no_diarize,
         } => play(&cli.server, &file, speed, !no_diarize).await,
-        Command::Live { diarize } => live(&cli.server, diarize).await,
+        Command::Live {
+            system,
+            no_mic,
+            diarize_mic,
+            mic_device,
+            system_device,
+        } => {
+            let mut sources = Vec::new();
+            if !no_mic {
+                sources.push((audio::Source::Microphone, mic_device, diarize_mic));
+            }
+            if system {
+                sources.push((audio::Source::System, system_device, true));
+            }
+            live(&cli.server, sources).await
+        }
+        Command::Devices => {
+            for line in audio::devices()? {
+                println!("{line}");
+            }
+            Ok(())
+        }
         Command::Bench {
             file,
             sessions,
@@ -116,22 +153,36 @@ async fn play(server: &str, file: &Path, speed: f64, diarize: bool) -> Result<()
     .await
 }
 
-async fn live(server: &str, diarize: bool) -> Result<()> {
+/// Each source is a channel: (what, which device, diarized).
+async fn live(server: &str, sources: Vec<(audio::Source, Option<String>, bool)>) -> Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-    let name = audio::microphone(tx, stop_rx)?;
-    eprintln!("recording from {name}; Ctrl-C to stop");
-    let stop = Mutex::new(Some(stop_tx));
+    let mut stops = Vec::new();
+    let mut channels = Vec::new();
+    // Every channel's sample 0, and what latencies are measured from.
+    let start = Instant::now();
+    for (index, (source, device, diarize)) in sources.into_iter().enumerate() {
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let name = audio::capture(source, device, index as u8, start, tx.clone(), stop_rx)?;
+        let channel = match source {
+            audio::Source::Microphone => "mic",
+            audio::Source::System => "system",
+        };
+        eprintln!("{channel}: {name}");
+        stops.push(stop_tx);
+        channels.push(ChannelConfig {
+            name: channel.into(),
+            diarize,
+        });
+    }
+    // The session stops when the last sender is gone: the capture threads'.
+    drop(tx);
+    eprintln!("recording; Ctrl-C to stop");
+    let stop = Mutex::new(stops);
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
         eprintln!("stopping…");
-        stop.lock().unwrap().take();
+        stop.lock().unwrap().clear();
     });
-    let channels = vec![ChannelConfig {
-        name: "mic".into(),
-        diarize,
-    }];
-    let start = Instant::now();
     client::run(server, channels, rx, |u| {
         println!(
             "[{}] {:<10} {}   (+{:.2} s)",
