@@ -18,8 +18,11 @@ One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
 
 2. Binary frames, the audio: one byte, the channel's index in `channels`,
    then 16 kHz mono PCM, signed 16-bit little-endian. The CLI sends 100 ms
-   a frame (3.2 KB, 256 kbit/s a channel). Channels are independent: each
-   has its own clock, starting at its first sample.
+   a frame (3.2 KB, 256 kbit/s a channel). Every channel's sample 0 is the
+   session's start, and the client keeps them on that clock, sending
+   silence for gaps (the CLI's `Timeline`): times of different channels
+   are compared (echo, speakers), and a device that delivers nothing while
+   idle would otherwise shift its channel.
 
 3. A text frame, `{"type":"stop"}`, when there is no more audio.
 
@@ -34,7 +37,7 @@ One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
    "text":"Grazie Alice.","words":[{"w":"Grazie","start":12.08,"end":12.5,"conf":0.98}, ...]}
   ```
 
-  Seconds from the channel's first sample. `speaker` is 0-based in order of
+  Seconds from the session's start. `speaker` is 0-based in order of
   appearance on that channel, `null` on a channel that is not diarized or
   for words no turn covers. Utterances of one channel arrive in order;
   channels interleave freely, and a channel with `echo_of` lags behind
