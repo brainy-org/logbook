@@ -38,8 +38,9 @@ in its 1.04 / 0.64 / 0.32 s modes).
 brainy-worker reads recordings as jobs: a Redis stream, a disposable child
 per job, models loaded per job. A live session is the opposite: models
 always loaded, a connection open for the whole meeting, answers in
-hundreds of milliseconds. It stays the place for the final, offline pass
-over a whole recording.
+hundreds of milliseconds. The final pass over a whole recording was meant
+to go to it, and runs on logbook-server instead, since brainy does not
+import recordings: `2026-10-24-final-pass-on-the-live-server.md`.
 
 ## Rejected
 

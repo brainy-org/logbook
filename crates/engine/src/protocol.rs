@@ -28,6 +28,10 @@ pub struct ChannelConfig {
 pub enum ClientMessage {
     Start {
         channels: Vec<ChannelConfig>,
+        /// After `stop`, read the whole recording again and send `final`.
+        /// The server keeps the audio for it, and deletes it afterwards.
+        #[serde(default)]
+        final_pass: bool,
     },
     /// No more audio: the server sends what it still holds, then `Done`.
     Stop,
@@ -38,8 +42,20 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Ready,
     Utterance(Utterance),
+    /// The live transcript is complete; the final pass has started.
+    Finalizing {
+        /// Seconds of the session's recording.
+        audio_s: f64,
+    },
+    /// The whole meeting read again: every channel's segments by start.
+    Final {
+        utterances: Vec<Utterance>,
+        warnings: Vec<String>,
+    },
     Done,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// A run of words from one speaker of one channel. Times are seconds from the
@@ -94,6 +110,8 @@ mod tests {
         let start: ClientMessage =
             serde_json::from_str(r#"{"type":"start","channels":[{"name":"mic","diarize":false}]}"#)
                 .unwrap();
-        assert!(matches!(start, ClientMessage::Start { channels } if channels[0].name == "mic"));
+        assert!(
+            matches!(start, ClientMessage::Start { channels, final_pass: false } if channels[0].name == "mic")
+        );
     }
 }

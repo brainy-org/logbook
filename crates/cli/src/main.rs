@@ -1,15 +1,20 @@
 //! logbook: the client of logbook-server. `play` streams a file at the pace
 //! of speech, `live` the microphone and what the computer plays, `bench`
 //! many files at once to find how many meetings a server keeps up with.
+//! With `--final` the server reads the whole meeting again once it ends;
+//! with `--brainy` the result becomes a page in brainy.
 
 mod audio;
+mod brainy;
 mod client;
+mod transcript;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand};
 use logbook_engine::protocol::{ChannelConfig, Utterance};
 
@@ -27,6 +32,45 @@ struct Cli {
     command: Command,
 }
 
+/// What happens once the meeting ends.
+#[derive(clap::Args)]
+struct Publish {
+    /// Read the whole meeting again once it ends (better speakers and
+    /// phrases) and print the final transcript as Markdown.
+    #[arg(long = "final")]
+    final_pass: bool,
+    /// Write the final transcript as a page in brainy (implies --final).
+    #[arg(long)]
+    brainy: bool,
+    /// brainy's address, e.g. https://brainy.example.com.
+    #[arg(long, env = "BRAINY_URL", requires = "brainy")]
+    brainy_url: Option<String>,
+    /// A personal token of yours (brainy: Settings → Connections), with write access.
+    #[arg(
+        long,
+        env = "BRAINY_TOKEN",
+        hide_env_values = true,
+        requires = "brainy"
+    )]
+    brainy_token: Option<String>,
+    /// The page the meeting goes under (its id); by default the top of your
+    /// default workspace.
+    #[arg(long, env = "LOGBOOK_PARENT", requires = "brainy")]
+    parent: Option<String>,
+    /// The page's title; by default "Meeting" and the date.
+    #[arg(long)]
+    title: Option<String>,
+    /// Your name, for what the microphone hears.
+    #[arg(long, env = "LOGBOOK_ME", default_value = "Me")]
+    me: String,
+}
+
+impl Publish {
+    fn final_pass(&self) -> bool {
+        self.final_pass || self.brainy
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Stream a recording as if it were being spoken, and print the transcript.
@@ -38,6 +82,8 @@ enum Command {
         /// Do not tell the speakers apart.
         #[arg(long)]
         no_diarize: bool,
+        #[command(flatten)]
+        publish: Publish,
     },
     /// Transcribe the microphone, and with --system the call, until Ctrl-C.
     Live {
@@ -63,6 +109,8 @@ enum Command {
         /// are dropped as echo.
         #[arg(long)]
         headphones: bool,
+        #[command(flatten)]
+        publish: Publish,
     },
     /// List the audio devices live can record from.
     Devices,
@@ -88,7 +136,8 @@ async fn main() -> Result<()> {
             file,
             speed,
             no_diarize,
-        } => play(&cli.server, &file, speed, !no_diarize).await,
+            publish,
+        } => play(&cli.server, &file, speed, !no_diarize, &publish).await,
         Command::Live {
             system,
             no_mic,
@@ -96,6 +145,7 @@ async fn main() -> Result<()> {
             mic_device,
             system_device,
             headphones,
+            publish,
         } => {
             let mut sources = Vec::new();
             if !no_mic {
@@ -104,7 +154,7 @@ async fn main() -> Result<()> {
             if system {
                 sources.push((audio::Source::System, system_device, true));
             }
-            live(&cli.server, sources, system && !headphones).await
+            live(&cli.server, sources, system && !headphones, &publish).await
         }
         Command::Devices => {
             for line in audio::devices()? {
@@ -138,7 +188,79 @@ fn latency(start: Instant, speed: f64, u: &Utterance) -> f64 {
     start.elapsed().as_secs_f64() - u.end / speed
 }
 
-async fn play(server: &str, file: &Path, speed: f64, diarize: bool) -> Result<()> {
+fn print_live(start: Instant, speed: f64) -> impl FnMut(Utterance) {
+    move |u| {
+        println!(
+            "[{}] {:<10} {}   (+{:.2} s)",
+            clock(u.start),
+            label(&u),
+            u.text,
+            latency(start, speed, &u)
+        );
+    }
+}
+
+fn print_finalizing(audio_s: f64) {
+    eprintln!("reading the whole meeting again ({})…", clock(audio_s));
+}
+
+/// The final transcript: printed, or written to brainy. If brainy refuses
+/// it, it is saved next to you rather than lost.
+async fn publish(
+    p: &Publish,
+    started: DateTime<Local>,
+    finalized: client::Finalized,
+) -> Result<()> {
+    let started_text = started.format("%Y-%m-%d %H:%M").to_string();
+    let duration_s = finalized
+        .utterances
+        .iter()
+        .map(|u| u.end)
+        .fold(0.0, f64::max);
+    let markdown = transcript::markdown(&transcript::Meeting {
+        utterances: &finalized.utterances,
+        warnings: &finalized.warnings,
+        me: &p.me,
+        started: &started_text,
+        duration_s,
+    });
+    if !p.brainy {
+        println!("\n{markdown}");
+        return Ok(());
+    }
+    let title = p
+        .title
+        .clone()
+        .unwrap_or_else(|| format!("Meeting {started_text}"));
+    let written = async {
+        let url = p
+            .brainy_url
+            .as_deref()
+            .context("--brainy needs BRAINY_URL")?;
+        let token = p
+            .brainy_token
+            .as_deref()
+            .context("--brainy needs BRAINY_TOKEN")?;
+        brainy::Brainy::new(url, token)?
+            .create_page(&title, p.parent.as_deref(), &markdown)
+            .await
+    }
+    .await;
+    match written {
+        Ok(url) => {
+            eprintln!("written to brainy: {url}");
+            Ok(())
+        }
+        Err(error) => {
+            let file = format!("logbook-{}.md", started.format("%Y%m%d-%H%M%S"));
+            std::fs::write(&file, format!("# {title}\n\n{markdown}"))
+                .with_context(|| format!("could not save {file} either"))?;
+            Err(error.context(format!("not written to brainy; saved as {file}")))
+        }
+    }
+}
+
+async fn play(server: &str, file: &Path, speed: f64, diarize: bool, p: &Publish) -> Result<()> {
     let samples = Arc::new(audio::decode(file)?);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let channels = vec![ChannelConfig {
@@ -147,17 +269,21 @@ async fn play(server: &str, file: &Path, speed: f64, diarize: bool) -> Result<()
         echo_of: None,
     }];
     let start = Instant::now();
+    let started = Local::now();
     tokio::spawn(audio::play(samples, speed, start, tx));
-    client::run(server, channels, rx, |u| {
-        println!(
-            "[{}] {:<10} {}   (+{:.2} s)",
-            clock(u.start),
-            label(&u),
-            u.text,
-            latency(start, speed, &u)
-        );
-    })
-    .await
+    let finalized = client::run(
+        server,
+        channels,
+        p.final_pass(),
+        rx,
+        print_live(start, speed),
+        print_finalizing,
+    )
+    .await?;
+    match finalized {
+        Some(f) => publish(p, started, f).await,
+        None => Ok(()),
+    }
 }
 
 /// Each source is a channel: (what, which device, diarized).
@@ -166,12 +292,14 @@ async fn live(
     server: &str,
     sources: Vec<(audio::Source, Option<String>, bool)>,
     echo: bool,
+    p: &Publish,
 ) -> Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut stops = Vec::new();
     let mut channels = Vec::new();
     // Every channel's sample 0, and what latencies are measured from.
     let start = Instant::now();
+    let started = Local::now();
     for (index, (source, device, diarize)) in sources.into_iter().enumerate() {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let name = audio::capture(source, device, index as u8, start, tx.clone(), stop_rx)?;
@@ -200,16 +328,19 @@ async fn live(
         eprintln!("stopping…");
         stop.lock().unwrap().clear();
     });
-    client::run(server, channels, rx, |u| {
-        println!(
-            "[{}] {:<10} {}   (+{:.2} s)",
-            clock(u.start),
-            label(&u),
-            u.text,
-            latency(start, 1.0, &u)
-        );
-    })
-    .await
+    let finalized = client::run(
+        server,
+        channels,
+        p.final_pass(),
+        rx,
+        print_live(start, 1.0),
+        print_finalizing,
+    )
+    .await?;
+    match finalized {
+        Some(f) => publish(p, started, f).await,
+        None => Ok(()),
+    }
 }
 
 async fn bench(
@@ -243,13 +374,21 @@ async fn bench(
             }];
             let start = Instant::now();
             tokio::spawn(audio::play(samples, 1.0, start, tx));
-            client::run(&server, channels, rx, |u| {
-                results
-                    .lock()
-                    .unwrap()
-                    .push((u.end, latency(start, 1.0, &u)));
-            })
+            client::run(
+                &server,
+                channels,
+                false,
+                rx,
+                |u| {
+                    results
+                        .lock()
+                        .unwrap()
+                        .push((u.end, latency(start, 1.0, &u)));
+                },
+                |_| {},
+            )
             .await
+            .map(|_| ())
         }));
     }
     let mut failed = 0;

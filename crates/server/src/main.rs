@@ -3,11 +3,14 @@
 //! every session shares them.
 
 mod batcher;
+mod finalizer;
+mod recording;
 mod session;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -22,8 +25,7 @@ use logbook_engine::protocol::{ClientMessage, ServerMessage, decode_audio};
 use logbook_engine::{Engine, Options};
 use tracing::{info, warn};
 
-use crate::batcher::Job;
-use crate::session::Input;
+use crate::session::{Input, Shared};
 
 /// The revision of mudler/parakeet-cpp-gguf brainy-worker pins
 /// (`audio_revision`): the same files, already in the Hugging Face cache.
@@ -59,6 +61,15 @@ struct Args {
     /// Phrases transcribed in one call at most.
     #[arg(long, default_value_t = 16)]
     max_batch: usize,
+    /// Where sessions with a final pass keep their audio until it has run
+    /// (32 KB a second per channel); by default a folder in the system's
+    /// temporary directory.
+    #[arg(long, env = "LOGBOOK_RECORDINGS")]
+    recordings: Option<PathBuf>,
+    /// Recordings longer than this are not diarized in the final pass: one
+    /// call reads the whole recording.
+    #[arg(long, default_value_t = 7200.0)]
+    diarize_max_seconds: f64,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -82,8 +93,8 @@ impl From<LatencyArg> for Latency {
 }
 
 struct AppState {
-    engine: Engine,
-    batcher: Sender<Job>,
+    shared: Shared,
+    sessions: AtomicU64,
 }
 
 #[tokio::main]
@@ -107,10 +118,21 @@ async fn main() -> Result<()> {
         diarization_contexts: args.diarization_contexts,
         latency: args.latency.into(),
         min_pause: args.min_pause,
+        diarize_max_seconds: args.diarize_max_seconds,
     };
-    let engine = Engine::load(&options)?;
-    let batcher = batcher::spawn(engine.asr.clone(), args.max_batch);
-    let state = Arc::new(AppState { engine, batcher });
+    let engine = Arc::new(Engine::load(&options)?);
+    let shared = Shared {
+        batcher: batcher::spawn(engine.asr.clone(), args.max_batch),
+        finalizer: finalizer::spawn(engine.clone()),
+        engine,
+        recordings: args
+            .recordings
+            .unwrap_or_else(|| std::env::temp_dir().join("logbook-recordings")),
+    };
+    let state = Arc::new(AppState {
+        shared,
+        sessions: AtomicU64::new(0),
+    });
     let app = Router::new().route("/live", get(live)).with_state(state);
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     info!("listening on ws://{}/live", args.listen);
@@ -124,10 +146,13 @@ async fn live(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Respo
 
 async fn handle(socket: WebSocket, state: Arc<AppState>) {
     let (mut sink, mut stream) = socket.split();
-    let configs = loop {
+    let (configs, final_pass) = loop {
         match stream.next().await {
             Some(Ok(Message::Text(text))) => match serde_json::from_str(text.as_str()) {
-                Ok(ClientMessage::Start { channels }) => break channels,
+                Ok(ClientMessage::Start {
+                    channels,
+                    final_pass,
+                }) => break (channels, final_pass),
                 Ok(_) | Err(_) => {
                     warn!("the first message was not a start");
                     return;
@@ -141,11 +166,21 @@ async fn handle(socket: WebSocket, state: Arc<AppState>) {
     let (in_tx, in_rx) = std::sync::mpsc::channel::<Input>();
     let reply = in_tx.clone();
     let thread_state = state.clone();
+    // Names the session in the logs and its recording's files.
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let session = format!(
+        "{millis}-{}",
+        state.sessions.fetch_add(1, Ordering::Relaxed)
+    );
     std::thread::spawn(move || {
         session::run(
-            &thread_state.engine,
-            &thread_state.batcher,
+            &thread_state.shared,
+            session,
             configs,
+            final_pass,
             in_rx,
             reply,
             out_tx,

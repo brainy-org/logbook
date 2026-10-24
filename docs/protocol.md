@@ -15,6 +15,8 @@ One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
    headphones), on for the call's audio or a room. `echo_of`, optional,
    names the channel this one may hear again (`"system"` on a mic near
    the speakers): its echoed words are dropped (docs/pipeline.md, "Echo").
+   `"final_pass": true`, optional, asks for the final pass after `stop`:
+   the server records the audio for it and deletes it afterwards.
 
 2. Binary frames, the audio: one byte, the channel's index in `channels`,
    then 16 kHz mono PCM, signed 16-bit little-endian. The CLI sends 100 ms
@@ -42,11 +44,20 @@ One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
   for words no turn covers. Utterances of one channel arrive in order;
   channels interleave freely, and a channel with `echo_of` lags behind
   the one it is filtered against.
-- `{"type":"done"}` after `stop`, once every phrase has been sent. The
-  server then closes.
+- `{"type":"finalizing","audio_s":1834.2}` with a final pass: the live
+  transcript is complete and the whole recording is being read again
+  (seconds to minutes).
+- `{"type":"final","utterances":[...],"warnings":[...]}` with a final pass:
+  every channel's segments by start time, in the shape of `utterance`
+  without the `type`; `warnings` says what was left out ("speakers were
+  not told apart on system: ...").
+- `{"type":"done"}` after `stop`, once every phrase (and the final pass,
+  if asked) has been sent. The server then closes.
 - `{"type":"error","message":"..."}` ends the session.
 
-Closing the socket without `stop` drops the session and what it held.
+Closing the socket without `stop` drops the session, what it held and its
+recording. Closing it during the final pass loses the result (the
+recording is deleted anyway).
 
 ## Not yet
 

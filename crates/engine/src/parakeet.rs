@@ -45,6 +45,9 @@ struct Functions {
     vad_stream_feed_json:
         unsafe extern "C" fn(*mut c_void, *const c_float, c_int, c_int) -> *mut c_char,
     vad_stream_free: unsafe extern "C" fn(*mut c_void),
+    vad_pcm_json:
+        unsafe extern "C" fn(Ctx, *const c_float, c_int, c_int, *const c_char) -> *mut c_char,
+    diarize_pcm: unsafe extern "C" fn(Ctx, *const c_float, c_int, c_int) -> *mut c_char,
     diarize_stream_begin_latency: unsafe extern "C" fn(Ctx, c_int) -> *mut c_void,
     diarize_stream_time: unsafe extern "C" fn(*mut c_void) -> c_float,
     diarize_stream_active:
@@ -101,6 +104,8 @@ impl Parakeet {
             vad_stream_begin: symbol!("vad_stream_begin"),
             vad_stream_feed_json: symbol!("vad_stream_feed_json"),
             vad_stream_free: symbol!("vad_stream_free"),
+            vad_pcm_json: symbol!("vad_pcm_json"),
+            diarize_pcm: symbol!("diarize_pcm"),
             diarize_stream_begin_latency: symbol!("diarize_stream_begin_latency"),
             diarize_stream_time: symbol!("diarize_stream_time"),
             diarize_stream_active: symbol!("diarize_stream_active"),
@@ -229,6 +234,76 @@ impl Model {
             model: self.clone(),
             s,
         })
+    }
+
+    /// Where to cut a whole recording: pieces of at most `max_segment` seconds
+    /// cut at pauses, without the ones that hold no speech (mode "segments").
+    pub fn vad_segments(&self, pcm: &[f32], max_segment: f64) -> Result<Vec<(f64, f64)>> {
+        #[derive(Deserialize)]
+        struct Doc {
+            segments: Vec<Segment>,
+        }
+        #[derive(Deserialize)]
+        struct Segment {
+            start: f64,
+            end: f64,
+        }
+        let options = CString::new(
+            serde_json::json!({ "mode": "segments", "max_segment": max_segment }).to_string(),
+        )?;
+        let out = unsafe {
+            (self.lib.f.vad_pcm_json)(
+                self.ctx,
+                pcm.as_ptr(),
+                pcm.len() as c_int,
+                SAMPLE_RATE as c_int,
+                options.as_ptr(),
+            )
+        };
+        let json = self
+            .lib
+            .take(out)
+            .with_context(|| format!("VAD: {}", self.error()))?;
+        let doc: Doc = serde_json::from_str(&json)?;
+        Ok(doc.segments.into_iter().map(|s| (s.start, s.end)).collect())
+    }
+
+    /// The speakers' turns over a whole recording, in one call. It holds the
+    /// context for the whole call: give it a context no stream uses.
+    pub fn diarize(&self, pcm: &[f32]) -> Result<Vec<Turn>> {
+        #[derive(Deserialize)]
+        struct Doc {
+            segments: Vec<Segment>,
+        }
+        #[derive(Deserialize)]
+        struct Segment {
+            speaker: u32,
+            start: f64,
+            end: f64,
+        }
+        let _turn = self.serial.lock().unwrap();
+        let out = unsafe {
+            (self.lib.f.diarize_pcm)(
+                self.ctx,
+                pcm.as_ptr(),
+                pcm.len() as c_int,
+                SAMPLE_RATE as c_int,
+            )
+        };
+        let json = self
+            .lib
+            .take(out)
+            .with_context(|| format!("diarization: {}", self.error()))?;
+        let doc: Doc = serde_json::from_str(&json)?;
+        Ok(doc
+            .segments
+            .into_iter()
+            .map(|s| Turn {
+                speaker: s.speaker,
+                start: s.start,
+                end: s.end,
+            })
+            .collect())
     }
 
     /// A diarization stream in one of the model card's latency modes.

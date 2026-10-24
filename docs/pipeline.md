@@ -69,8 +69,32 @@ over the call); an utterance without echo is untouched.
   and differently (a robotic synthetic voice left fragments); real echo
   cancellation on the client is the step after.
 
+## Final pass
+
+With `final_pass`, the session records each channel as it arrives
+(`crates/server/src/recording.rs`: raw s16le in `--recordings`, 32 KB a
+second per channel) and, once the live transcript is complete, hands the
+files to the finalizer thread, which runs one pass at a time
+(`finalizer.rs`, `crates/engine/src/final_pass.rs`):
+
+1. each channel, one at a time in memory (4 bytes a sample: 230 MB an
+   hour), is cut by Silero VAD into pieces of at most 30 s and
+   transcribed 8 pieces a call;
+2. a diarized channel is diarized in one call over the whole recording,
+   on a context of its own (a live stream's context would be held for the
+   whole call), unless it is longer than `--diarize-max-seconds` (2 h:
+   a warning);
+3. words become segments with brainy-worker's rules (a change of speaker,
+   a pause of 1.2 s, a sentence end past 8 s, 30 s at most);
+4. the mic's echo of the call is dropped, as live, over the whole meeting.
+
+A recording file deletes itself when dropped (`RecordedFile`): after the
+pass, whether it worked or not, when a session ends without a final pass,
+and when the connection is lost.
+
 ## Measured
 
 On the dev Mac (M3, Metal), one session: the text of a phrase arrives
-0.5–1.4 s after its last word with diarization, 0.5–1.0 s without. Load
-tests on this machine say little about a server: see the decision record.
+0.5–1.4 s after its last word with diarization, 0.5–1.0 s without. The
+final pass read 23.6 s in 1.0 s and 45.3 s in 1.7 s. Load tests on this
+machine say little about a server: see the decision records.

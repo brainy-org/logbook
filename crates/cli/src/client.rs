@@ -15,17 +15,32 @@ use tokio_tungstenite::tungstenite::Message;
 /// session stops when the sender is dropped.
 pub type Audio = UnboundedReceiver<(u8, Vec<i16>)>;
 
+/// The final pass's result: every channel's segments by start, and what
+/// was left out.
+pub struct Finalized {
+    pub utterances: Vec<Utterance>,
+    pub warnings: Vec<String>,
+}
+
+/// With `final_pass`, after the live transcript the server reads the whole
+/// recording again (`on_finalizing` gets its length) and the result is
+/// returned; without it, None.
 pub async fn run(
     url: &str,
     channels: Vec<ChannelConfig>,
+    final_pass: bool,
     mut audio: Audio,
     mut on_utterance: impl FnMut(Utterance),
-) -> Result<()> {
+    mut on_finalizing: impl FnMut(f64),
+) -> Result<Option<Finalized>> {
     let (socket, _) = connect_async(url)
         .await
         .with_context(|| format!("could not connect to {url}"))?;
     let (mut sink, mut stream) = socket.split();
-    let start = serde_json::to_string(&ClientMessage::Start { channels })?;
+    let start = serde_json::to_string(&ClientMessage::Start {
+        channels,
+        final_pass,
+    })?;
     sink.send(Message::Text(start.into())).await?;
 
     match next(&mut stream).await? {
@@ -46,9 +61,20 @@ pub async fn run(
         anyhow::Ok(sink)
     });
 
+    let mut finalized = None;
     loop {
         match next(&mut stream).await? {
             Some(ServerMessage::Utterance(u)) => on_utterance(u),
+            Some(ServerMessage::Finalizing { audio_s }) => on_finalizing(audio_s),
+            Some(ServerMessage::Final {
+                utterances,
+                warnings,
+            }) => {
+                finalized = Some(Finalized {
+                    utterances,
+                    warnings,
+                })
+            }
             Some(ServerMessage::Done) => break,
             Some(ServerMessage::Error { message }) => bail!("server: {message}"),
             Some(ServerMessage::Ready) => {}
@@ -57,7 +83,10 @@ pub async fn run(
     }
     let mut sink = sender.await??;
     let _ = sink.close().await;
-    Ok(())
+    if final_pass && finalized.is_none() {
+        bail!("the server finished without the final pass");
+    }
+    Ok(finalized)
 }
 
 async fn next<S>(stream: &mut S) -> Result<Option<ServerMessage>>

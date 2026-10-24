@@ -5,8 +5,9 @@ holds the models (parakeet.cpp: Silero VAD, NVIDIA parakeet-tdt-0.6b-v3,
 Nemotron-3-Diarization) and transcribes the audio that `logbook` streams
 to it, phrase by phrase, about a second after each is spoken.
 
-A prototype: a server and a CLI. The desktop app and the final pass into
-brainy are still to come.
+A prototype: a server and a CLI. Once the meeting ends, the server can
+read it all again (better speakers and phrases) and the CLI writes it as
+a page in brainy. The desktop app is still to come.
 
 ## Quick start
 
@@ -46,6 +47,24 @@ The figure in brackets is the latency: from the phrase's last word to its
 text. `bench` gives it by quarter of the recording; a latency that grows
 along it means the server does not keep up.
 
+### The meeting in brainy
+
+```bash
+export BRAINY_URL=https://brainy.example.com BRAINY_TOKEN=brainy_…   # a personal token with write access
+scripts/client.sh live --system --brainy --me Marco                  # Ctrl-C at the end of the meeting
+scripts/client.sh live --system --brainy --parent PAGE_ID --title "Weekly sync"
+scripts/client.sh play meeting.m4a --final                           # the final transcript, printed
+```
+
+After Ctrl-C the live transcript finishes, then the server reads the
+whole meeting again (`--final`, implied by `--brainy`) and the CLI writes
+the page: who spoke (your name for the microphone, "Speaker 1", "Speaker
+2"… for the call), when, and what. Without `--parent` the page goes at the
+top of your default workspace. If brainy cannot be reached, the
+transcript is saved as `logbook-YYYYMMDD-HHMMSS.md` in the current folder.
+The token stays with the CLI; the server only keeps the meeting's audio
+until the final pass has read it.
+
 ### The call's audio
 
 `--system` records what the computer plays as a second channel, whose
@@ -69,6 +88,8 @@ headphones, say so (`--headphones`) and nothing is filtered.
 | `--latency` | `low` | diarization: `low` 1.04 s, `very-low` 0.64 s, `ultra-low` 0.32 s |
 | `--min-pause` | 0.5 | seconds of silence that close a phrase |
 | `--max-batch` | 16 | phrases per transcription call |
+| `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of sessions with a final pass, until it has run |
+| `--diarize-max-seconds` | 7200 | longer recordings are not diarized in the final pass |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes
 the first GPU.

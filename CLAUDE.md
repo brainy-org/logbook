@@ -11,12 +11,14 @@ workspace. A prototype: why it exists and how it is built is in
 
 ```
 crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet.rs),
-                 one channel's pipeline (channel.rs), the wire protocol (protocol.rs)
-                                                                → docs/pipeline.md
+                 one channel's pipeline (channel.rs), echo (echo.rs), the final pass
+                 (final_pass.rs), the wire protocol (protocol.rs)  → docs/pipeline.md
 crates/server/   logbook-server: WebSocket /live (axum), a thread per session,
-                 one batcher thread for every transcription      → docs/protocol.md
+                 one batcher thread for every transcription, recordings (recording.rs)
+                 and one finalizer thread for final passes       → docs/protocol.md
 crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
-                 with --system, the call), devices, bench (many sessions at once)
+                 with --system, the call), devices, bench (many sessions at once);
+                 the final transcript as Markdown (transcript.rs) and into brainy (brainy.rs)
 scripts/         server.sh (fetches libparakeet and the models, runs the server), client.sh
 vendor/          libparakeet for this machine, fetched by scripts/server.sh (not committed)
 docs/            pipeline.md, protocol.md, decisions/
@@ -52,6 +54,13 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
   it the call's times drift from the mic's, pauses vanish, and the echo
   filter (`echo.rs`, which matches words by time across channels) drops
   nothing (`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
+- **A meeting's audio lives only in a `RecordedFile`, which deletes itself
+  when dropped**: after the final pass (whatever its outcome), at a session
+  without one, at a lost connection. Audio written anywhere else outlives
+  the meeting, which the README promises it does not.
+- **logbook-server holds no brainy credentials.** It returns the final
+  transcript; the CLI writes the page with the person's own token
+  (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).
 - **Same models as brainy-worker** (`MODELS_REVISION` = its
   `audio_revision`): one download, one set of licences
   (brainy-worker's `docs/decisions/2026-10-10-licences-of-code-and-weights.md`).
