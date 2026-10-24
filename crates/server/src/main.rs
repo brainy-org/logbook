@@ -1,9 +1,10 @@
 //! logbook-server: live transcription and diarization over a WebSocket
-//! (`/live`, docs/protocol.md). The models are loaded once and stay loaded;
-//! every session shares them.
+//! (`/live`), final passes over HTTP (`/finals`): docs/protocol.md. The
+//! models are loaded once and stay loaded; every session shares them.
 
 mod batcher;
 mod finalizer;
+mod finals;
 mod recording;
 mod session;
 
@@ -13,19 +14,31 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use axum::Router;
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
-use axum::routing::get;
+use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use clap::{Parser, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
+use logbook_engine::codec;
 use logbook_engine::parakeet::Latency;
-use logbook_engine::protocol::{ClientMessage, ServerMessage, decode_audio};
+use logbook_engine::parakeet::SAMPLE_RATE;
+use logbook_engine::protocol::{
+    ClientMessage, FinalState, ServerMessage, Started, Upload, decode_audio,
+};
 use logbook_engine::{Engine, Options};
 use tracing::{info, warn};
 
+use crate::finalizer::FinalJob;
+use crate::finals::Finals;
+use crate::recording::Recording;
 use crate::session::{Input, Shared};
+
+/// The largest upload: 14 MB an hour a channel (`codec`), so about 8 hours
+/// of a meeting with two channels.
+const MAX_UPLOAD: usize = 256 << 20;
 
 /// Where scripts/server.sh puts the `parakeet` bundle of the mirror
 /// (github.com/brainy-org/models), under $HOME: the files brainy-worker
@@ -62,8 +75,8 @@ struct Args {
     /// Phrases transcribed in one call at most.
     #[arg(long, default_value_t = 16)]
     max_batch: usize,
-    /// Where sessions with a final pass keep their audio until it has run
-    /// (32 KB a second per channel); by default a folder in the system's
+    /// Where final passes keep their audio until they have run (32 KB a
+    /// second per channel); by default a folder in the system's
     /// temporary directory.
     #[arg(long, env = "LOGBOOK_RECORDINGS")]
     recordings: Option<PathBuf>,
@@ -119,24 +132,107 @@ async fn main() -> Result<()> {
         min_pause: args.min_pause,
         diarize_max_seconds: args.diarize_max_seconds,
     };
+    let recordings = args
+        .recordings
+        .unwrap_or_else(|| std::env::temp_dir().join("logbook-recordings"));
+    let cleared = recording::clear_leftovers(&recordings)?;
+    if cleared > 0 {
+        info!(cleared, "deleted the recordings of a server that died");
+    }
     let engine = Arc::new(Engine::load(&options)?);
+    let finals = Arc::new(Finals::default());
     let shared = Shared {
         batcher: batcher::spawn(engine.asr.clone(), args.max_batch),
-        finalizer: finalizer::spawn(engine.clone()),
+        finalizer: finalizer::spawn(engine.clone(), finals.clone()),
+        finals,
         engine,
-        recordings: args
-            .recordings
-            .unwrap_or_else(|| std::env::temp_dir().join("logbook-recordings")),
+        recordings,
     };
     let state = Arc::new(AppState {
         shared,
         sessions: AtomicU64::new(0),
     });
-    let app = Router::new().route("/live", get(live)).with_state(state);
+    let app = Router::new()
+        .route("/live", get(live))
+        .route(
+            "/finals",
+            post(upload).layer(DefaultBodyLimit::max(MAX_UPLOAD)),
+        )
+        .route("/finals/{id}", get(final_state))
+        .with_state(state);
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    info!("listening on ws://{}/live", args.listen);
+    info!("listening on http://{}", args.listen);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// A final pass over a meeting the client recorded itself: a `meeting`
+/// part (the channels), then one `audio` part per channel (`codec`).
+async fn upload(State(state): State<Arc<AppState>>, multipart: Multipart) -> Response {
+    match start_upload(&state.shared, multipart).await {
+        Ok(id) => (StatusCode::ACCEPTED, Json(Started { id })).into_response(),
+        Err(error) => {
+            warn!("upload refused: {error:#}");
+            (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response()
+        }
+    }
+}
+
+async fn start_upload(shared: &Shared, mut multipart: Multipart) -> Result<String> {
+    let mut upload: Option<Upload> = None;
+    let mut audio = Vec::new();
+    while let Some(field) = multipart.next_field().await? {
+        match field.name() {
+            Some("meeting") => upload = Some(serde_json::from_slice(&field.bytes().await?)?),
+            Some("audio") => audio.push(field.bytes().await?),
+            _ => {}
+        }
+    }
+    let upload = upload.context("no meeting part")?;
+    if upload.channels.is_empty() || upload.channels.len() != audio.len() {
+        anyhow::bail!(
+            "{} channels and {} audio parts",
+            upload.channels.len(),
+            audio.len()
+        );
+    }
+    // Decoding an hour takes about a second of CPU: off the async threads.
+    let dir = shared.recordings.clone();
+    let (files, audio_s) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let mut name = [0u8; 8];
+        getrandom::fill(&mut name).map_err(|e| anyhow::anyhow!("no randomness: {e}"))?;
+        let name: String = name.iter().map(|b| format!("{b:02x}")).collect();
+        let mut recording = Recording::create(&dir, &format!("upload-{name}"), audio.len())?;
+        let mut longest = 0;
+        for (i, data) in audio.iter().enumerate() {
+            let pcm = codec::decode(data).with_context(|| format!("audio part {i}"))?;
+            longest = longest.max(pcm.len());
+            recording.write(i, &pcm)?;
+        }
+        Ok((recording.finish()?, longest as f64 / SAMPLE_RATE as f64))
+    })
+    .await??;
+    let id = shared.finals.start(audio_s)?;
+    info!(audio_s = format!("{audio_s:.1}"), "upload received");
+    let _ = shared.finalizer.send(FinalJob {
+        label: "upload".into(),
+        id: id.clone(),
+        channels: upload.channels.into_iter().zip(files).collect(),
+        out: None,
+    });
+    Ok(id)
+}
+
+async fn final_state(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<FinalState>, StatusCode> {
+    state
+        .shared
+        .finals
+        .get(&id)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 async fn live(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {

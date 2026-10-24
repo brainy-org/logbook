@@ -90,7 +90,9 @@ files to the finalizer thread, which runs one pass at a time
 
 A recording file deletes itself when dropped (`RecordedFile`): after the
 pass, whether it worked or not, when a session ends without a final pass,
-and when the connection is lost.
+and when the connection is lost; a server that dies leaves its files, and
+deletes them when it starts again. An uploaded meeting (`POST /finals`)
+is decoded into the same files and read by the same pass.
 
 ## Measured
 

@@ -1,7 +1,7 @@
-//! What the client and the server say to each other over the WebSocket
-//! (docs/protocol.md).
+//! What the client and the server say to each other (docs/protocol.md):
+//! over the WebSocket of a live session, and over HTTP for final passes.
 //!
-//! Text frames are JSON messages. Binary frames are audio: one byte, the
+//! WebSocket text frames are JSON messages. Binary frames are audio: one byte, the
 //! index of the channel in `Start.channels`, then 16 kHz mono PCM as signed
 //! 16-bit little-endian samples.
 
@@ -46,6 +46,9 @@ pub enum ServerMessage {
     Finalizing {
         /// Seconds of the session's recording.
         audio_s: f64,
+        /// The pass's id: if the connection is lost, its result is at
+        /// `GET /finals/{id}` for a while.
+        id: String,
     },
     /// The whole meeting read again: every channel's segments by start.
     Final {
@@ -54,6 +57,35 @@ pub enum ServerMessage {
     },
     Done,
     Error {
+        message: String,
+    },
+}
+
+/// The meeting part of `POST /finals`: the channels, in the order of the
+/// `audio` parts that follow it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Upload {
+    pub channels: Vec<ChannelConfig>,
+}
+
+/// `POST /finals` answers with the id of the pass it started.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Started {
+    pub id: String,
+}
+
+/// `GET /finals/{id}`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum FinalState {
+    Running {
+        audio_s: f64,
+    },
+    Done {
+        utterances: Vec<Utterance>,
+        warnings: Vec<String>,
+    },
+    Failed {
         message: String,
     },
 }

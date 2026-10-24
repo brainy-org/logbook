@@ -1,6 +1,7 @@
-# The live protocol
+# The protocol
 
-One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
+One WebSocket per live session, at `ws://HOST:3300/live`; final passes
+also over HTTP, at `http://HOST:3300/finals`. Types in
 `crates/engine/src/protocol.rs`.
 
 ## Client to server
@@ -44,9 +45,10 @@ One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
   for words no turn covers. Utterances of one channel arrive in order;
   channels interleave freely, and a channel with `echo_of` lags behind
   the one it is filtered against.
-- `{"type":"finalizing","audio_s":1834.2}` with a final pass: the live
-  transcript is complete and the whole recording is being read again
-  (seconds to minutes).
+- `{"type":"finalizing","audio_s":1834.2,"id":"9f3c…"}` with a final
+  pass: the live transcript is complete and the whole recording is being
+  read again (seconds to minutes). The result is also at
+  `GET /finals/{id}` for an hour after it is ready.
 - `{"type":"final","utterances":[...],"warnings":[...]}` with a final pass:
   every channel's segments by start time, in the shape of `utterance`
   without the `type`; `warnings` says what was left out ("speakers were
@@ -56,10 +58,36 @@ One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
 - `{"type":"error","message":"..."}` ends the session.
 
 Closing the socket without `stop` drops the session, what it held and its
-recording. Closing it during the final pass loses the result (the
-recording is deleted anyway).
+recording. Closing it during the final pass does not stop the pass.
+
+## Reconnection
+
+A lost connection is the client's to repair: it opens a new session
+(without a final pass: it would not hear the whole meeting) and shifts
+the new session's times by where on the meeting's clock its first sample
+was. The server does not know the two sessions are one meeting. Audio
+captured while disconnected is not sent live; the client keeps it for
+the final pass (`docs/decisions/2026-10-24-the-client-keeps-the-meeting.md`).
+
+## Final passes over HTTP
+
+- `POST /finals`, multipart: a part `meeting`, JSON
+  `{"channels":[...]}` as in `start`, then one part `audio` per channel
+  in the same order. Answers `202 {"id":"…"}`, or `400` with the reason.
+  At most 256 MB.
+- `GET /finals/{id}`: `{"state":"running","audio_s":…}`,
+  `{"state":"done","utterances":[...],"warnings":[...]}` or
+  `{"state":"failed","message":"…"}`; `404` if the server does not know
+  the id (restarted, or the result expired an hour after it was ready):
+  the client uploads again.
+
+An `audio` part is the channel in Opus (`crates/engine/src/codec.rs`):
+`LBO1`, the number of samples (u64 LE), the encoder's lookahead in
+samples (u16 LE), then 20 ms packets at 32 kbit/s, each a u16 LE length
+and its bytes. The decoder drops the lookahead and cuts at the number of
+samples, so that sample i is the meeting's sample i.
 
 ## Not yet
 
-Compression (Opus), reconnection with a resume point, authentication: the
-prototype trusts its network.
+Authentication (an id is the only key to a transcript; `/live` has
+none), TLS: the prototype trusts its network.

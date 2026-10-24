@@ -3,6 +3,7 @@
 //! logic of its own.
 
 pub mod channel;
+pub mod codec;
 pub mod echo;
 pub mod final_pass;
 pub mod parakeet;

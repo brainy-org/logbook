@@ -1,0 +1,246 @@
+//! A meeting kept on this computer until its final transcript is published
+//! (docs/decisions/2026-10-24-the-client-keeps-the-meeting.md).
+//!
+//! One folder per meeting under `<data>/pending`: `meeting.json` (the
+//! channels, when it started, how to publish it, the server's pass id once
+//! known), one raw 16 kHz s16le file per channel on the session's clock,
+//! written as the audio is captured, and `final.json` once the final pass
+//! has come back (the audio is deleted then: it is no longer needed). The
+//! folder goes away once the transcript is published; until then
+//! `logbook finish` picks it up again. No brainy token is ever written.
+
+use std::fs::File;
+use std::io::{BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use logbook_engine::protocol::ChannelConfig;
+use serde::{Deserialize, Serialize};
+
+use crate::client::Finalized;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Meeting {
+    /// RFC 3339, local time.
+    pub started: String,
+    pub channels: Vec<ChannelConfig>,
+    pub publish: Saved,
+    /// The server's final pass for it, once one is known to be running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_id: Option<String>,
+}
+
+/// How to publish the transcript, as asked when the meeting started.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Saved {
+    pub brainy: bool,
+    pub brainy_url: Option<String>,
+    pub parent: Option<String>,
+    pub title: Option<String>,
+    pub me: String,
+}
+
+pub struct Pending {
+    pub dir: PathBuf,
+    pub meeting: Meeting,
+}
+
+/// The audio being written, one file per channel.
+pub struct Spool {
+    files: Vec<BufWriter<File>>,
+}
+
+impl Pending {
+    /// A new folder named after the meeting's start (`20261024-174012`).
+    pub fn create(root: &Path, name: &str, meeting: Meeting) -> Result<(Self, Spool)> {
+        let root = root.join("pending");
+        std::fs::create_dir_all(&root)
+            .with_context(|| format!("could not create {}", root.display()))?;
+        let mut dir = root.join(name);
+        let mut n = 1;
+        while let Err(error) = std::fs::create_dir(&dir) {
+            if error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(error).with_context(|| format!("could not create {}", dir.display()));
+            }
+            n += 1;
+            dir = root.join(format!("{name}-{n}"));
+        }
+        let pending = Self { dir, meeting };
+        pending.save()?;
+        let files = (0..pending.meeting.channels.len())
+            .map(|i| {
+                let path = pending.audio_path(i);
+                File::create(&path)
+                    .map(BufWriter::new)
+                    .with_context(|| format!("could not create {}", path.display()))
+            })
+            .collect::<Result<_>>()?;
+        Ok((pending, Spool { files }))
+    }
+
+    pub fn open(dir: &Path) -> Result<Self> {
+        let path = dir.join("meeting.json");
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("could not read {}", path.display()))?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            meeting: serde_json::from_str(&text)
+                .with_context(|| format!("could not read {}", path.display()))?,
+        })
+    }
+
+    /// Every pending meeting, oldest first.
+    pub fn list(root: &Path) -> Result<Vec<PathBuf>> {
+        let root = root.join("pending");
+        let mut dirs: Vec<PathBuf> = match std::fs::read_dir(&root) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.join("meeting.json").is_file())
+                .collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                return Err(error).with_context(|| format!("could not read {}", root.display()));
+            }
+        };
+        dirs.sort();
+        Ok(dirs)
+    }
+
+    pub fn set_final_id(&mut self, id: Option<String>) -> Result<()> {
+        self.meeting.final_id = id;
+        self.save()
+    }
+
+    /// Keeps the final pass's result; the audio is no longer needed.
+    pub fn save_final(&self, finalized: &Finalized) -> Result<()> {
+        let path = self.dir.join("final.json");
+        let tmp = self.dir.join("final.json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(finalized)?)
+            .and_then(|_| std::fs::rename(&tmp, &path))
+            .with_context(|| format!("could not write {}", path.display()))?;
+        for i in 0..self.meeting.channels.len() {
+            let _ = std::fs::remove_file(self.audio_path(i));
+        }
+        Ok(())
+    }
+
+    pub fn final_result(&self) -> Result<Option<Finalized>> {
+        let path = self.dir.join("final.json");
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+                    format!("could not read {}", path.display())
+                })?))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).with_context(|| format!("could not read {}", path.display())),
+        }
+    }
+
+    /// Every channel's samples, in channel order.
+    pub fn audio(&self) -> Result<Vec<Vec<i16>>> {
+        (0..self.meeting.channels.len())
+            .map(|i| {
+                let path = self.audio_path(i);
+                let mut bytes = Vec::new();
+                File::open(&path)
+                    .and_then(|mut f| f.read_to_end(&mut bytes))
+                    .with_context(|| format!("could not read {}", path.display()))?;
+                Ok(bytes
+                    .chunks_exact(2)
+                    .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                    .collect())
+            })
+            .collect()
+    }
+
+    /// The transcript as a file to read while it waits to be published.
+    pub fn save_transcript(&self, markdown: &str) -> Result<PathBuf> {
+        let path = self.dir.join("transcript.md");
+        std::fs::write(&path, markdown)
+            .with_context(|| format!("could not write {}", path.display()))?;
+        Ok(path)
+    }
+
+    pub fn remove(&self) -> Result<()> {
+        std::fs::remove_dir_all(&self.dir)
+            .with_context(|| format!("could not remove {}", self.dir.display()))
+    }
+
+    fn save(&self) -> Result<()> {
+        let path = self.dir.join("meeting.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&self.meeting)?)
+            .with_context(|| format!("could not write {}", path.display()))
+    }
+
+    fn audio_path(&self, channel: usize) -> PathBuf {
+        self.dir.join(format!("{channel}.pcm"))
+    }
+}
+
+impl Spool {
+    pub fn write(&mut self, channel: usize, samples: &[i16]) -> Result<()> {
+        let Some(file) = self.files.get_mut(channel) else {
+            return Ok(());
+        };
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        Ok(file.write_all(&bytes)?)
+    }
+
+    pub fn finish(self) -> Result<()> {
+        for mut file in self.files {
+            file.flush()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_meeting_survives_until_it_is_removed() {
+        let root = std::env::temp_dir().join(format!("logbook-pending-{}", std::process::id()));
+        let meeting = Meeting {
+            started: "2026-10-24T17:40:00+02:00".into(),
+            channels: vec![ChannelConfig {
+                name: "mic".into(),
+                diarize: false,
+                echo_of: None,
+            }],
+            publish: Saved {
+                brainy: false,
+                brainy_url: None,
+                parent: None,
+                title: None,
+                me: "Me".into(),
+            },
+            final_id: None,
+        };
+        let (mut pending, mut spool) = Pending::create(&root, "m", meeting.clone()).unwrap();
+        let (second, _) = Pending::create(&root, "m", meeting).unwrap();
+        assert!(second.dir.ends_with("m-2"));
+        second.remove().unwrap();
+        spool.write(0, &[1, -2, 3]).unwrap();
+        spool.finish().unwrap();
+        pending.set_final_id(Some("abc".into())).unwrap();
+
+        let dirs = Pending::list(&root).unwrap();
+        assert_eq!(dirs.len(), 1);
+        let opened = Pending::open(&dirs[0]).unwrap();
+        assert_eq!(opened.meeting.final_id.as_deref(), Some("abc"));
+        assert_eq!(opened.audio().unwrap(), vec![vec![1, -2, 3]]);
+        assert!(opened.final_result().unwrap().is_none());
+        let finalized = Finalized {
+            utterances: Vec::new(),
+            warnings: vec!["w".into()],
+        };
+        opened.save_final(&finalized).unwrap();
+        assert_eq!(opened.final_result().unwrap().unwrap().warnings, ["w"]);
+        assert!(opened.audio().is_err());
+        opened.remove().unwrap();
+        assert!(Pending::list(&root).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

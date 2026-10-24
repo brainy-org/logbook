@@ -3,7 +3,8 @@
 //! A final pass reads a whole meeting: seconds to minutes on the GPU the
 //! live sessions use too. Running them one after another bounds what they
 //! take from the live sessions to one pass at a time, and keeps them off
-//! the sessions' threads.
+//! the sessions' threads. The result goes to `Finals` under the pass's id,
+//! and to the live session's connection if there is one still open.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
@@ -11,32 +12,36 @@ use std::time::Instant;
 
 use logbook_engine::Engine;
 use logbook_engine::final_pass::Recorded;
-use logbook_engine::protocol::{ChannelConfig, ServerMessage};
+use logbook_engine::protocol::{ChannelConfig, FinalState, ServerMessage};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
 
+use crate::finals::Finals;
 use crate::recording::RecordedFile;
 
 pub struct FinalJob {
-    pub session: String,
+    /// What the logs call it: the live session, or "upload".
+    pub label: String,
+    pub id: String,
     pub channels: Vec<(ChannelConfig, RecordedFile)>,
-    pub out: UnboundedSender<ServerMessage>,
+    /// The live session's connection; None for an upload.
+    pub out: Option<UnboundedSender<ServerMessage>>,
 }
 
-pub fn spawn(engine: Arc<Engine>) -> Sender<FinalJob> {
+pub fn spawn(engine: Arc<Engine>, finals: Arc<Finals>) -> Sender<FinalJob> {
     let (tx, rx) = channel::<FinalJob>();
     std::thread::Builder::new()
         .name("finalizer".into())
         .spawn(move || {
             while let Ok(job) = rx.recv() {
-                run(&engine, job);
+                run(&engine, &finals, job);
             }
         })
         .expect("could not start the finalizer thread");
     tx
 }
 
-fn run(engine: &Engine, job: FinalJob) {
+fn run(engine: &Engine, finals: &Finals, job: FinalJob) {
     let started = Instant::now();
     let channels = job
         .channels
@@ -47,29 +52,45 @@ fn run(engine: &Engine, job: FinalJob) {
             audio: Box::new(move || file.read()),
         })
         .collect();
-    let message = match engine.final_pass(channels) {
+    let state = match engine.final_pass(channels) {
         Ok(result) => {
             info!(
-                session = job.session,
+                session = job.label,
                 utterances = result.utterances.len(),
                 took_ms = started.elapsed().as_millis() as u64,
                 "final pass"
             );
-            ServerMessage::Final {
+            FinalState::Done {
                 utterances: result.utterances,
                 warnings: result.warnings,
             }
         }
         Err(error) => {
-            warn!(session = job.session, "final pass failed: {error:#}");
-            ServerMessage::Error {
+            warn!(session = job.label, "final pass failed: {error:#}");
+            FinalState::Failed {
                 message: format!("the final pass failed: {error:#}"),
             }
         }
     };
-    let failed = matches!(message, ServerMessage::Error { .. });
-    let _ = job.out.send(message);
-    if !failed {
-        let _ = job.out.send(ServerMessage::Done);
+    if let Some(out) = &job.out {
+        match &state {
+            FinalState::Done {
+                utterances,
+                warnings,
+            } => {
+                let _ = out.send(ServerMessage::Final {
+                    utterances: utterances.clone(),
+                    warnings: warnings.clone(),
+                });
+                let _ = out.send(ServerMessage::Done);
+            }
+            FinalState::Failed { message } => {
+                let _ = out.send(ServerMessage::Error {
+                    message: message.clone(),
+                });
+            }
+            FinalState::Running { .. } => {}
+        }
     }
+    finals.finish(&job.id, state);
 }

@@ -4,13 +4,37 @@
 //! arrives (on the session's clock, as the client sends it). The files are
 //! deleted when they are dropped: when the session ends without a final
 //! pass, when the connection is lost, and once the final pass has read them,
-//! whether it succeeded or not. Nothing else keeps a meeting's audio.
+//! whether it succeeded or not. A server that dies does not drop them:
+//! `clear_leftovers` deletes them when it starts again. Nothing else on the
+//! server keeps a meeting's audio.
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+
+/// Deletes the recordings a server that died left in `dir`: no session of
+/// this one owns them, and their clients upload their own copy.
+pub fn clear_leftovers(dir: &Path) -> Result<usize> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(error).with_context(|| format!("could not read {}", dir.display()));
+        }
+    };
+    let mut cleared = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "pcm") {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("could not delete {}", path.display()))?;
+            cleared += 1;
+        }
+    }
+    Ok(cleared)
+}
 
 pub struct Recording {
     files: Vec<(BufWriter<File>, RecordedFile)>,
@@ -105,6 +129,10 @@ mod tests {
         let path = recording.files[0].1.path.clone();
         drop(recording);
         assert!(!path.exists());
+        // Left by a server that died.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("old-0.pcm"), [0u8; 4]).unwrap();
+        assert_eq!(clear_leftovers(&dir).unwrap(), 1);
         let _ = std::fs::remove_dir(&dir);
     }
 }

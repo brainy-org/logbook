@@ -31,10 +31,11 @@ reads like brainy-worker's.
   can write, and brainy's permissions decide, not a service account.
 - logbook-server stays a transcription service with no knowledge of
   brainy and no credentials to keep: the same server could feed Galley.
-- Cost: the client must stay connected until the pass is done (seconds
-  to a few minutes); a lost connection loses the result, and the
-  recording is deleted anyway. If brainy refuses the page, the CLI saves
-  the Markdown next to the person instead of dropping it.
+- Cost, as first built: the client had to stay connected until the pass
+  was done; a lost connection lost the result. Replaced by
+  `2026-10-24-the-client-keeps-the-meeting.md`: the client keeps the
+  meeting until it is published, the pass has an id, a broken session
+  uploads the client's copy.
 
 ## The pass
 

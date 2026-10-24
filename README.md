@@ -12,7 +12,7 @@ a page in brainy. The desktop app is still to come.
 ## Quick start
 
 ```bash
-scripts/server.sh                          # terminal 1: wait for "listening on ws://127.0.0.1:3300/live"
+scripts/server.sh                          # terminal 1: wait for "listening on http://127.0.0.1:3300"
 scripts/client.sh play meeting.m4a         # terminal 2: a recording, at the pace of speech
 scripts/client.sh live --system            # the microphone and the call, until Ctrl-C
 ```
@@ -63,10 +63,32 @@ After Ctrl-C the live transcript finishes, then the server reads the
 whole meeting again (`--final`, implied by `--brainy`) and the CLI writes
 the page: who spoke (your name for the microphone, "Speaker 1", "Speaker
 2"… for the call), when, and what. Without `--parent` the page goes at the
-top of your default workspace. If brainy cannot be reached, the
-transcript is saved as `logbook-YYYYMMDD-HHMMSS.md` in the current folder.
-The token stays with the CLI; the server only keeps the meeting's audio
-until the final pass has read it.
+top of your default workspace.
+
+### When the network or the server fails
+
+A meeting with `--final` is also kept on your computer, in
+`pending/` under `LOGBOOK_DATA` (by default `logbook` in your data folder:
+`~/Library/Application Support/logbook` on macOS,
+`~/.local/share/logbook` on Linux), until its transcript is published:
+
+- the connection drops during the meeting: recording goes on, the CLI
+  connects again as soon as the server answers (no live text for what
+  was said in between), and at the end it uploads its own copy for the
+  final pass (14 MB an hour a channel);
+- the server cannot be reached at the end, the connection drops during
+  the final pass, or brainy refuses the page: the meeting stays pending
+  (with `transcript.md` once the transcript exists), and
+
+```bash
+scripts/client.sh finish            # every pending meeting; or: finish DIR
+```
+
+picks it up where it stopped. The token is never written: `finish` reads
+`BRAINY_TOKEN` again. The audio on your computer is deleted once the final
+transcript is back, the folder once it is published; the server keeps
+the audio only until the final pass has read it, and the result for an
+hour.
 
 ### The call's audio
 
@@ -91,7 +113,7 @@ headphones, say so (`--headphones`) and nothing is filtered.
 | `--latency` | `low` | diarization: `low` 1.04 s, `very-low` 0.64 s, `ultra-low` 0.32 s |
 | `--min-pause` | 0.5 | seconds of silence that close a phrase |
 | `--max-batch` | 16 | phrases per transcription call |
-| `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of sessions with a final pass, until it has run |
+| `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts |
 | `--diarize-max-seconds` | 7200 | longer recordings are not diarized in the final pass |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes

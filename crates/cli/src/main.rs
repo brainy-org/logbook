@@ -2,21 +2,27 @@
 //! of speech, `live` the microphone and what the computer plays, `bench`
 //! many files at once to find how many meetings a server keeps up with.
 //! With `--final` the server reads the whole meeting again once it ends;
-//! with `--brainy` the result becomes a page in brainy.
+//! with `--brainy` the result becomes a page in brainy. A meeting with a
+//! final pass is also kept here until it is published (pending.rs), and
+//! `finish` publishes the ones a lost server left behind.
 
 mod audio;
 mod brainy;
 mod client;
+mod pending;
 mod transcript;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use anyhow::{Context, Result};
-use chrono::{DateTime, Local};
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, FixedOffset, Local};
 use clap::{Parser, Subcommand};
 use logbook_engine::protocol::{ChannelConfig, Utterance};
+
+use crate::client::{Finalized, Pass, Server};
+use crate::pending::{Meeting, Pending, Saved, Spool};
 
 #[derive(Parser)]
 #[command(version, about = "Live meeting transcription")]
@@ -25,9 +31,13 @@ struct Cli {
         long,
         global = true,
         env = "LOGBOOK_SERVER",
-        default_value = "ws://127.0.0.1:3300/live"
+        default_value = "http://127.0.0.1:3300"
     )]
     server: String,
+    /// Where meetings wait until their transcript is published; by default
+    /// `logbook` in the user's data folder.
+    #[arg(long, global = true, env = "LOGBOOK_DATA")]
+    data: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -68,6 +78,17 @@ struct Publish {
 impl Publish {
     fn final_pass(&self) -> bool {
         self.final_pass || self.brainy
+    }
+
+    /// What is kept with a pending meeting: everything but the token.
+    fn saved(&self) -> Saved {
+        Saved {
+            brainy: self.brainy,
+            brainy_url: self.brainy_url.clone(),
+            parent: self.parent.clone(),
+            title: self.title.clone(),
+            me: self.me.clone(),
+        }
     }
 }
 
@@ -112,6 +133,16 @@ enum Command {
         #[command(flatten)]
         publish: Publish,
     },
+    /// Publish the meetings left pending (the server could not be reached,
+    /// or brainy refused the page): all of them, or the one in DIR.
+    Finish {
+        dir: Option<PathBuf>,
+        /// brainy's address, if not the one given when the meeting started.
+        #[arg(long, env = "BRAINY_URL")]
+        brainy_url: Option<String>,
+        #[arg(long, env = "BRAINY_TOKEN", hide_env_values = true)]
+        brainy_token: Option<String>,
+    },
     /// List the audio devices live can record from.
     Devices,
     /// Stream one recording as many sessions at once; report the latency.
@@ -131,13 +162,20 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let server = Server::new(&cli.server);
+    let data = match cli.data {
+        Some(dir) => dir,
+        None => dirs::data_dir()
+            .context("no data folder for this user: pass --data")?
+            .join("logbook"),
+    };
     match cli.command {
         Command::Play {
             file,
             speed,
             no_diarize,
             publish,
-        } => play(&cli.server, &file, speed, !no_diarize, &publish).await,
+        } => play(&server, &data, &file, speed, !no_diarize, &publish).await,
         Command::Live {
             system,
             no_mic,
@@ -154,7 +192,41 @@ async fn main() -> Result<()> {
             if system {
                 sources.push((audio::Source::System, system_device, true));
             }
-            live(&cli.server, sources, system && !headphones, &publish).await
+            live(&server, &data, sources, system && !headphones, &publish).await
+        }
+        Command::Finish {
+            dir,
+            brainy_url,
+            brainy_token,
+        } => {
+            let dirs = match dir {
+                Some(dir) => vec![dir],
+                None => Pending::list(&data)?,
+            };
+            if dirs.is_empty() {
+                eprintln!("no meeting is pending");
+            }
+            let brainy = Credentials {
+                url: brainy_url,
+                token: brainy_token,
+            };
+            let mut failed = 0;
+            for dir in dirs {
+                eprintln!("{}:", dir.display());
+                let result = async {
+                    let mut pending = Pending::open(&dir)?;
+                    finish(&server, &mut pending, &brainy).await
+                }
+                .await;
+                if let Err(error) = result {
+                    eprintln!("  {error:#}");
+                    failed += 1;
+                }
+            }
+            if failed > 0 {
+                bail!("{failed} meeting(s) still pending");
+            }
+            Ok(())
         }
         Command::Devices => {
             for line in audio::devices()? {
@@ -167,7 +239,7 @@ async fn main() -> Result<()> {
             sessions,
             stagger,
             no_diarize,
-        } => bench(&cli.server, &file, sessions, stagger, !no_diarize).await,
+        } => bench(&server, &file, sessions, stagger, !no_diarize).await,
     }
 }
 
@@ -200,17 +272,20 @@ fn print_live(start: Instant, speed: f64) -> impl FnMut(Utterance) {
     }
 }
 
-fn print_finalizing(audio_s: f64) {
-    eprintln!("reading the whole meeting again ({})…", clock(audio_s));
+/// The brainy address and token given now; the address falls back to the
+/// one saved with the meeting, the token is never saved.
+struct Credentials {
+    url: Option<String>,
+    token: Option<String>,
 }
 
-/// The final transcript: printed, or written to brainy. If brainy refuses
-/// it, it is saved next to you rather than lost.
+/// The final transcript: printed, or written to brainy.
 async fn publish(
-    p: &Publish,
-    started: DateTime<Local>,
-    finalized: client::Finalized,
-) -> Result<()> {
+    saved: &Saved,
+    brainy: &Credentials,
+    started: DateTime<FixedOffset>,
+    finalized: &Finalized,
+) -> Result<PublishOutcome> {
     let started_text = started.format("%Y-%m-%d %H:%M").to_string();
     let duration_s = finalized
         .utterances
@@ -220,47 +295,215 @@ async fn publish(
     let markdown = transcript::markdown(&transcript::Meeting {
         utterances: &finalized.utterances,
         warnings: &finalized.warnings,
-        me: &p.me,
+        me: &saved.me,
         started: &started_text,
         duration_s,
     });
-    if !p.brainy {
+    if !saved.brainy {
         println!("\n{markdown}");
-        return Ok(());
+        return Ok(PublishOutcome::Done);
     }
-    let title = p
+    let title = saved
         .title
         .clone()
         .unwrap_or_else(|| format!("Meeting {started_text}"));
     let written = async {
-        let url = p
-            .brainy_url
+        let url = brainy
+            .url
             .as_deref()
+            .or(saved.brainy_url.as_deref())
             .context("--brainy needs BRAINY_URL")?;
-        let token = p
-            .brainy_token
+        let token = brainy
+            .token
             .as_deref()
             .context("--brainy needs BRAINY_TOKEN")?;
         brainy::Brainy::new(url, token)?
-            .create_page(&title, p.parent.as_deref(), &markdown)
+            .create_page(&title, saved.parent.as_deref(), &markdown)
             .await
     }
     .await;
-    match written {
+    Ok(match written {
         Ok(url) => {
             eprintln!("written to brainy: {url}");
-            Ok(())
+            PublishOutcome::Done
         }
-        Err(error) => {
-            let file = format!("logbook-{}.md", started.format("%Y%m%d-%H%M%S"));
-            std::fs::write(&file, format!("# {title}\n\n{markdown}"))
-                .with_context(|| format!("could not save {file} either"))?;
-            Err(error.context(format!("not written to brainy; saved as {file}")))
+        Err(error) => PublishOutcome::Refused {
+            error,
+            markdown: format!("# {title}\n\n{markdown}"),
+        },
+    })
+}
+
+enum PublishOutcome {
+    Done,
+    /// brainy could not be written: the transcript, to keep.
+    Refused {
+        error: anyhow::Error,
+        markdown: String,
+    },
+}
+
+/// Brings a pending meeting to its end: its final pass (the server's
+/// result, the one it is running, or a new one over the audio kept here),
+/// then the transcript published and the folder removed. On any failure
+/// the folder stays, with whatever was reached, for `logbook finish`.
+async fn finish(server: &Server, pending: &mut Pending, brainy: &Credentials) -> Result<()> {
+    let kept = |error: anyhow::Error, dir: &Path| {
+        error.context(format!(
+            "the meeting is kept in {}; `logbook finish` tries again",
+            dir.display()
+        ))
+    };
+    let finalized = match pending.final_result()? {
+        Some(f) => f,
+        None => match final_pass(server, pending).await {
+            Ok(f) => {
+                pending.save_final(&f)?;
+                f
+            }
+            Err(error) => return Err(kept(error, &pending.dir)),
+        },
+    };
+    let started = DateTime::parse_from_rfc3339(&pending.meeting.started)
+        .context("meeting.json: started is not a date")?;
+    match publish(&pending.meeting.publish, brainy, started, &finalized).await? {
+        PublishOutcome::Done => pending.remove(),
+        PublishOutcome::Refused { error, markdown } => {
+            let file = pending.save_transcript(&markdown)?;
+            Err(kept(
+                error.context(format!(
+                    "not written to brainy; the transcript is {}",
+                    file.display()
+                )),
+                &pending.dir,
+            ))
         }
     }
 }
 
-async fn play(server: &str, file: &Path, speed: f64, diarize: bool, p: &Publish) -> Result<()> {
+async fn final_pass(server: &Server, pending: &mut Pending) -> Result<Finalized> {
+    if let Some(id) = pending.meeting.final_id.clone() {
+        eprintln!("waiting for the final pass…");
+        match client::poll(server, &id).await? {
+            Pass::Done(f) => return Ok(f),
+            Pass::Unknown => eprintln!("the server no longer has the final pass"),
+            Pass::Failed(message) => eprintln!("{message}"),
+        }
+        pending.set_final_id(None)?;
+    }
+    let audio = pending.audio()?;
+    let id = client::upload(server, pending.meeting.channels.clone(), audio).await?;
+    pending.set_final_id(Some(id.clone()))?;
+    eprintln!("reading the whole meeting again…");
+    match client::poll(server, &id).await? {
+        Pass::Done(f) => Ok(f),
+        Pass::Unknown => bail!("the server lost the final pass it had just started"),
+        Pass::Failed(message) => {
+            pending.set_final_id(None)?;
+            bail!("{message}")
+        }
+    }
+}
+
+/// A meeting being recorded: the audio of `audio` goes to the server, and,
+/// with a final pass, to a pending folder too. Returns when the audio ends
+/// and the meeting is finished.
+async fn meeting(
+    server: &Server,
+    data: &Path,
+    channels: Vec<ChannelConfig>,
+    p: &Publish,
+    mut audio: client::Audio,
+    on_utterance: impl FnMut(Utterance),
+) -> Result<()> {
+    let started = Local::now();
+    let mut pending = None;
+    let mut spool: Option<Spool> = None;
+    if p.final_pass() {
+        let meeting = Meeting {
+            started: started.to_rfc3339(),
+            channels: channels.clone(),
+            publish: p.saved(),
+            final_id: None,
+        };
+        let (created, writer) =
+            Pending::create(data, &started.format("%Y%m%d-%H%M%S").to_string(), meeting)?;
+        eprintln!("keeping the meeting in {}", created.dir.display());
+        pending = Some(created);
+        spool = Some(writer);
+    }
+    // Every frame is written here before it goes to the server.
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let tee = tokio::spawn(async move {
+        let mut failed = None;
+        while let Some((channel, samples)) = audio.recv().await {
+            if let Some(s) = &mut spool
+                && let Err(error) = s.write(channel as usize, &samples)
+            {
+                eprintln!("could not keep the meeting's audio: {error:#}");
+                failed = Some(error);
+                spool = None;
+            }
+            if tx.send((channel, samples)).is_err() {
+                break;
+            }
+        }
+        match (failed, spool) {
+            (Some(error), _) => Err(error),
+            (None, Some(s)) => s.finish(),
+            (None, None) => Ok(()),
+        }
+    });
+    let live = client::live(
+        server,
+        channels,
+        p.final_pass(),
+        rx,
+        on_utterance,
+        |audio_s, id| {
+            eprintln!("reading the whole meeting again ({})…", clock(audio_s));
+            // Kept at once: if this process dies now, `finish` fetches it.
+            if let Some(p) = &mut pending
+                && let Err(error) = p.set_final_id(Some(id.to_string()))
+            {
+                eprintln!("{error:#}");
+            }
+        },
+    )
+    .await;
+    let kept = tee.await?;
+    let Some(mut pending) = pending else {
+        if !live.intact {
+            bail!("the connection was lost: the live transcript has gaps");
+        }
+        return Ok(());
+    };
+    if let Some(f) = &live.finalized {
+        pending.save_final(f)?;
+    } else if live.final_id.is_some() {
+        pending.set_final_id(live.final_id)?;
+    } else if let Err(error) = kept {
+        eprintln!("the final pass reads only what was kept before: {error:#}");
+    }
+    finish(
+        server,
+        &mut pending,
+        &Credentials {
+            url: p.brainy_url.clone(),
+            token: p.brainy_token.clone(),
+        },
+    )
+    .await
+}
+
+async fn play(
+    server: &Server,
+    data: &Path,
+    file: &Path,
+    speed: f64,
+    diarize: bool,
+    p: &Publish,
+) -> Result<()> {
     let samples = Arc::new(audio::decode(file)?);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let channels = vec![ChannelConfig {
@@ -269,27 +512,15 @@ async fn play(server: &str, file: &Path, speed: f64, diarize: bool, p: &Publish)
         echo_of: None,
     }];
     let start = Instant::now();
-    let started = Local::now();
     tokio::spawn(audio::play(samples, speed, start, tx));
-    let finalized = client::run(
-        server,
-        channels,
-        p.final_pass(),
-        rx,
-        print_live(start, speed),
-        print_finalizing,
-    )
-    .await?;
-    match finalized {
-        Some(f) => publish(p, started, f).await,
-        None => Ok(()),
-    }
+    meeting(server, data, channels, p, rx, print_live(start, speed)).await
 }
 
 /// Each source is a channel: (what, which device, diarized).
 /// `echo`: the microphone may hear the system channel again.
 async fn live(
-    server: &str,
+    server: &Server,
+    data: &Path,
     sources: Vec<(audio::Source, Option<String>, bool)>,
     echo: bool,
     p: &Publish,
@@ -299,7 +530,6 @@ async fn live(
     let mut channels = Vec::new();
     // Every channel's sample 0, and what latencies are measured from.
     let start = Instant::now();
-    let started = Local::now();
     for (index, (source, device, diarize)) in sources.into_iter().enumerate() {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let name = audio::capture(source, device, index as u8, start, tx.clone(), stop_rx)?;
@@ -328,23 +558,11 @@ async fn live(
         eprintln!("stopping…");
         stop.lock().unwrap().clear();
     });
-    let finalized = client::run(
-        server,
-        channels,
-        p.final_pass(),
-        rx,
-        print_live(start, 1.0),
-        print_finalizing,
-    )
-    .await?;
-    match finalized {
-        Some(f) => publish(p, started, f).await,
-        None => Ok(()),
-    }
+    meeting(server, data, channels, p, rx, print_live(start, 1.0)).await
 }
 
 async fn bench(
-    server: &str,
+    server: &Server,
     file: &Path,
     sessions: usize,
     stagger: f64,
@@ -362,7 +580,7 @@ async fn bench(
     for i in 0..sessions {
         let samples = samples.clone();
         let results = results.clone();
-        let server = server.to_string();
+        let server = server.clone();
         let delay = std::time::Duration::from_secs_f64(stagger * i as f64);
         tasks.push(tokio::spawn(async move {
             tokio::time::sleep(delay).await;
@@ -374,7 +592,7 @@ async fn bench(
             }];
             let start = Instant::now();
             tokio::spawn(audio::play(samples, 1.0, start, tx));
-            client::run(
+            let live = client::live(
                 &server,
                 channels,
                 false,
@@ -385,10 +603,13 @@ async fn bench(
                         .unwrap()
                         .push((u.end, latency(start, 1.0, &u)));
                 },
-                |_| {},
+                |_, _| {},
             )
-            .await
-            .map(|_| ())
+            .await;
+            if !live.intact {
+                bail!("the connection was lost");
+            }
+            anyhow::Ok(())
         }));
     }
     let mut failed = 0;

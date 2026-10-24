@@ -22,6 +22,7 @@ use tracing::{info, warn};
 
 use crate::batcher::Job;
 use crate::finalizer::FinalJob;
+use crate::finals::Finals;
 use crate::recording::Recording;
 
 /// What every session shares.
@@ -29,6 +30,7 @@ pub struct Shared {
     pub engine: Arc<Engine>,
     pub batcher: Sender<Job>,
     pub finalizer: Sender<FinalJob>,
+    pub finals: Arc<Finals>,
     /// Where sessions with a final pass record their audio.
     pub recordings: PathBuf,
 }
@@ -215,13 +217,17 @@ pub fn run(
                 (_, Some(reason)) => Err(anyhow::anyhow!("the recording stopped: {reason}")),
                 (None, None) => Err(anyhow::anyhow!("nothing was recorded")),
             };
-            match files {
-                Ok(files) => {
-                    let _ = out.send(ServerMessage::Finalizing { audio_s: audio });
+            match files.and_then(|files| Ok((files, shared.finals.start(audio)?))) {
+                Ok((files, id)) => {
+                    let _ = out.send(ServerMessage::Finalizing {
+                        audio_s: audio,
+                        id: id.clone(),
+                    });
                     let job = FinalJob {
-                        session,
+                        label: session,
+                        id,
                         channels: configs.into_iter().zip(files).collect(),
-                        out,
+                        out: Some(out),
                     };
                     let _ = shared.finalizer.send(job);
                 }
