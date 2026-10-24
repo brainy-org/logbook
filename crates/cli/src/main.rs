@@ -6,6 +6,7 @@
 //! final pass is also kept here until it is published (pending.rs), and
 //! `finish` publishes the ones a lost server left behind.
 
+mod aec;
 mod audio;
 mod brainy;
 mod client;
@@ -126,10 +127,14 @@ enum Command {
         #[arg(long)]
         system_device: Option<String>,
         /// The microphone does not hear the speakers: keep every word it
-        /// hears. Without it, the call's words picked up by the microphone
-        /// are dropped as echo.
+        /// hears. Without it, the call is cancelled from the microphone
+        /// (aec.rs) and its words picked up anyway are dropped as echo.
         #[arg(long)]
         headphones: bool,
+        /// Do not cancel the call from the microphone (to compare): only
+        /// the server's word filter takes its echo out.
+        #[arg(long)]
+        no_aec: bool,
         #[command(flatten)]
         publish: Publish,
     },
@@ -183,6 +188,7 @@ async fn main() -> Result<()> {
             mic_device,
             system_device,
             headphones,
+            no_aec,
             publish,
         } => {
             let mut sources = Vec::new();
@@ -192,7 +198,12 @@ async fn main() -> Result<()> {
             if system {
                 sources.push((audio::Source::System, system_device, true));
             }
-            live(&server, &data, sources, system && !headphones, &publish).await
+            let echo = match (system && !no_mic && !headphones, no_aec) {
+                (false, _) => Echo::None,
+                (true, true) => Echo::Filter,
+                (true, false) => Echo::Cancel,
+            };
+            live(&server, &data, sources, echo, &publish).await
         }
         Command::Finish {
             dir,
@@ -516,13 +527,23 @@ async fn play(
     meeting(server, data, channels, p, rx, print_live(start, speed)).await
 }
 
+/// What the microphone hears of the system channel.
+#[derive(Clone, Copy, PartialEq)]
+enum Echo {
+    /// Nothing: headphones, or one of the two channels only.
+    None,
+    /// The call: the server drops its words from the mic's.
+    Filter,
+    /// The call: cancelled from the mic's audio first, then filtered.
+    Cancel,
+}
+
 /// Each source is a channel: (what, which device, diarized).
-/// `echo`: the microphone may hear the system channel again.
 async fn live(
     server: &Server,
     data: &Path,
     sources: Vec<(audio::Source, Option<String>, bool)>,
-    echo: bool,
+    echo: Echo,
     p: &Publish,
 ) -> Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -540,7 +561,7 @@ async fn live(
         eprintln!("{channel}: {name}");
         stops.push(stop_tx);
         let echo_of = match source {
-            audio::Source::Microphone if echo => Some("system".into()),
+            audio::Source::Microphone if echo != Echo::None => Some("system".into()),
             _ => None,
         };
         channels.push(ChannelConfig {
@@ -551,6 +572,13 @@ async fn live(
     }
     // The session stops when the last sender is gone: the capture threads'.
     drop(tx);
+    // The microphone is channel 0 and the system channel 1 when there are both.
+    let rx = if echo == Echo::Cancel {
+        eprintln!("cancelling the call's echo from the microphone");
+        aec::cancel(rx, 0, 1)
+    } else {
+        rx
+    };
     eprintln!("recording; Ctrl-C to stop");
     let stop = Mutex::new(stops);
     tokio::spawn(async move {

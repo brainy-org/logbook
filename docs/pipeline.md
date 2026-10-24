@@ -53,6 +53,12 @@ wait in the queue of each call.
 
 ## Echo
 
+Without headphones, the client first cancels the call from the mic's
+audio (AEC3, `crates/cli/src/aec.rs`,
+`docs/decisions/2026-10-24-echo-cancellation-on-the-client.md`): the
+server gets the mic mostly without the call. What is left is filtered by
+words.
+
 A channel with `echo_of` (the mic, when the client records the call too
 and the person has no headphones) is filtered against that channel
 (`crates/engine/src/echo.rs`). Its utterances are held until the other
@@ -66,8 +72,12 @@ over the call); an utterance without echo is untouched.
 - While the call speaks, the mic waits for the call's phrase to close
   (seconds); when the call is quiet, it leaves at once.
 - It compares words, so it fails where both copies are transcribed badly
-  and differently (a robotic synthetic voice left fragments); real echo
-  cancellation on the client is the step after.
+  and differently (a robotic synthetic voice left fragments), and it
+  cannot give back words of the person's that the call's covered: that
+  is the canceller's job.
+- `RUST_LOG=logbook_server=debug` logs every mic utterance with echo as
+  the filter saw it, the words it kept in [brackets]: the meeting's words,
+  in the server's log, only at debug.
 
 ## Final pass
 

@@ -18,7 +18,7 @@ use logbook_engine::echo::EchoFilter;
 use logbook_engine::parakeet::Transcript;
 use logbook_engine::protocol::{ChannelConfig, ServerMessage};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::batcher::Job;
 use crate::finalizer::FinalJob;
@@ -180,6 +180,10 @@ pub fn run(
             for (source, filter) in echo.iter_mut().flatten() {
                 for utterance in filter.release(channels[*source].settled()) {
                     let _ = out.send(ServerMessage::Utterance(utterance));
+                }
+                // The meeting's words: only at debug (RUST_LOG=debug).
+                for seen in filter.take_seen() {
+                    debug!(session, "echo: {seen}");
                 }
             }
             Ok(true)

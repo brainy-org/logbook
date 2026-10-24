@@ -97,10 +97,13 @@ speakers are told apart; the microphone stays "mic". macOS asks once for
 permission to record system audio (14.6 or later); Windows records the
 default output through WASAPI loopback; on Linux pick PipeWire's monitor
 with `--system-device "Monitor of"` (Windows and Linux not tried yet).
-Without headphones the microphone hears the call too: the server drops
-the call's words the microphone picked up (`docs/pipeline.md`, "Echo"),
-and while the call speaks your own words come a few seconds late. With
-headphones, say so (`--headphones`) and nothing is filtered.
+Without headphones the microphone hears the call too: the CLI cancels it
+from the microphone (WebRTC's echo canceller, as video calls do), and the
+server drops the call's words the microphone still picked up
+(`docs/pipeline.md`, "Echo"); while the call speaks your own words come a
+few seconds late. With headphones, say so (`--headphones`) and nothing is
+cancelled or filtered. `--no-aec` keeps only the server's filter, to
+compare.
 
 ### Server options
 

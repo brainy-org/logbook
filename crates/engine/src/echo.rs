@@ -27,6 +27,10 @@ const MEMORY: f64 = 30.0;
 pub struct EchoFilter {
     heard: VecDeque<Word>,
     held: VecDeque<Utterance>,
+    /// The mic's utterances that had echo, as the filter saw them: the
+    /// words it kept as the mic's own in [brackets]. For the server's debug
+    /// log (`take_seen`): what the filter drops is otherwise invisible.
+    seen: Vec<String>,
 }
 
 impl EchoFilter {
@@ -63,11 +67,30 @@ impl EchoFilter {
         out
     }
 
-    fn without_echo(&self, u: Utterance) -> Vec<Utterance> {
+    /// The utterances with echo seen since the last call.
+    pub fn take_seen(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.seen)
+    }
+
+    fn without_echo(&mut self, u: Utterance) -> Vec<Utterance> {
         let echoed: Vec<bool> = u.words.iter().map(|w| self.is_echo(w)).collect();
         if !echoed.contains(&true) {
             return vec![u];
         }
+        let seen: Vec<String> = u
+            .words
+            .iter()
+            .zip(&echoed)
+            .map(|(w, echo)| {
+                if *echo {
+                    w.w.clone()
+                } else {
+                    format!("[{}]", w.w)
+                }
+            })
+            .collect();
+        self.seen
+            .push(format!("{:.1}-{:.1} {}", u.start, u.end, seen.join(" ")));
         let mut out = Vec::new();
         let mut run: Vec<Word> = Vec::new();
         let close = |run: &mut Vec<Word>, out: &mut Vec<Utterance>| {

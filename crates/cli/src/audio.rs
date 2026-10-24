@@ -236,7 +236,12 @@ pub fn devices() -> Result<Vec<String>> {
 /// time elapsed is filled with silence; shorter ones are callback jitter.
 const MAX_GAP: f64 = 0.5;
 /// How often a channel whose device delivers nothing is checked.
-const IDLE_TICK: Duration = Duration::from_millis(200);
+const IDLE_TICK: Duration = Duration::from_millis(100);
+/// A device silent for longer than this is idle, not late: its channel is
+/// filled. Short, because the echo canceller holds the mic until the
+/// system channel has reached it (aec.rs): this is added to the mic's
+/// latency while nothing plays.
+const IDLE_AFTER: f64 = 0.25;
 /// How far behind the clock idle silence stops: room for the samples of a
 /// device that wakes up, which arrive late.
 const IDLE_MARGIN: f64 = 0.1;
@@ -270,11 +275,11 @@ impl Timeline {
     }
 
     /// Samples of silence to send at `now` when no audio has come for
-    /// longer than `MAX_GAP`: up to `IDLE_MARGIN` before `now`.
+    /// longer than `IDLE_AFTER`: up to `IDLE_MARGIN` before `now`.
     fn idle(&mut self, now: Instant) -> usize {
         let elapsed = now.saturating_duration_since(self.start).as_secs_f64();
         let due = (elapsed * SAMPLE_RATE as f64) as i64;
-        if ((due - self.sent as i64) as f64) <= MAX_GAP * SAMPLE_RATE as f64 {
+        if ((due - self.sent as i64) as f64) <= IDLE_AFTER * SAMPLE_RATE as f64 {
             return 0;
         }
         let to = ((elapsed - IDLE_MARGIN) * SAMPLE_RATE as f64) as i64;
@@ -341,10 +346,10 @@ mod tests {
     fn an_idle_device_still_moves_along_the_clock() {
         let start = Instant::now();
         let mut t = Timeline { start, sent: 0 };
-        assert_eq!(t.idle(start + Duration::from_millis(400)), 0);
+        assert_eq!(t.idle(start + Duration::from_millis(200)), 0);
         // Nothing for a second: silence up to 0.9 s.
         assert_eq!(t.idle(start + Duration::from_secs(1)), 14_400);
-        assert_eq!(t.idle(start + Duration::from_millis(1200)), 0);
+        assert_eq!(t.idle(start + Duration::from_millis(1100)), 0);
         // The device wakes up: its samples follow, no more silence.
         assert_eq!(t.gap(start + Duration::from_millis(1300), 1600), 0);
     }
