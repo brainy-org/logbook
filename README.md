@@ -19,11 +19,14 @@ scripts/client.sh live --system            # the microphone and the call, until 
 
 `scripts/server.sh` fetches libparakeet v0.6.1 for this platform into
 `vendor/` (Metal on Apple silicon, CUDA on Linux with `nvidia-smi`, CPU
-otherwise) and the models into the Hugging Face cache when they are
-missing (with the `hf` command; the files brainy-worker uses, so already
-there if brainy-worker has read a recording on this machine), then builds
-and starts the server; its arguments go to the server. `scripts/client.sh`
-builds the CLI and passes its arguments on, from the current folder.
+otherwise) and the models into `~/.cache/brainy-org/parakeet-741158ae`
+when they are missing, then builds and starts the server; its arguments
+go to the server. Both come from the mirror on ghcr.io/brainy-org
+(github.com/brainy-org/models: the files brainy-worker uses), fetched by
+sha256 with [oras](https://oras.land), which needs a login once:
+`gh auth token | oras login ghcr.io -u <user> --password-stdin`.
+`scripts/client.sh` builds the CLI and passes its arguments on, from the
+current folder.
 `play` and `bench` need ffmpeg on the PATH.
 
 ## Use
@@ -83,7 +86,7 @@ headphones, say so (`--headphones`) and nothing is filtered.
 |---|---|---|
 | `--listen` / `LOGBOOK_LISTEN` | `127.0.0.1:3300` | |
 | `--library` / `PARAKEET_LIB` | loader's search path | libparakeet |
-| `--models` / `LOGBOOK_MODELS` | brainy-worker's revision in the Hugging Face cache | folder of the GGUF files |
+| `--models` / `LOGBOOK_MODELS` | `~/.cache/brainy-org/parakeet-741158ae` | folder of the GGUF files |
 | `--diarization-contexts` | 2 | copies of the diarization model (about 110 MB each) |
 | `--latency` | `low` | diarization: `low` 1.04 s, `very-low` 0.64 s, `ultra-low` 0.32 s |
 | `--min-pause` | 0.5 | seconds of silence that close a phrase |

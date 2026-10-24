@@ -29,7 +29,7 @@ docs/            pipeline.md, protocol.md, decisions/
 ```bash
 cargo build && cargo test
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
-scripts/server.sh                     # PARAKEET_VERSION and MODELS_REVISION pinned inside
+scripts/server.sh                     # libparakeet and the models, by sha256, from the mirror
 scripts/client.sh play FILE           # or: live [--system], devices, bench FILE --sessions N
 ```
 
@@ -61,6 +61,9 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
 - **logbook-server holds no brainy credentials.** It returns the final
   transcript; the CLI writes the page with the person's own token
   (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).
-- **Same models as brainy-worker** (`MODELS_REVISION` = its
-  `audio_revision`): one download, one set of licences
+- **Same models as brainy-worker, from the same mirror**: the `parakeet`
+  bundle of github.com/brainy-org/models (its files' sha256 in
+  `scripts/server.sh`, the same as brainy-worker's `models.json`), and
+  libparakeet from its `libparakeet` bundle; nothing from GitHub releases or
+  Hugging Face. One set of licences
   (brainy-worker's `docs/decisions/2026-10-10-licences-of-code-and-weights.md`).

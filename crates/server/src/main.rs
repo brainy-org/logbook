@@ -27,9 +27,10 @@ use tracing::{info, warn};
 
 use crate::session::{Input, Shared};
 
-/// The revision of mudler/parakeet-cpp-gguf brainy-worker pins
-/// (`audio_revision`): the same files, already in the Hugging Face cache.
-const MODELS_REVISION: &str = "741158ae71e64ef5c89385862c18f777d07a97a1";
+/// Where scripts/server.sh puts the `parakeet` bundle of the mirror
+/// (github.com/brainy-org/models), under $HOME: the files brainy-worker
+/// loads, from mudler/parakeet-cpp-gguf at commit 741158ae.
+const MODELS_DIR: &str = ".cache/brainy-org/parakeet-741158ae";
 
 #[derive(Parser)]
 #[command(version, about = "Live transcription and diarization server")]
@@ -105,9 +106,7 @@ async fn main() -> Result<()> {
         Some(dir) => dir,
         None => {
             let home = std::env::var("HOME").context("HOME is not set: pass --models")?;
-            PathBuf::from(home)
-                .join(".cache/huggingface/hub/models--mudler--parakeet-cpp-gguf/snapshots")
-                .join(MODELS_REVISION)
+            PathBuf::from(home).join(MODELS_DIR)
         }
     };
     let options = Options {
