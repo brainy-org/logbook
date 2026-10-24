@@ -37,6 +37,16 @@ them in one call; a phrase never waits for a batch to fill. The log line
 `batch` gives the phrases, the audio, the compute time and the longest
 wait in the queue of each call.
 
+The model picks the language of each clip by itself (it takes no
+language hint: the `_lang` functions of the C API are for prompt models),
+and a short phrase alone can come out in another one: "Ma va là." read
+as "Mais voilà.", two people talking Italian shown as English and French.
+So each clip carries up to `--context` seconds (3) of the channel's audio
+before the phrase; the words centred before the previous phrase's end
+(by the VAD) are that phrase's again and are dropped
+(`Channel::ready`, `Phrase::boundary`;
+`docs/decisions/2026-10-24-audio-context-for-the-language.md`).
+
 ## Speakers
 
 - Each diarized channel has its own diarization stream; streams are

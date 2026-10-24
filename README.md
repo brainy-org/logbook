@@ -115,6 +115,7 @@ compare.
 | `--diarization-contexts` | 2 | copies of the diarization model (about 110 MB each) |
 | `--latency` | `low` | diarization: `low` 1.04 s, `very-low` 0.64 s, `ultra-low` 0.32 s |
 | `--min-pause` | 0.5 | seconds of silence that close a phrase |
+| `--context` | 3 | seconds of audio before a phrase transcribed with it, so that a short phrase keeps its language; 0 for none |
 | `--max-batch` | 16 | phrases per transcription call |
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--diarize-max-seconds` | 7200 | longer recordings are not diarized in the final pass |

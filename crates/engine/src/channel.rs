@@ -43,8 +43,18 @@ pub struct Clip {
 
 struct Phrase {
     id: u64,
+    /// The phrase, padded.
     start: f64,
     end: f64,
+    /// Where the clip starts: up to `context` before the phrase. The
+    /// transcript's times count from here.
+    audio_start: f64,
+    /// Where the VAD heard the previous phrase end: words centred before it
+    /// are that phrase's, transcribed again in the context only to give the
+    /// model the language and the sentence, and dropped. Not the phrase's
+    /// own start: word times run early after a silence (a first word at
+    /// 0.64-0.96 s for speech from 1.0 s), and would be cut.
+    boundary: f64,
     transcript: Option<Transcript>,
 }
 
@@ -58,6 +68,10 @@ pub struct Channel {
     buf_start: u64,
     fed: u64,
     phrasing: Phrasing,
+    /// Seconds of the audio before a phrase sent with it (`Options::context`).
+    context: f64,
+    /// Where the last phrase cut ended, by the VAD.
+    last_end: f64,
     turns: Vec<Turn>,
     phrases: VecDeque<Phrase>,
     next_id: u64,
@@ -79,6 +93,7 @@ impl Channel {
         vad: VadStream,
         diar: Option<DiarStream>,
         min_pause: f64,
+        context: f64,
     ) -> Self {
         Self {
             index,
@@ -89,6 +104,8 @@ impl Channel {
             buf_start: 0,
             fed: 0,
             phrasing: Phrasing::new(min_pause),
+            context: context.max(0.0),
+            last_end: f64::NEG_INFINITY,
             turns: Vec::new(),
             phrases: VecDeque::new(),
             next_id: 0,
@@ -180,10 +197,11 @@ impl Channel {
                 .words
                 .into_iter()
                 .map(|w| Word {
-                    start: w.start + phrase.start,
-                    end: w.end + phrase.start,
+                    start: w.start + phrase.audio_start,
+                    end: w.end + phrase.audio_start,
                     ..w
                 })
+                .filter(|w| (w.start + w.end) / 2.0 >= phrase.boundary)
                 .collect();
             if words.is_empty() {
                 continue;
@@ -216,16 +234,23 @@ impl Channel {
     fn cut(&mut self, start: f64, end: f64) -> Clip {
         let from = sample_at(start - CLIP_PAD).max(self.buf_start);
         let to = sample_at(end + CLIP_PAD).min(self.fed).max(from);
-        let samples =
-            self.buf[(from - self.buf_start) as usize..(to - self.buf_start) as usize].to_vec();
+        let audio_from = sample_at(start - CLIP_PAD - self.context)
+            .max(self.buf_start)
+            .min(from);
+        let samples = self.buf
+            [(audio_from - self.buf_start) as usize..(to - self.buf_start) as usize]
+            .to_vec();
         let id = self.next_id;
         self.next_id += 1;
         self.phrases.push_back(Phrase {
             id,
             start: seconds(from),
             end: seconds(to),
+            audio_start: seconds(audio_from),
+            boundary: self.last_end,
             transcript: None,
         });
+        self.last_end = end;
         Clip {
             channel: self.index,
             id,
@@ -234,7 +259,7 @@ impl Channel {
     }
 
     fn trim(&mut self) {
-        let keep_from = sample_at(self.phrasing.open.unwrap_or(self.time()) - KEEP);
+        let keep_from = sample_at(self.phrasing.open.unwrap_or(self.time()) - KEEP - self.context);
         if keep_from > self.buf_start {
             let drop = ((keep_from - self.buf_start) as usize).min(self.buf.len());
             self.buf.drain(..drop);

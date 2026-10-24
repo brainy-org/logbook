@@ -33,6 +33,10 @@ pub struct Options {
     /// Seconds of silence that close a phrase: shorter gives text sooner and
     /// shorter phrases, which the model reads with less context.
     pub min_pause: f64,
+    /// Seconds of the audio before a phrase transcribed with it and then
+    /// dropped: the model picks the language per clip, and a short phrase
+    /// alone ("Ma va là.") comes out in another one ("Mais voilà.").
+    pub context: f64,
     /// Recordings longer than this are not diarized in the final pass.
     pub diarize_max_seconds: f64,
 }
@@ -52,6 +56,7 @@ pub struct Engine {
     latency: Latency,
     vad_options: String,
     min_pause: f64,
+    context: f64,
 }
 
 impl Engine {
@@ -83,6 +88,7 @@ impl Engine {
             latency: options.latency,
             vad_options,
             min_pause: options.min_pause,
+            context: options.context,
         })
     }
 
@@ -96,7 +102,14 @@ impl Engine {
         } else {
             None
         };
-        Ok(Channel::new(index, config, vad, diar, self.min_pause))
+        Ok(Channel::new(
+            index,
+            config,
+            vad,
+            diar,
+            self.min_pause,
+            self.context,
+        ))
     }
 
     /// The final pass over recorded channels (final_pass.rs). Long: run it

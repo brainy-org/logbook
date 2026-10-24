@@ -72,6 +72,11 @@ struct Args {
     /// Seconds of silence that close a phrase.
     #[arg(long, default_value_t = 0.5)]
     min_pause: f64,
+    /// Seconds of the audio before a phrase transcribed with it (then
+    /// dropped), so that a short phrase is read in its language and
+    /// sentence; 0 for none. Each clip grows by up to this much.
+    #[arg(long, default_value_t = 3.0)]
+    context: f64,
     /// Phrases transcribed in one call at most.
     #[arg(long, default_value_t = 16)]
     max_batch: usize,
@@ -136,6 +141,7 @@ async fn main() -> Result<()> {
         diarization_contexts: args.diarization_contexts,
         latency: args.latency.into(),
         min_pause: args.min_pause,
+        context: args.context,
         diarize_max_seconds: args.diarize_max_seconds,
     };
     let recordings = args
