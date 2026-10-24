@@ -3,6 +3,7 @@
 //! logic of its own.
 
 pub mod channel;
+pub mod echo;
 pub mod parakeet;
 pub mod protocol;
 
@@ -31,6 +32,9 @@ pub struct Options {
     pub min_pause: f64,
 }
 
+/// The shortest pause the VAD reports.
+const VAD_MIN_PAUSE: f64 = 0.15;
+
 /// The models, loaded once and shared by every session.
 pub struct Engine {
     pub asr: Arc<Model>,
@@ -39,6 +43,7 @@ pub struct Engine {
     next: AtomicUsize,
     latency: Latency,
     vad_options: String,
+    min_pause: f64,
 }
 
 impl Engine {
@@ -49,11 +54,14 @@ impl Engine {
         let diarization = (0..options.diarization_contexts.max(1))
             .map(|_| Model::load(&lib, &options.diarization, Kind::Diarization))
             .collect::<Result<_>>()?;
+        // The VAD reports every pause from VAD_MIN_PAUSE on; which of them
+        // close a phrase is the channel's choice (`Phrasing`). speech_pad
+        // must stay at most min_pause / 2 in a stream.
         let vad_options = serde_json::json!({
             "threshold": 0.5,
-            "min_pause": options.min_pause,
+            "min_pause": VAD_MIN_PAUSE,
             "min_speech": 0.25,
-            "speech_pad": 0.1,
+            "speech_pad": 0.05,
         })
         .to_string();
         Ok(Self {
@@ -63,6 +71,7 @@ impl Engine {
             next: AtomicUsize::new(0),
             latency: options.latency,
             vad_options,
+            min_pause: options.min_pause,
         })
     }
 
@@ -76,6 +85,6 @@ impl Engine {
         } else {
             None
         };
-        Ok(Channel::new(index, config, vad, diar))
+        Ok(Channel::new(index, config, vad, diar, self.min_pause))
     }
 }

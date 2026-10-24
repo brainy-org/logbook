@@ -38,11 +38,17 @@ latency back to about 0.9 s.
 ## Echo
 
 Without headphones the microphone hears the speakers: every phrase of the
-call came twice, once per channel (same test, both channels). Not solved
-yet. The options:
+call came twice, once per channel (same test, both channels). The server
+now drops it by comparing words (`docs/pipeline.md`, "Echo"), which the
+shared clock makes possible. The options weighed:
 
 | What | For | Against |
 |---|---|---|
 | Echo cancellation on the client (Apple's VoiceProcessingIO, WebRTC AEC on Windows and Linux) | removes the call from the mic signal, keeps your voice while others speak | platform code per OS; cpal does not expose it |
-| Dropping on the server a mic phrase that overlaps a system phrase with nearly the same words | one place, every platform | needs the system channel to have caught up; loses your words spoken over theirs |
+| **Dropping on the server the mic's words that the call said at the same time** (chosen) | one place, every platform, no signal processing | holds the mic while the call speaks; fails where both copies are transcribed badly |
 | Asking for headphones | nothing to build | the person forgets |
+
+Measured with the 45 s Italian recording on the speakers: the natural
+voice's echo was dropped whole; the robotic voice, garbled differently on
+each channel, left three fragments. Client-side cancellation stays the
+step after, for the desktop app.

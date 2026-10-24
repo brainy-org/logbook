@@ -58,6 +58,11 @@ enum Command {
         /// Output device (or Linux monitor) by part of its name.
         #[arg(long)]
         system_device: Option<String>,
+        /// The microphone does not hear the speakers: keep every word it
+        /// hears. Without it, the call's words picked up by the microphone
+        /// are dropped as echo.
+        #[arg(long)]
+        headphones: bool,
     },
     /// List the audio devices live can record from.
     Devices,
@@ -90,6 +95,7 @@ async fn main() -> Result<()> {
             diarize_mic,
             mic_device,
             system_device,
+            headphones,
         } => {
             let mut sources = Vec::new();
             if !no_mic {
@@ -98,7 +104,7 @@ async fn main() -> Result<()> {
             if system {
                 sources.push((audio::Source::System, system_device, true));
             }
-            live(&cli.server, sources).await
+            live(&cli.server, sources, system && !headphones).await
         }
         Command::Devices => {
             for line in audio::devices()? {
@@ -138,6 +144,7 @@ async fn play(server: &str, file: &Path, speed: f64, diarize: bool) -> Result<()
     let channels = vec![ChannelConfig {
         name: "system".into(),
         diarize,
+        echo_of: None,
     }];
     let start = Instant::now();
     tokio::spawn(audio::play(samples, speed, start, tx));
@@ -154,7 +161,12 @@ async fn play(server: &str, file: &Path, speed: f64, diarize: bool) -> Result<()
 }
 
 /// Each source is a channel: (what, which device, diarized).
-async fn live(server: &str, sources: Vec<(audio::Source, Option<String>, bool)>) -> Result<()> {
+/// `echo`: the microphone may hear the system channel again.
+async fn live(
+    server: &str,
+    sources: Vec<(audio::Source, Option<String>, bool)>,
+    echo: bool,
+) -> Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut stops = Vec::new();
     let mut channels = Vec::new();
@@ -169,9 +181,14 @@ async fn live(server: &str, sources: Vec<(audio::Source, Option<String>, bool)>)
         };
         eprintln!("{channel}: {name}");
         stops.push(stop_tx);
+        let echo_of = match source {
+            audio::Source::Microphone if echo => Some("system".into()),
+            _ => None,
+        };
         channels.push(ChannelConfig {
             name: channel.into(),
             diarize,
+            echo_of,
         });
     }
     // The session stops when the last sender is gone: the capture threads'.
@@ -222,6 +239,7 @@ async fn bench(
             let channels = vec![ChannelConfig {
                 name: "system".into(),
                 diarize,
+                echo_of: None,
             }];
             let start = Instant::now();
             tokio::spawn(audio::play(samples, 1.0, start, tx));

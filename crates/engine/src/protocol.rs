@@ -16,6 +16,11 @@ pub struct ChannelConfig {
     /// Tell the speakers apart. Off for a channel that is one person (your
     /// own microphone with headphones), on for the call's audio or a room.
     pub diarize: bool,
+    /// The channel this one may hear again: "system" for a microphone near
+    /// the speakers. Its words that the other channel said at the same time
+    /// are dropped as echo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub echo_of: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

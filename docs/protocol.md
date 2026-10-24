@@ -12,7 +12,9 @@ One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
    ```
 
    `diarize` is per channel: off for one person (your microphone with
-   headphones), on for the call's audio or a room.
+   headphones), on for the call's audio or a room. `echo_of`, optional,
+   names the channel this one may hear again (`"system"` on a mic near
+   the speakers): its echoed words are dropped (docs/pipeline.md, "Echo").
 
 2. Binary frames, the audio: one byte, the channel's index in `channels`,
    then 16 kHz mono PCM, signed 16-bit little-endian. The CLI sends 100 ms
@@ -35,7 +37,8 @@ One WebSocket per meeting, at `ws://HOST:3300/live`. Types in
   Seconds from the channel's first sample. `speaker` is 0-based in order of
   appearance on that channel, `null` on a channel that is not diarized or
   for words no turn covers. Utterances of one channel arrive in order;
-  channels interleave freely.
+  channels interleave freely, and a channel with `echo_of` lags behind
+  the one it is filtered against.
 - `{"type":"done"}` after `stop`, once every phrase has been sent. The
   server then closes.
 - `{"type":"error","message":"..."}` ends the session.

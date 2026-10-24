@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use logbook_engine::Engine;
 use logbook_engine::channel::Channel;
+use logbook_engine::echo::EchoFilter;
 use logbook_engine::parakeet::Transcript;
 use logbook_engine::protocol::{ChannelConfig, ServerMessage};
 use tokio::sync::mpsc::UnboundedSender;
@@ -40,6 +41,7 @@ pub fn run(
     reply: Sender<Input>,
     out: UnboundedSender<ServerMessage>,
 ) {
+    let configs_echo: Vec<Option<String>> = configs.iter().map(|c| c.echo_of.clone()).collect();
     let mut channels: Vec<Channel> = match configs
         .into_iter()
         .enumerate()
@@ -54,6 +56,23 @@ pub fn run(
             return;
         }
     };
+    // For each channel that may hear another again: that one's index and the filter.
+    let mut echo: Vec<Option<(usize, EchoFilter)>> = Vec::new();
+    for (i, config) in configs_echo.iter().enumerate() {
+        let source = match config {
+            None => None,
+            Some(name) => match channels.iter().position(|c| c.name() == name) {
+                Some(j) if j != i => Some((j, EchoFilter::default())),
+                _ => {
+                    let _ = out.send(ServerMessage::Error {
+                        message: format!("echo_of names no other channel: {name:?}"),
+                    });
+                    return;
+                }
+            },
+        };
+        echo.push(source);
+    }
     let names: Vec<&str> = channels.iter().map(|c| c.name()).collect();
     info!(channels = ?names, "session started");
     let _ = out.send(ServerMessage::Ready);
@@ -101,8 +120,23 @@ pub fn run(
                 }
                 Some(Input::Closed) => return Ok(false),
             }
-            for channel in &mut channels {
-                for utterance in channel.ready()? {
+            for i in 0..channels.len() {
+                for utterance in channels[i].ready()? {
+                    for (source, filter) in echo.iter_mut().flatten() {
+                        if *source == i {
+                            filter.heard(&utterance);
+                        }
+                    }
+                    match &mut echo[i] {
+                        Some((_, filter)) => filter.hold(utterance),
+                        None => {
+                            let _ = out.send(ServerMessage::Utterance(utterance));
+                        }
+                    }
+                }
+            }
+            for (source, filter) in echo.iter_mut().flatten() {
+                for utterance in filter.release(channels[*source].settled()) {
                     let _ = out.send(ServerMessage::Utterance(utterance));
                 }
             }
@@ -122,7 +156,10 @@ pub fn run(
                 return;
             }
         }
-        if stopping && channels.iter().all(Channel::idle) {
+        if stopping
+            && channels.iter().all(Channel::idle)
+            && echo.iter().flatten().all(|(_, f)| f.is_empty())
+        {
             let audio = channels.iter().map(|c| c.time()).fold(0.0, f64::max);
             info!(audio_s = format!("{audio:.1}"), "session done");
             let _ = out.send(ServerMessage::Done);

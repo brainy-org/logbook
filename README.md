@@ -5,8 +5,8 @@ holds the models (parakeet.cpp: Silero VAD, NVIDIA parakeet-tdt-0.6b-v3,
 Nemotron-3-Diarization) and transcribes the audio that `logbook` streams
 to it, phrase by phrase, about a second after each is spoken.
 
-A prototype: a server and a CLI. The desktop app, echo cancellation and
-the final pass into brainy are still to come.
+A prototype: a server and a CLI. The desktop app and the final pass into
+brainy are still to come.
 
 ## Quick start
 
@@ -52,9 +52,11 @@ along it means the server does not keep up.
 speakers are told apart; the microphone stays "mic". macOS asks once for
 permission to record system audio (14.6 or later); Windows records the
 default output through WASAPI loopback; on Linux pick PipeWire's monitor
-with `--system-device "Monitor of"` (Windows and Linux not tried yet). Wear headphones: without them the
-microphone hears the call too and every phrase comes twice
-(`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
+with `--system-device "Monitor of"` (Windows and Linux not tried yet).
+Without headphones the microphone hears the call too: the server drops
+the call's words the microphone picked up (`docs/pipeline.md`, "Echo"),
+and while the call speaks your own words come a few seconds late. With
+headphones, say so (`--headphones`) and nothing is filtered.
 
 ### Server options
 

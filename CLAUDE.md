@@ -49,8 +49,9 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
 - **Every live channel is on the session's clock** (`Timeline`, cli
   `audio.rs`): sample 0 is the session's start, gaps are filled with
   silence. macOS's system tap delivers nothing while nothing plays; without
-  it the call's times drift from the mic's and pauses vanish
-  (`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
+  it the call's times drift from the mic's, pauses vanish, and the echo
+  filter (`echo.rs`, which matches words by time across channels) drops
+  nothing (`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
 - **Same models as brainy-worker** (`MODELS_REVISION` = its
   `audio_revision`): one download, one set of licences
   (brainy-worker's `docs/decisions/2026-10-10-licences-of-code-and-weights.md`).

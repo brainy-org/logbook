@@ -1,6 +1,7 @@
 //! One audio channel of a live session (docs/pipeline.md).
 //!
-//! The VAD stream closes a phrase at a pause; the phrase becomes a clip for
+//! The VAD stream reports speech and pauses; a pause long enough closes a
+//! phrase (`Phrasing`), and the phrase becomes a clip for
 //! the transcriber, which runs elsewhere, in batches across sessions. When
 //! its transcript comes back and diarization has caught up with the phrase's
 //! end, each word goes to the speaker whose turns overlap it most, and the
@@ -17,6 +18,13 @@ use crate::protocol::{ChannelConfig, Utterance};
 /// A phrase longer than this is cut where it stands: the model was trained on
 /// pieces of at most 30 s, and a listener waits for the whole phrase.
 const MAX_PHRASE: f64 = 20.0;
+/// Past this length a phrase closes at any pause the VAD reports, however
+/// short: continuous speech (a talk, a video) has few pauses of min_pause,
+/// and every word of a phrase waits for its end.
+const SOFT_PHRASE: f64 = 6.0;
+/// Audio added to both ends of a clip, beyond the VAD's own padding, so that
+/// a soft first or last sound is not cut.
+const CLIP_PAD: f64 = 0.1;
 /// Audio kept before the oldest point a clip may still start at: a VAD start
 /// is known min_speech late, and is padded by speech_pad.
 const KEEP: f64 = 2.0;
@@ -49,8 +57,7 @@ pub struct Channel {
     buf: Vec<f32>,
     buf_start: u64,
     fed: u64,
-    /// Start of the phrase being spoken.
-    open: Option<f64>,
+    phrasing: Phrasing,
     turns: Vec<Turn>,
     phrases: VecDeque<Phrase>,
     next_id: u64,
@@ -71,6 +78,7 @@ impl Channel {
         config: ChannelConfig,
         vad: VadStream,
         diar: Option<DiarStream>,
+        min_pause: f64,
     ) -> Self {
         Self {
             index,
@@ -80,7 +88,7 @@ impl Channel {
             buf: Vec::new(),
             buf_start: 0,
             fed: 0,
-            open: None,
+            phrasing: Phrasing::new(min_pause),
             turns: Vec::new(),
             phrases: VecDeque::new(),
             next_id: 0,
@@ -101,29 +109,15 @@ impl Channel {
     pub fn feed(&mut self, pcm: &[f32]) -> Result<Vec<Clip>> {
         self.buf.extend_from_slice(pcm);
         self.fed += pcm.len() as u64;
-        let mut clips = Vec::new();
+        let mut cuts = Vec::new();
         for event in self.vad.feed(pcm, false)? {
-            match event.edge {
-                VadEdge::Start => {
-                    self.open.get_or_insert(event.time);
-                }
-                VadEdge::End => {
-                    if let Some(start) = self.open.take() {
-                        clips.push(self.cut(start, event.time));
-                    }
-                }
-            }
+            self.phrasing.event(event.edge, event.time, &mut cuts);
         }
-        let now = self.time();
-        if let Some(start) = self.open
-            && now - start >= MAX_PHRASE
-        {
-            clips.push(self.cut(start, now));
-            self.open = Some(now);
-        }
+        self.phrasing.tick(self.time(), &mut cuts);
         if let Some(diar) = &mut self.diar {
             self.turns.extend(diar.feed(pcm, false)?);
         }
+        let clips = cuts.into_iter().map(|(s, e)| self.cut(s, e)).collect();
         self.trim();
         Ok(clips)
     }
@@ -131,27 +125,16 @@ impl Channel {
     /// The end of the audio: closes the phrase being spoken and flushes
     /// diarization. Phrases no longer wait for it.
     pub fn finish(&mut self) -> Result<Vec<Clip>> {
-        let mut clips = Vec::new();
+        let mut cuts = Vec::new();
         for event in self.vad.feed(&[], true)? {
-            match event.edge {
-                VadEdge::Start => {
-                    self.open.get_or_insert(event.time);
-                }
-                VadEdge::End => {
-                    if let Some(start) = self.open.take() {
-                        clips.push(self.cut(start, event.time));
-                    }
-                }
-            }
+            self.phrasing.event(event.edge, event.time, &mut cuts);
         }
-        if let Some(start) = self.open.take() {
-            clips.push(self.cut(start, self.time()));
-        }
+        self.phrasing.finish(self.time(), &mut cuts);
         if let Some(diar) = &mut self.diar {
             self.turns.extend(diar.feed(&[], true)?);
         }
         self.finished = true;
-        Ok(clips)
+        Ok(cuts.into_iter().map(|(s, e)| self.cut(s, e)).collect())
     }
 
     /// A transcript for one of this channel's clips; a failed one is kept as
@@ -165,6 +148,19 @@ impl Channel {
     /// Nothing is waiting for a transcript or for diarization.
     pub fn idle(&self) -> bool {
         self.phrases.is_empty()
+    }
+
+    /// Every utterance of this channel that ends before this time has been
+    /// sent: what is still to come starts at it or later.
+    pub fn settled(&self) -> f64 {
+        if self.finished && self.phrases.is_empty() {
+            return f64::INFINITY;
+        }
+        self.phrases
+            .front()
+            .map(|p| p.start)
+            .or(self.phrasing.open)
+            .unwrap_or(self.time())
     }
 
     /// The utterances of the phrases that can leave now, in order.
@@ -211,15 +207,15 @@ impl Channel {
             .phrases
             .front()
             .map(|p| p.start)
-            .or(self.open)
+            .or(self.phrasing.open)
             .unwrap_or(self.time());
         self.turns.retain(|t| t.end >= oldest - TURN_MEMORY);
         Ok(out)
     }
 
     fn cut(&mut self, start: f64, end: f64) -> Clip {
-        let from = sample_at(start).max(self.buf_start);
-        let to = sample_at(end).min(self.fed).max(from);
+        let from = sample_at(start - CLIP_PAD).max(self.buf_start);
+        let to = sample_at(end + CLIP_PAD).min(self.fed).max(from);
         let samples =
             self.buf[(from - self.buf_start) as usize..(to - self.buf_start) as usize].to_vec();
         let id = self.next_id;
@@ -238,12 +234,97 @@ impl Channel {
     }
 
     fn trim(&mut self) {
-        let keep_from = sample_at(self.open.unwrap_or(self.time()) - KEEP);
+        let keep_from = sample_at(self.phrasing.open.unwrap_or(self.time()) - KEEP);
         if keep_from > self.buf_start {
             let drop = ((keep_from - self.buf_start) as usize).min(self.buf.len());
             self.buf.drain(..drop);
             self.buf_start += drop as u64;
         }
+    }
+}
+
+/// Where phrases start and end, from the VAD's speech regions. The VAD
+/// reports every pause of its own min_pause (short); a phrase closes at a
+/// pause of `min_pause`, or at any pause once it is SOFT_PHRASE long, or is
+/// cut at MAX_PHRASE.
+struct Phrasing {
+    min_pause: f64,
+    /// Start of the phrase being spoken.
+    open: Option<f64>,
+    /// End of its last speech, while it is in a pause.
+    last_end: Option<f64>,
+    in_speech: bool,
+}
+
+impl Phrasing {
+    fn new(min_pause: f64) -> Self {
+        Self {
+            min_pause,
+            open: None,
+            last_end: None,
+            in_speech: false,
+        }
+    }
+
+    /// The pause that closes a phrase from `start` whose speech ended at `end`.
+    fn pause_needed(&self, start: f64, end: f64) -> f64 {
+        if end - start >= SOFT_PHRASE {
+            0.0
+        } else {
+            self.min_pause
+        }
+    }
+
+    fn event(&mut self, edge: VadEdge, time: f64, cuts: &mut Vec<(f64, f64)>) {
+        match edge {
+            VadEdge::Start => {
+                if let (Some(start), Some(end)) = (self.open, self.last_end)
+                    && time - end >= self.pause_needed(start, end)
+                {
+                    cuts.push((start, end));
+                    self.open = None;
+                }
+                self.open.get_or_insert(time);
+                self.last_end = None;
+                self.in_speech = true;
+            }
+            VadEdge::End => {
+                if self.open.is_some() {
+                    self.last_end = Some(time);
+                }
+                self.in_speech = false;
+            }
+        }
+    }
+
+    fn tick(&mut self, now: f64, cuts: &mut Vec<(f64, f64)>) {
+        match (self.open, self.last_end) {
+            (Some(start), Some(end)) if !self.in_speech => {
+                if now - end >= self.pause_needed(start, end) {
+                    cuts.push((start, end));
+                    self.open = None;
+                    self.last_end = None;
+                }
+            }
+            (Some(start), _) if self.in_speech && now - start >= MAX_PHRASE => {
+                cuts.push((start, now));
+                self.open = Some(now);
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(&mut self, now: f64, cuts: &mut Vec<(f64, f64)>) {
+        if let Some(start) = self.open.take() {
+            let end = if self.in_speech {
+                now
+            } else {
+                self.last_end.unwrap_or(now)
+            };
+            cuts.push((start, end));
+        }
+        self.last_end = None;
+        self.in_speech = false;
     }
 }
 
@@ -316,6 +397,57 @@ mod tests {
             end,
             conf: 1.0,
         }
+    }
+
+    fn phrases(events: &[(VadEdge, f64)], ticks: &[f64]) -> Vec<(f64, f64)> {
+        let mut p = Phrasing::new(0.5);
+        let mut cuts = Vec::new();
+        let mut ticks = ticks.iter().peekable();
+        for &(edge, time) in events {
+            while let Some(&&t) = ticks.peek()
+                && t < time
+            {
+                p.tick(t, &mut cuts);
+                ticks.next();
+            }
+            p.event(edge, time, &mut cuts);
+        }
+        for &t in ticks {
+            p.tick(t, &mut cuts);
+        }
+        cuts
+    }
+
+    #[test]
+    fn a_short_pause_does_not_close_a_short_phrase() {
+        use VadEdge::*;
+        let cuts = phrases(
+            &[(Start, 1.0), (End, 2.0), (Start, 2.3), (End, 3.0)],
+            &[2.2, 3.4, 3.6],
+        );
+        assert_eq!(cuts, vec![(1.0, 3.0)]);
+    }
+
+    #[test]
+    fn a_long_phrase_closes_at_any_pause() {
+        use VadEdge::*;
+        let cuts = phrases(
+            &[(Start, 1.0), (End, 7.5), (Start, 7.7), (End, 9.0)],
+            &[7.6, 9.6],
+        );
+        assert_eq!(cuts, vec![(1.0, 7.5), (7.7, 9.0)]);
+    }
+
+    #[test]
+    fn speech_without_pauses_is_cut_at_the_cap() {
+        let mut p = Phrasing::new(0.5);
+        let mut cuts = Vec::new();
+        p.event(VadEdge::Start, 1.0, &mut cuts);
+        p.tick(15.0, &mut cuts);
+        assert!(cuts.is_empty());
+        p.tick(21.0, &mut cuts);
+        p.finish(25.0, &mut cuts);
+        assert_eq!(cuts, vec![(1.0, 21.0), (21.0, 25.0)]);
     }
 
     #[test]
