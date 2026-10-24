@@ -35,6 +35,16 @@ before the new samples. Measured again: the clip's first phrase at 2.6 s,
 the microphone's and the system's copies of a phrase at the same second,
 latency back to about 0.9 s.
 
+Filling the gap when the next samples arrive was not enough: in a
+meeting where nothing played (the person talking in a room, `live
+--system`), the system channel stayed at second 0 until Ctrl-C, and the
+echo filter, which holds the mic's words until the system channel has
+passed them, held every one: the mic's text came 70–80 s late, all at
+the end. The capture thread now also wakes every 200 ms and, when its
+device has delivered nothing for 0.5 s, sends silence up to 0.1 s before
+now (`Timeline::idle`). Measured: both channels' files grew alike with
+nothing playing, and the mic's phrases came at +1.1–2.6 s.
+
 ## Echo
 
 Without headphones the microphone hears the speakers: every phrase of the

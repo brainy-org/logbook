@@ -5,25 +5,37 @@
 //! deleted when they are dropped: when the session ends without a final
 //! pass, when the connection is lost, and once the final pass has read them,
 //! whether it succeeded or not. A server that dies does not drop them:
-//! `clear_leftovers` deletes them when it starts again. Nothing else on the
+//! `claim` deletes them when it starts again. Nothing else on the
 //! server keeps a meeting's audio.
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
-/// Deletes the recordings a server that died left in `dir`: no session of
-/// this one owns them, and their clients upload their own copy.
-pub fn clear_leftovers(dir: &Path) -> Result<usize> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => {
-            return Err(error).with_context(|| format!("could not read {}", dir.display()));
-        }
-    };
+/// Takes `dir` for this server, and deletes the recordings a server that
+/// died left there: no session of this one owns them, and their clients
+/// upload their own copy. The folder is held while the returned file is
+/// open; a second server on it is refused, before it deletes the first
+/// one's live recordings.
+pub fn claim(dir: &Path) -> Result<(File, usize)> {
+    std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
+    let path = dir.join(".lock");
+    let lock = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("could not open {}", path.display()))?;
+    if lock.try_lock().is_err() {
+        bail!(
+            "another logbook-server records in {}: give each its own --recordings",
+            dir.display()
+        );
+    }
+    let entries =
+        std::fs::read_dir(dir).with_context(|| format!("could not read {}", dir.display()))?;
     let mut cleared = 0;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -33,7 +45,7 @@ pub fn clear_leftovers(dir: &Path) -> Result<usize> {
             cleared += 1;
         }
     }
-    Ok(cleared)
+    Ok((lock, cleared))
 }
 
 pub struct Recording {
@@ -129,10 +141,14 @@ mod tests {
         let path = recording.files[0].1.path.clone();
         drop(recording);
         assert!(!path.exists());
-        // Left by a server that died.
-        std::fs::create_dir_all(&dir).unwrap();
+        // Left by a server that died; and a second server on the folder.
         std::fs::write(dir.join("old-0.pcm"), [0u8; 4]).unwrap();
-        assert_eq!(clear_leftovers(&dir).unwrap(), 1);
-        let _ = std::fs::remove_dir(&dir);
+        let (lock, cleared) = claim(&dir).unwrap();
+        assert_eq!(cleared, 1);
+        std::fs::write(dir.join("live-0.pcm"), [0u8; 4]).unwrap();
+        assert!(claim(&dir).is_err());
+        assert!(dir.join("live-0.pcm").exists());
+        drop(lock);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

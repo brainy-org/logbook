@@ -3,7 +3,8 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -83,6 +84,7 @@ pub fn capture(
 ) -> Result<String> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<String>>();
     std::thread::spawn(move || {
+        let timeline = Arc::new(Mutex::new(Timeline { start, sent: 0 }));
         let started = (|| -> Result<(cpal::Stream, String)> {
             let device = pick(source, device.as_deref())?;
             let name = device_name(&device);
@@ -97,13 +99,13 @@ pub fn capture(
             let config: cpal::StreamConfig = supported.into();
             let stream = match format {
                 cpal::SampleFormat::F32 => {
-                    record::<f32>(&device, config, channel, start, tx, source)?
+                    record::<f32>(&device, config, channel, &timeline, tx.clone(), source)?
                 }
                 cpal::SampleFormat::I16 => {
-                    record::<i16>(&device, config, channel, start, tx, source)?
+                    record::<i16>(&device, config, channel, &timeline, tx.clone(), source)?
                 }
                 cpal::SampleFormat::I32 => {
-                    record::<i32>(&device, config, channel, start, tx, source)?
+                    record::<i32>(&device, config, channel, &timeline, tx.clone(), source)?
                 }
                 other => bail!("{name} records {other:?}, which is not supported"),
             };
@@ -113,7 +115,14 @@ pub fn capture(
         match started {
             Ok((stream, name)) => {
                 let _ = ready_tx.send(Ok(name));
-                let _ = stop.recv();
+                // A device that delivers nothing (an idle output) still
+                // moves along the clock: silence, every IDLE_TICK.
+                while let Err(RecvTimeoutError::Timeout) = stop.recv_timeout(IDLE_TICK) {
+                    let silence = timeline.lock().unwrap().idle(Instant::now());
+                    if silence > 0 {
+                        let _ = tx.send((channel, vec![0; silence]));
+                    }
+                }
                 drop(stream);
             }
             Err(error) => {
@@ -131,7 +140,7 @@ fn record<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     channel: u8,
-    start: Instant,
+    timeline: &Arc<Mutex<Timeline>>,
     tx: UnboundedSender<(u8, Vec<i16>)>,
     source: Source,
 ) -> Result<cpal::Stream>
@@ -141,7 +150,7 @@ where
 {
     let channels = config.channels as usize;
     let mut resampler = Resampler::new(config.sample_rate as f64, SAMPLE_RATE as f64);
-    let mut timeline = Timeline { start, sent: 0 };
+    let timeline = timeline.clone();
     Ok(device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
@@ -156,7 +165,7 @@ where
             if out.is_empty() {
                 return;
             }
-            let silence = timeline.gap(Instant::now(), out.len());
+            let silence = timeline.lock().unwrap().gap(Instant::now(), out.len());
             if silence > 0 {
                 let _ = tx.send((channel, vec![0; silence]));
             }
@@ -226,12 +235,19 @@ pub fn devices() -> Result<Vec<String>> {
 /// A gap longer than this between the samples a channel has sent and the
 /// time elapsed is filled with silence; shorter ones are callback jitter.
 const MAX_GAP: f64 = 0.5;
+/// How often a channel whose device delivers nothing is checked.
+const IDLE_TICK: Duration = Duration::from_millis(200);
+/// How far behind the clock idle silence stops: room for the samples of a
+/// device that wakes up, which arrive late.
+const IDLE_MARGIN: f64 = 0.1;
 
 /// Keeps a channel on the session's clock. macOS stops an output device
 /// when nothing plays, and its process tap then delivers nothing, not
 /// silence: the system channel would start at the first sound and lose
 /// every quiet stretch, its times drifting from the microphone's, and the
-/// VAD would never see the pause that closes a phrase.
+/// VAD would never see the pause that closes a phrase. Nor would the
+/// channel move while nothing plays: the echo filter, which holds the mic's
+/// words until the system channel has passed them, would hold them all.
 /// (docs/decisions/2026-10-24-system-audio-through-cpal.md)
 struct Timeline {
     start: Instant,
@@ -250,6 +266,20 @@ impl Timeline {
             0
         };
         self.sent += (silence + n) as u64;
+        silence
+    }
+
+    /// Samples of silence to send at `now` when no audio has come for
+    /// longer than `MAX_GAP`: up to `IDLE_MARGIN` before `now`.
+    fn idle(&mut self, now: Instant) -> usize {
+        let elapsed = now.saturating_duration_since(self.start).as_secs_f64();
+        let due = (elapsed * SAMPLE_RATE as f64) as i64;
+        if ((due - self.sent as i64) as f64) <= MAX_GAP * SAMPLE_RATE as f64 {
+            return 0;
+        }
+        let to = ((elapsed - IDLE_MARGIN) * SAMPLE_RATE as f64) as i64;
+        let silence = (to - self.sent as i64).max(0) as usize;
+        self.sent += silence as u64;
         silence
     }
 }
@@ -305,6 +335,18 @@ mod tests {
         let silence = t.gap(start + Duration::from_millis(5400), 1600);
         assert_eq!(t.sent, 5400 * 16);
         assert!(silence > 40_000, "{silence}");
+    }
+
+    #[test]
+    fn an_idle_device_still_moves_along_the_clock() {
+        let start = Instant::now();
+        let mut t = Timeline { start, sent: 0 };
+        assert_eq!(t.idle(start + Duration::from_millis(400)), 0);
+        // Nothing for a second: silence up to 0.9 s.
+        assert_eq!(t.idle(start + Duration::from_secs(1)), 14_400);
+        assert_eq!(t.idle(start + Duration::from_millis(1200)), 0);
+        // The device wakes up: its samples follow, no more silence.
+        assert_eq!(t.gap(start + Duration::from_millis(1300), 1600), 0);
     }
 
     #[test]

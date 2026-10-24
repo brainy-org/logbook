@@ -54,10 +54,12 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
   before then gives its words the speaker of an earlier turn.
 - **Every live channel is on the session's clock** (`Timeline`, cli
   `audio.rs`): sample 0 is the session's start, gaps are filled with
-  silence. macOS's system tap delivers nothing while nothing plays; without
-  it the call's times drift from the mic's, pauses vanish, and the echo
-  filter (`echo.rs`, which matches words by time across channels) drops
-  nothing (`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
+  silence, and a device that delivers nothing still moves along the clock
+  (`Timeline::idle`). macOS's system tap delivers nothing while nothing
+  plays; without it the call's times drift from the mic's, pauses vanish,
+  the echo filter (`echo.rs`, which matches words by time across
+  channels) drops nothing, and with nothing playing it holds every mic
+  word until the end (`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
 - **On the server, a meeting's audio lives only in a `RecordedFile`, which
   deletes itself when dropped** (after the final pass, whatever its
   outcome; at a session without one; at a lost connection), or is cleared

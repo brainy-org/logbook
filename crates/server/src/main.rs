@@ -135,7 +135,8 @@ async fn main() -> Result<()> {
     let recordings = args
         .recordings
         .unwrap_or_else(|| std::env::temp_dir().join("logbook-recordings"));
-    let cleared = recording::clear_leftovers(&recordings)?;
+    // Held until the server exits.
+    let (_lock, cleared) = recording::claim(&recordings)?;
     if cleared > 0 {
         info!(cleared, "deleted the recordings of a server that died");
     }

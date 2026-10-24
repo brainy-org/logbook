@@ -113,7 +113,7 @@ headphones, say so (`--headphones`) and nothing is filtered.
 | `--latency` | `low` | diarization: `low` 1.04 s, `very-low` 0.64 s, `ultra-low` 0.32 s |
 | `--min-pause` | 0.5 | seconds of silence that close a phrase |
 | `--max-batch` | 16 | phrases per transcription call |
-| `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts |
+| `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--diarize-max-seconds` | 7200 | longer recordings are not diarized in the final pass |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes
