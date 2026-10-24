@@ -8,39 +8,33 @@ to it, phrase by phrase, about a second after each is spoken.
 A prototype: a server and a CLI. The desktop app, echo cancellation and
 the final pass into brainy are still to come.
 
-## Setup
+## Quick start
 
-1. **libparakeet** v0.6.1 for your platform from
-   [the releases](https://github.com/mudler/parakeet.cpp/releases/tag/v0.6.1)
-   (`parakeet-v0.6.1-lib-<platform>`), into `vendor/`:
+```bash
+scripts/server.sh                          # terminal 1: wait for "listening on ws://127.0.0.1:3300/live"
+scripts/client.sh play meeting.m4a         # terminal 2: a recording, at the pace of speech
+scripts/client.sh live --system            # the microphone and the call, until Ctrl-C
+```
 
-   ```bash
-   mkdir -p vendor && cd vendor
-   curl -fsSLO https://github.com/mudler/parakeet.cpp/releases/download/v0.6.1/parakeet-v0.6.1-lib-macos-metal-arm64.tar.gz
-   tar xzf parakeet-v0.6.1-lib-macos-metal-arm64.tar.gz --strip-components=1
-   ```
-
-2. **The models**, the files brainy-worker uses (already there if
-   brainy-worker has read a recording on this machine):
-
-   ```bash
-   hf download mudler/parakeet-cpp-gguf tdt-0.6b-v3-q8_0.gguf silero-vad-f16.gguf \
-     nemotron-3-diarization-q8_0.gguf --revision 741158ae71e64ef5c89385862c18f777d07a97a1
-   ```
-
-3. **ffmpeg** on the PATH, for `logbook play` and `bench`.
+`scripts/server.sh` fetches libparakeet v0.6.1 for this platform into
+`vendor/` (Metal on Apple silicon, CUDA on Linux with `nvidia-smi`, CPU
+otherwise) and the models into the Hugging Face cache when they are
+missing (with the `hf` command; the files brainy-worker uses, so already
+there if brainy-worker has read a recording on this machine), then builds
+and starts the server; its arguments go to the server. `scripts/client.sh`
+builds the CLI and passes its arguments on, from the current folder.
+`play` and `bench` need ffmpeg on the PATH.
 
 ## Use
 
 ```bash
-PARAKEET_LIB=vendor/libparakeet.dylib cargo run --release -p logbook-server
-
-cargo run --release -p logbook -- play meeting.m4a       # a recording, at the pace of speech
-cargo run --release -p logbook -- live                   # the microphone, until Ctrl-C
-cargo run --release -p logbook -- live --system          # the microphone and the call
-cargo run --release -p logbook -- live --diarize-mic     # the microphone in a room
-cargo run --release -p logbook -- devices                # what live can record from
-cargo run --release -p logbook -- bench meeting.m4a --sessions 8
+scripts/client.sh play meeting.m4a        # a recording, at the pace of speech
+scripts/client.sh live                    # the microphone, until Ctrl-C
+scripts/client.sh live --system           # the microphone and the call
+scripts/client.sh live --system --no-mic  # only the call
+scripts/client.sh live --diarize-mic      # the microphone in a room
+scripts/client.sh devices                 # what live can record from
+scripts/client.sh bench meeting.m4a --sessions 8
 ```
 
 ```

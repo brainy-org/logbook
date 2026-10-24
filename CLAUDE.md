@@ -17,7 +17,8 @@ crates/server/   logbook-server: WebSocket /live (axum), a thread per session,
                  one batcher thread for every transcription      → docs/protocol.md
 crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
                  with --system, the call), devices, bench (many sessions at once)
-vendor/          libparakeet for this machine (not committed): README.md, "Setup"
+scripts/         server.sh (fetches libparakeet and the models, runs the server), client.sh
+vendor/          libparakeet for this machine, fetched by scripts/server.sh (not committed)
 docs/            pipeline.md, protocol.md, decisions/
 ```
 
@@ -26,8 +27,8 @@ docs/            pipeline.md, protocol.md, decisions/
 ```bash
 cargo build && cargo test
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
-PARAKEET_LIB=vendor/libparakeet.dylib cargo run --release -p logbook-server
-cargo run --release -p logbook -- play FILE          # or: live, bench FILE --sessions N
+scripts/server.sh                     # PARAKEET_VERSION and MODELS_REVISION pinned inside
+scripts/client.sh play FILE           # or: live [--system], devices, bench FILE --sessions N
 ```
 
 ## Invariants
