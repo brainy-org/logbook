@@ -24,7 +24,8 @@ crates/server/   logbook-server: WebSocket /live and HTTP /finals (axum), a thre
                  by id (finals.rs), the threads that ask the clean-up model
                  (polisher.rs)                                     → docs/protocol.md
 crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
-                 with --system, the call; its echo cancelled from the mic: aec.rs),
+                 with --system, the call; its echo cancelled from the mic and its
+                 level raised, --mic-gain: aec.rs),
                  finish (pending meetings), devices, bench;
                  the session with reconnection (client.rs), the meeting kept until
                  published (pending.rs), the final transcript as Markdown, a part

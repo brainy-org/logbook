@@ -135,6 +135,11 @@ enum Command {
         /// the server's word filter takes its echo out.
         #[arg(long)]
         no_aec: bool,
+        /// Raise the microphone's level: "auto" follows the voice (a quiet
+        /// room, someone far from the mic), a number is that many dB (0 to
+        /// 50), "off" keeps the device's level.
+        #[arg(long, default_value = "off", value_name = "auto|DB|off")]
+        mic_gain: aec::Gain,
         #[command(flatten)]
         publish: Publish,
     },
@@ -189,6 +194,7 @@ async fn main() -> Result<()> {
             system_device,
             headphones,
             no_aec,
+            mic_gain,
             publish,
         } => {
             let mut sources = Vec::new();
@@ -203,7 +209,8 @@ async fn main() -> Result<()> {
                 (true, true) => Echo::Filter,
                 (true, false) => Echo::Cancel,
             };
-            live(&server, &data, sources, echo, &publish).await
+            let gain = if no_mic { aec::Gain::Off } else { mic_gain };
+            live(&server, &data, sources, echo, gain, &publish).await
         }
         Command::Finish {
             dir,
@@ -666,6 +673,7 @@ async fn live(
     data: &Path,
     sources: Vec<(audio::Source, Option<String>, bool)>,
     echo: Echo,
+    gain: aec::Gain,
     p: &Publish,
 ) -> Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -695,11 +703,15 @@ async fn live(
     // The session stops when the last sender is gone: the capture threads'.
     drop(tx);
     // The microphone is channel 0 and the system channel 1 when there are both.
-    let rx = if echo == Echo::Cancel {
+    if echo == Echo::Cancel {
         eprintln!("cancelling the call's echo from the microphone");
-        aec::cancel(rx, 0, 1)
-    } else {
-        rx
+    }
+    if gain != aec::Gain::Off {
+        eprintln!("raising the microphone's level: {gain:?}");
+    }
+    let rx = match (echo == Echo::Cancel, gain) {
+        (false, aec::Gain::Off) => rx,
+        (cancel, gain) => aec::process(rx, 0, cancel.then_some(1), gain),
     };
     eprintln!("recording; Ctrl-C to stop");
     let stop = Mutex::new(stops);

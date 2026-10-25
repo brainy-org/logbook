@@ -48,6 +48,7 @@ scripts/client.sh live                    # the microphone, until Ctrl-C
 scripts/client.sh live --system           # the microphone and the call
 scripts/client.sh live --system --no-mic  # only the call
 scripts/client.sh live --diarize-mic      # the microphone in a room
+scripts/client.sh live --mic-gain auto    # a quiet microphone, or voices far from it
 scripts/client.sh devices                 # what live can record from
 scripts/client.sh bench meeting.m4a --sessions 8
 ```
@@ -119,6 +120,13 @@ server drops the call's words the microphone still picked up
 few seconds late. With headphones, say so (`--headphones`) and nothing is
 cancelled or filtered. `--no-aec` keeps only the server's filter, to
 compare.
+
+`--mic-gain` raises the microphone's level before it is sent (WebRTC's
+AGC2, after the echo is cancelled, with a limiter): `auto` follows the
+voice, up to 50 dB, for a quiet microphone or someone across the room; a
+number is a fixed gain in dB (0 to 50); `off`, the default, keeps the
+device's level. The system's input volume (macOS: System Settings →
+Sound → Input) is the other knob.
 
 ### Server options
 
