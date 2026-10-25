@@ -14,7 +14,8 @@ crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet
                  one channel's pipeline (channel.rs), echo (echo.rs), the final pass
                  as the meeting goes (progressive.rs) or over an upload (final_pass.rs),
                  the wire protocol (protocol.rs), the upload's Opus (codec.rs),
-                 the final transcript cleaned up by a language model (polish.rs)
+                 the final transcript cleaned up by a language model (polish.rs),
+                 libparakeet and the models from the mirror (mirror.rs)
                  examples/diarize.rs: diarization strategies scored with
                  scripts/der.py                                    → docs/pipeline.md
 crates/server/   logbook-server: WebSocket /live and HTTP /finals (axum), a thread per
@@ -28,8 +29,7 @@ crates/cli/      logbook: play (a file at the pace of speech), live (microphone 
                  the session with reconnection (client.rs), the meeting kept until
                  published (pending.rs), the final transcript as Markdown, a part
                  at a time (transcript.rs), into brainy as it comes (brainy.rs)
-scripts/         server.sh (fetches libparakeet and the models, runs the server), client.sh
-vendor/          libparakeet for this machine, fetched by scripts/server.sh (not committed)
+scripts/         server.sh (builds and runs the server), client.sh
 docs/            pipeline.md, protocol.md, decisions/
 ```
 
@@ -38,7 +38,7 @@ docs/            pipeline.md, protocol.md, decisions/
 ```bash
 cargo build && cargo test
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
-scripts/server.sh                     # libparakeet and the models, by sha256, from the mirror
+scripts/server.sh                     # fetches libparakeet and the models on first start
 scripts/client.sh play FILE           # or: live [--system], devices, bench FILE --sessions N
 ```
 
@@ -50,7 +50,8 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
 - **libparakeet is loaded at run time and its ABI is checked at open**
   (`ABI` in `parakeet.rs`, v0.6.1). A function declared with the wrong
   signature does not fail to build: it corrupts memory. Declare from
-  `parakeet_capi.h` of the pinned release, nothing from memory.
+  `parakeet_capi.h` of the pinned release (beside the library in
+  `~/.cache/brainy-org/libparakeet-<build>-<sha>/`), nothing from memory.
 - **A diarization context runs one call at a time**: every call on it goes
   through `Model::serial`. Two sessions on one context without it pass a
   light test and crash or mix speakers under load.
@@ -101,7 +102,7 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
   (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).
 - **Same models as brainy-worker, from the same mirror**: the `parakeet`
   bundle of github.com/brainy-org/models (its files' sha256 in
-  `scripts/server.sh`, the same as brainy-worker's `models.json`), and
-  libparakeet from its `libparakeet` bundle; nothing from GitHub releases or
-  Hugging Face. One set of licences
+  `crates/engine/src/mirror.rs`, the same as brainy-worker's
+  `models.json`), and libparakeet from its `libparakeet` bundle, fetched
+  by the server itself; nothing from GitHub releases or Hugging Face. One set of licences
   (brainy-worker's `docs/decisions/2026-10-10-licences-of-code-and-weights.md`).

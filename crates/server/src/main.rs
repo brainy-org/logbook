@@ -24,6 +24,7 @@ use axum::{Json, Router};
 use clap::{Parser, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
 use logbook_engine::codec;
+use logbook_engine::mirror::{self, Mirror};
 use logbook_engine::parakeet::Latency;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::polish::{self, Polisher};
@@ -47,23 +48,27 @@ const VOICE: &str = "wespeaker-resnet34-lm.gguf";
 /// of a meeting with two channels.
 const MAX_UPLOAD: usize = 256 << 20;
 
-/// Where scripts/server.sh puts the `parakeet` bundle of the mirror
-/// (github.com/brainy-org/models), under $HOME: the files brainy-worker
-/// loads, from mudler/parakeet-cpp-gguf at commit 741158ae.
-const MODELS_DIR: &str = ".cache/brainy-org/parakeet-741158ae";
-
 #[derive(Parser)]
 #[command(version, about = "Live transcription and diarization server")]
 struct Args {
     #[arg(long, env = "LOGBOOK_LISTEN", default_value = "127.0.0.1:3300")]
     listen: String,
-    /// libparakeet; by default the loader's search path.
+    /// libparakeet; by default the pinned release for this machine, fetched
+    /// from the mirror into ~/.cache/brainy-org when missing.
     #[arg(long, env = "PARAKEET_LIB")]
     library: Option<PathBuf>,
-    /// Folder of the GGUF files; by default brainy-worker's pinned revision in
-    /// the Hugging Face cache.
+    /// Folder of the GGUF files, used as it is; by default
+    /// ~/.cache/brainy-org/parakeet-741158ae, where the pinned files
+    /// missing are fetched from the mirror (the ones brainy-worker loads).
     #[arg(long, env = "LOGBOOK_MODELS")]
     models: Option<PathBuf>,
+    /// A GitHub token with read:packages for the mirror on ghcr.io, needed
+    /// only while something is fetched.
+    #[arg(long, env = "LOGBOOK_REGISTRY_TOKEN", hide_env_values = true)]
+    registry_token: Option<String>,
+    /// The token's user.
+    #[arg(long, env = "LOGBOOK_REGISTRY_USERNAME")]
+    registry_username: Option<String>,
     #[arg(long, default_value = "tdt-0.6b-v3-q8_0.gguf")]
     asr: String,
     #[arg(long, default_value = "silero-vad-f16.gguf")]
@@ -154,15 +159,28 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+    // What is not given comes from the mirror, fetched once into the cache.
+    let mirror = Mirror::new(mirror::credentials(
+        args.registry_username,
+        args.registry_token,
+    ));
+    let say = |message: &str| info!("{message}");
     let models = match args.models {
         Some(dir) => dir,
         None => {
-            let home = std::env::var("HOME").context("HOME is not set: pass --models")?;
-            PathBuf::from(home).join(MODELS_DIR)
+            let dir = mirror::cache_dir()?.join(mirror::MODELS_DIR);
+            mirror.models(&dir, say)?;
+            dir
         }
     };
+    let library = match args.library {
+        Some(path) => path,
+        None => mirror.library(&mirror::cache_dir()?, say)?,
+    };
+    #[cfg(target_os = "linux")]
+    beside_its_libraries(&library)?;
     let options = Options {
-        library: args.library,
+        library: Some(library),
         asr: models.join(&args.asr),
         vad: models.join(&args.vad),
         diarization: models.join(&args.diarization),
@@ -224,6 +242,33 @@ async fn main() -> Result<()> {
     info!("listening on http://{}", args.listen);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// The CUDA build ships cudart and cuBLAS next to libparakeet, which the
+/// loader finds only through LD_LIBRARY_PATH, read when the process
+/// starts: the server starts again with that folder in it.
+#[cfg(target_os = "linux")]
+fn beside_its_libraries(library: &std::path::Path) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let Some(dir) = library.parent() else {
+        return Ok(());
+    };
+    let others = std::fs::read_dir(dir)?.flatten().any(|e| {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        name.contains(".so") && !name.starts_with("libparakeet")
+    });
+    let path = std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default();
+    if !others || std::env::split_paths(&path).any(|p| p == dir) {
+        return Ok(());
+    }
+    let mut paths = vec![dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&path));
+    let error = std::process::Command::new(std::env::current_exe()?)
+        .args(std::env::args_os().skip(1))
+        .env("LD_LIBRARY_PATH", std::env::join_paths(paths)?)
+        .exec();
+    Err(error).context("could not start again with libparakeet's libraries")
 }
 
 /// A final pass over a meeting the client recorded itself: a `meeting`

@@ -6,6 +6,7 @@ pub mod channel;
 pub mod codec;
 pub mod echo;
 pub mod final_pass;
+pub mod mirror;
 pub mod parakeet;
 pub mod polish;
 pub mod progressive;

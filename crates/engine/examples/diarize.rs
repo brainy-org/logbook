@@ -3,7 +3,7 @@
 //! speakers were chosen: docs/decisions/2026-10-24-speakers-across-a-long-meeting.md.
 //!
 //! cargo run --release -p logbook-engine --example diarize -- \
-//!     --lib vendor/libparakeet.dylib --diar MODEL.gguf [--voice BUNDLE.gguf] \
+//!     --lib ~/.cache/brainy-org/libparakeet-macos-metal-arm64-184711860035/libparakeet.dylib --diar MODEL.gguf [--voice BUNDLE.gguf] \
 //!     --strategy offline|stream-low|stream-model|chunked|stream-embed|stream-model-embed \
 //!     [--window 120] [--threshold 0.5] [--recluster 0.5] FILE > out.rttm
 //!
