@@ -12,8 +12,10 @@ workspace. A prototype: why it exists and how it is built is in
 ```
 crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet.rs),
                  one channel's pipeline (channel.rs), echo (echo.rs), the final pass
-                 (final_pass.rs), the wire protocol (protocol.rs), the upload's
-                 Opus (codec.rs)                                   → docs/pipeline.md
+                 as the meeting goes (progressive.rs) or over an upload (final_pass.rs),
+                 the wire protocol (protocol.rs), the upload's Opus (codec.rs)
+                 examples/diarize.rs: diarization strategies scored with
+                 scripts/der.py                                    → docs/pipeline.md
 crates/server/   logbook-server: WebSocket /live and HTTP /finals (axum), a thread per
                  session, one batcher thread for every transcription, recordings
                  (recording.rs), one finalizer thread for final passes, their results
@@ -22,8 +24,8 @@ crates/cli/      logbook: play (a file at the pace of speech), live (microphone 
                  with --system, the call; its echo cancelled from the mic: aec.rs),
                  finish (pending meetings), devices, bench;
                  the session with reconnection (client.rs), the meeting kept until
-                 published (pending.rs), the final transcript as Markdown
-                 (transcript.rs) and into brainy (brainy.rs)
+                 published (pending.rs), the final transcript as Markdown, a part
+                 at a time (transcript.rs), into brainy as it comes (brainy.rs)
 scripts/         server.sh (fetches libparakeet and the models, runs the server), client.sh
 vendor/          libparakeet for this machine, fetched by scripts/server.sh (not committed)
 docs/            pipeline.md, protocol.md, decisions/
@@ -61,10 +63,11 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
   the echo filter (`echo.rs`, which matches words by time across
   channels) drops nothing, and with nothing playing it holds every mic
   word until the end (`docs/decisions/2026-10-24-system-audio-through-cpal.md`).
-- **On the server, a meeting's audio lives only in a `RecordedFile`, which
-  deletes itself when dropped** (after the final pass, whatever its
-  outcome; at a session without one; at a lost connection), or is cleared
-  at start if the server died. On the client, only in its pending folder,
+- **On the server, a meeting's audio lives only in a `Recording` (or the
+  `RecordedFile` of an upload), which deletes its files when dropped**
+  (at the session's end, whatever it was; after an upload's pass) and as
+  the progressive pass passes them (`forget_before`), or is cleared at
+  start if the server died. On the client, only in its pending folder,
   until the final transcript is back (`pending.rs`). Audio written
   anywhere else outlives the meeting, which the README promises it does
   not (`docs/decisions/2026-10-24-the-client-keeps-the-meeting.md`).
@@ -72,6 +75,20 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
   CLI shifts them by where the new session started (`client.rs`). The
   upload's codec keeps the sample count and drops Opus's lookahead, for
   the same reason: channels are compared by time.
+- **Final segments are sent once and never change**: up to the earliest
+  cut of all channels, by start (`Progressive::ready`). The CLI appends
+  them to the brainy page and records how far it got
+  (`published_until`); sending a segment again, or one that starts
+  before `until`, writes it twice or out of order on a page nobody
+  rewrites (`docs/pipeline.md`, "Final pass").
+- **A final range's speaker slots are its own**: each range is diarized
+  alone, so slot 0 of one range and of the next are unrelated; only
+  voices (`speakers::Linker`) make them the meeting's speakers. Carrying a
+  slot number across ranges mixes people up silently
+  (`docs/decisions/2026-10-24-speakers-across-a-long-meeting.md`).
+- **Times that go out as JSON are never infinite**: serde_json writes
+  infinity as `null`, which does not read back as a number. "To the end"
+  is `f64::MAX` (`until`, `published_until`).
 - **logbook-server holds no brainy credentials.** It returns the final
   transcript; the CLI writes the page with the person's own token
   (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).

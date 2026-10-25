@@ -3,11 +3,13 @@
 //!
 //! One folder per meeting under `<data>/pending`: `meeting.json` (the
 //! channels, when it started, how to publish it, the server's pass id once
-//! known), one raw 16 kHz s16le file per channel on the session's clock,
-//! written as the audio is captured, and `final.json` once the final pass
-//! has come back (the audio is deleted then: it is no longer needed). The
-//! folder goes away once the transcript is published; until then
-//! `logbook finish` picks it up again. No brainy token is ever written.
+//! known, the brainy page and how far it is written), one raw 16 kHz s16le
+//! file per channel on the session's clock, written as the audio is
+//! captured, `segments.jsonl` (the final segments as they come during the
+//! meeting) and `final.json` once the final pass is complete (the audio is
+//! deleted then: it is no longer needed). The folder goes away once the
+//! transcript is published; until then `logbook finish` picks it up again.
+//! No brainy token is ever written.
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
@@ -17,7 +19,10 @@ use anyhow::{Context, Result};
 use logbook_engine::protocol::ChannelConfig;
 use serde::{Deserialize, Serialize};
 
+use crate::brainy::Page;
 use crate::client::Finalized;
+use crate::transcript::Writer;
+use logbook_engine::protocol::Utterance;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Meeting {
@@ -28,6 +33,15 @@ pub struct Meeting {
     /// The server's final pass for it, once one is known to be running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_id: Option<String>,
+    /// The brainy page, once created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<Page>,
+    /// The page's names and last speaker, to write its next part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer: Option<Writer>,
+    /// Segments starting before this are on the page.
+    #[serde(default)]
+    pub published_until: f64,
 }
 
 /// How to publish the transcript, as asked when the meeting started.
@@ -124,6 +138,41 @@ impl Pending {
         Ok(())
     }
 
+    /// Final segments that came during the meeting.
+    pub fn add_segments(&self, utterances: &[Utterance]) -> Result<()> {
+        let path = self.dir.join("segments.jsonl");
+        let mut file = File::options()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("could not write {}", path.display()))?;
+        let mut text = String::new();
+        for u in utterances {
+            text.push_str(&serde_json::to_string(u)?);
+            text.push('\n');
+        }
+        file.write_all(text.as_bytes())
+            .with_context(|| format!("could not write {}", path.display()))
+    }
+
+    /// Every final segment that came during the meeting, by start.
+    pub fn segments(&self) -> Result<Vec<Utterance>> {
+        let path = self.dir.join("segments.jsonl");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("could not read {}", path.display()));
+            }
+        };
+        text.lines()
+            // A line cut by a crash is dropped: its segment comes again
+            // with the final pass.
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .map(Ok)
+            .collect()
+    }
+
     pub fn final_result(&self) -> Result<Option<Finalized>> {
         let path = self.dir.join("final.json");
         match std::fs::read(&path) {
@@ -167,7 +216,7 @@ impl Pending {
             .with_context(|| format!("could not remove {}", self.dir.display()))
     }
 
-    fn save(&self) -> Result<()> {
+    pub fn save(&self) -> Result<()> {
         let path = self.dir.join("meeting.json");
         std::fs::write(&path, serde_json::to_vec_pretty(&self.meeting)?)
             .with_context(|| format!("could not write {}", path.display()))
@@ -217,6 +266,9 @@ mod tests {
                 me: "Me".into(),
             },
             final_id: None,
+            page: None,
+            writer: None,
+            published_until: 0.0,
         };
         let (mut pending, mut spool) = Pending::create(&root, "m", meeting.clone()).unwrap();
         let (second, _) = Pending::create(&root, "m", meeting).unwrap();

@@ -21,12 +21,14 @@ LIBPARAKEET=(
   "macos-metal-arm64 1847118600359355c899619e263275d83b59f81dcc34fcca6ba4e6b9aac67db0"
   "macos-cpu-x64 4575814a5abb2d8d78b657750a3418cf2178765aa8f2f4ebfd692bf78fda9e7d"
 )
-# The `parakeet` bundle, the one brainy-worker loads (its models.json):
-# file and sha256. MODELS_DIR in crates/server/src/main.rs names the folder.
+# File, sha256 and bundle: the `parakeet` bundle is the one brainy-worker
+# loads (its models.json); `parakeet-voice` the speaker encoder, logbook's
+# alone. MODELS_DIR in crates/server/src/main.rs names the folder.
 MODELS=(
-  "tdt-0.6b-v3-q8_0.gguf 4d69a4a6683f4f2d952bad794c1357ca6eb628027695b4699c5a9ad4cd07d757"
-  "silero-vad-f16.gguf 8160489282352accc0e95925c2f6bf3d76fb8f7bccdce5c7e46808cb15e8443c"
-  "nemotron-3-diarization-q8_0.gguf 76c5bb1fb20d82706142ad32769b7ab496d2458489473a000fd7074c52ceec22"
+  "tdt-0.6b-v3-q8_0.gguf 4d69a4a6683f4f2d952bad794c1357ca6eb628027695b4699c5a9ad4cd07d757 parakeet"
+  "silero-vad-f16.gguf 8160489282352accc0e95925c2f6bf3d76fb8f7bccdce5c7e46808cb15e8443c parakeet"
+  "nemotron-3-diarization-q8_0.gguf 76c5bb1fb20d82706142ad32769b7ab496d2458489473a000fd7074c52ceec22 parakeet"
+  "wespeaker-resnet34-lm.gguf 72040372494eafec299836bc1977cfc13c603cb486674ed59b0f4c03758d29da parakeet-voice"
 )
 
 fetch() { # repository sha256 destination
@@ -58,7 +60,7 @@ fi
 
 models="${LOGBOOK_MODELS:-$HOME/.cache/brainy-org/parakeet-741158ae}"
 for entry in "${MODELS[@]}"; do
-  read -r file sha <<<"$entry"
+  read -r file sha bundle <<<"$entry"
   [[ -f "$models/$file" ]] && continue
   if [[ -n "${LOGBOOK_MODELS:-}" ]]; then
     echo "missing in $models: $file" >&2
@@ -66,7 +68,7 @@ for entry in "${MODELS[@]}"; do
   fi
   echo "fetching ${file}…" >&2
   mkdir -p "$models"
-  fetch parakeet "$sha" "$models/$file"
+  fetch "$bundle" "$sha" "$models/$file"
 done
 
 # The CUDA build ships its own cudart and cuBLAS next to libparakeet.

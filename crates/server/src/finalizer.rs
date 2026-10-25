@@ -1,10 +1,11 @@
-//! Final passes, one at a time, on a thread of their own.
+//! Final passes' transcription, one job at a time, on a thread of its own.
 //!
-//! A final pass reads a whole meeting: seconds to minutes on the GPU the
-//! live sessions use too. Running them one after another bounds what they
-//! take from the live sessions to one pass at a time, and keeps them off
-//! the sessions' threads. The result goes to `Finals` under the pass's id,
-//! and to the live session's connection if there is one still open.
+//! A job is either the ranges a live session's progressive pass asked for
+//! (progressive.rs: a minute or so of each channel), answered to the
+//! session, or a whole uploaded meeting, whose result goes to `Finals`.
+//! Running them one after another bounds what final passes take from the
+//! live sessions' GPU to one call at a time, and keeps them off the
+//! sessions' threads.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
@@ -12,20 +13,26 @@ use std::time::Instant;
 
 use logbook_engine::Engine;
 use logbook_engine::final_pass::Recorded;
-use logbook_engine::protocol::{ChannelConfig, FinalState, ServerMessage};
-use tokio::sync::mpsc::UnboundedSender;
+use logbook_engine::progressive::Range;
+use logbook_engine::protocol::{ChannelConfig, FinalState};
 use tracing::{info, warn};
 
 use crate::finals::Finals;
-use crate::recording::RecordedFile;
+use crate::recording::{RangeReader, RecordedFile};
+use crate::session::Input;
 
-pub struct FinalJob {
-    /// What the logs call it: the live session, or "upload".
-    pub label: String,
-    pub id: String,
-    pub channels: Vec<(ChannelConfig, RecordedFile)>,
-    /// The live session's connection; None for an upload.
-    pub out: Option<UnboundedSender<ServerMessage>>,
+pub enum FinalJob {
+    /// Ranges of a live session's channels, read from its recording.
+    Ranges {
+        session: String,
+        ranges: Vec<(Range, RangeReader)>,
+        reply: Sender<Input>,
+    },
+    /// A meeting a client uploaded, whole.
+    Whole {
+        id: String,
+        channels: Vec<(ChannelConfig, RecordedFile)>,
+    },
 }
 
 pub fn spawn(engine: Arc<Engine>, finals: Arc<Finals>) -> Sender<FinalJob> {
@@ -34,31 +41,74 @@ pub fn spawn(engine: Arc<Engine>, finals: Arc<Finals>) -> Sender<FinalJob> {
         .name("finalizer".into())
         .spawn(move || {
             while let Ok(job) = rx.recv() {
-                run(&engine, &finals, job);
+                match job {
+                    FinalJob::Ranges {
+                        session,
+                        ranges,
+                        reply,
+                    } => run_ranges(&engine, &session, ranges, &reply),
+                    FinalJob::Whole { id, channels } => run_whole(&engine, &finals, id, channels),
+                }
             }
         })
         .expect("could not start the finalizer thread");
     tx
 }
 
-fn run(engine: &Engine, finals: &Finals, job: FinalJob) {
+fn run_ranges(
+    engine: &Engine,
+    session: &str,
+    ranges: Vec<(Range, RangeReader)>,
+    reply: &Sender<Input>,
+) {
+    for (range, reader) in ranges {
+        let started = Instant::now();
+        let result = reader
+            .read(range.from, range.to)
+            .and_then(|pcm| engine.final_range(&pcm, &range))
+            .map_err(|e| format!("{e:#}"));
+        match &result {
+            Ok(r) => info!(
+                session,
+                channel = range.channel,
+                from = format!("{:.1}", range.from),
+                to = format!("{:.1}", range.to),
+                words = r.words.len(),
+                voices = r.voices.len(),
+                took_ms = started.elapsed().as_millis() as u64,
+                "final range"
+            ),
+            Err(error) => warn!(session, "final range failed: {error}"),
+        }
+        let _ = reply.send(Input::FinalWords { range, result });
+    }
+}
+
+fn run_whole(
+    engine: &Engine,
+    finals: &Finals,
+    id: String,
+    channels: Vec<(ChannelConfig, RecordedFile)>,
+) {
     let started = Instant::now();
-    let channels = job
-        .channels
+    let channels = channels
         .into_iter()
-        .map(|(config, file)| Recorded {
-            config,
-            // The file moves into the closure: read, then deleted with it.
-            audio: Box::new(move || file.read()),
+        .map(|(config, file)| {
+            let reader = file.reader();
+            // The files move into the closure: read, then deleted with it.
+            Recorded {
+                config,
+                audio: Box::new(move || file.read()),
+                range: Box::new(move |from, to| reader.read(from, to)),
+            }
         })
         .collect();
     let state = match engine.final_pass(channels) {
         Ok(result) => {
             info!(
-                session = job.label,
                 utterances = result.utterances.len(),
                 took_ms = started.elapsed().as_millis() as u64,
-                "final pass"
+                "final pass of an upload"
             );
             FinalState::Done {
                 utterances: result.utterances,
@@ -66,31 +116,11 @@ fn run(engine: &Engine, finals: &Finals, job: FinalJob) {
             }
         }
         Err(error) => {
-            warn!(session = job.label, "final pass failed: {error:#}");
+            warn!("final pass of an upload failed: {error:#}");
             FinalState::Failed {
                 message: format!("the final pass failed: {error:#}"),
             }
         }
     };
-    if let Some(out) = &job.out {
-        match &state {
-            FinalState::Done {
-                utterances,
-                warnings,
-            } => {
-                let _ = out.send(ServerMessage::Final {
-                    utterances: utterances.clone(),
-                    warnings: warnings.clone(),
-                });
-                let _ = out.send(ServerMessage::Done);
-            }
-            FinalState::Failed { message } => {
-                let _ = out.send(ServerMessage::Error {
-                    message: message.clone(),
-                });
-            }
-            FinalState::Running { .. } => {}
-        }
-    }
-    finals.finish(&job.id, state);
+    finals.finish(&id, state);
 }

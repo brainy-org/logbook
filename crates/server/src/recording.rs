@@ -1,18 +1,26 @@
 //! A session's audio on disk, for the final pass, and only for it.
 //!
-//! One file per channel, raw 16 kHz mono s16le, written as the audio
-//! arrives (on the session's clock, as the client sends it). The files are
-//! deleted when they are dropped: when the session ends without a final
-//! pass, when the connection is lost, and once the final pass has read them,
+//! Raw 16 kHz mono s16le, written as the audio arrives (on the session's
+//! clock, as the client sends it), in files of `SEGMENT` per channel: the
+//! progressive final pass reads a range a minute or so behind the meeting,
+//! and the files it has passed are deleted (`forget_before`), so the
+//! server keeps minutes of a meeting, not hours. What is left is deleted
+//! when dropped: when the session ends (with or without a final pass, or
+//! with the connection lost), and once a final pass has read an upload,
 //! whether it succeeded or not. A server that dies does not drop them:
-//! `claim` deletes them when it starts again. Nothing else on the
-//! server keeps a meeting's audio.
+//! `claim` deletes them when it starts again. Nothing else on the server
+//! keeps a meeting's audio.
 
+use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+
+const RATE: u64 = 16_000;
+/// Samples per file: 5 minutes, 9.6 MB.
+const SEGMENT: u64 = 300 * RATE;
 
 /// Takes `dir` for this server, and deletes the recordings a server that
 /// died left there: no session of this one owns them, and their clients
@@ -49,63 +57,204 @@ pub fn claim(dir: &Path) -> Result<(File, usize)> {
 }
 
 pub struct Recording {
-    files: Vec<(BufWriter<File>, RecordedFile)>,
+    tracks: Vec<Track>,
+}
+
+/// One channel: its files, the last one being written.
+struct Track {
+    /// `<dir>/<session>-<channel>`; a file adds `-<n>.pcm`.
+    stem: PathBuf,
+    writer: Option<BufWriter<File>>,
+    written: u64,
+    /// The files still on disk: (n, path).
+    files: VecDeque<(u64, PathBuf)>,
+}
+
+impl Track {
+    fn path(&self, n: u64) -> PathBuf {
+        segment_path(&self.stem, n)
+    }
+}
+
+fn segment_path(stem: &Path, n: u64) -> PathBuf {
+    let mut name = stem.as_os_str().to_owned();
+    name.push(format!("-{n:05}.pcm"));
+    PathBuf::from(name)
+}
+
+impl Drop for Track {
+    fn drop(&mut self) {
+        self.writer = None;
+        for (_, path) in self.files.drain(..) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 impl Recording {
     pub fn create(dir: &Path, session: &str, channels: usize) -> Result<Self> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("could not create {}", dir.display()))?;
-        let mut files = Vec::with_capacity(channels);
-        for i in 0..channels {
-            let path = dir.join(format!("{session}-{i}.pcm"));
-            let file = File::options()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .with_context(|| format!("could not create {}", path.display()))?;
-            files.push((BufWriter::new(file), RecordedFile { path }));
-        }
-        Ok(Self { files })
+        let tracks = (0..channels)
+            .map(|i| Track {
+                stem: dir.join(format!("{session}-{i}")),
+                writer: None,
+                written: 0,
+                files: VecDeque::new(),
+            })
+            .collect();
+        Ok(Self { tracks })
     }
 
     pub fn write(&mut self, channel: usize, pcm: &[f32]) -> Result<()> {
-        let Some((writer, file)) = self.files.get_mut(channel) else {
+        let Some(track) = self.tracks.get_mut(channel) else {
             return Ok(());
         };
-        let bytes: Vec<u8> = pcm
-            .iter()
-            .flat_map(|s| ((s * 32768.0).clamp(-32768.0, 32767.0) as i16).to_le_bytes())
-            .collect();
-        writer
-            .write_all(&bytes)
-            .with_context(|| format!("could not write {}", file.path.display()))
+        let mut rest = pcm;
+        while !rest.is_empty() {
+            let n = track.written / SEGMENT;
+            if track.written.is_multiple_of(SEGMENT) || track.writer.is_none() {
+                if let Some(mut w) = track.writer.take() {
+                    w.flush()?;
+                }
+                let path = track.path(n);
+                let file = File::options()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .with_context(|| format!("could not create {}", path.display()))?;
+                if track.files.back().is_none_or(|&(last, _)| last != n) {
+                    track.files.push_back((n, path));
+                }
+                track.writer = Some(BufWriter::new(file));
+            }
+            let room = (SEGMENT - track.written % SEGMENT) as usize;
+            let (now, later) = rest.split_at(room.min(rest.len()));
+            let bytes: Vec<u8> = now
+                .iter()
+                .flat_map(|s| ((s * 32768.0).clamp(-32768.0, 32767.0) as i16).to_le_bytes())
+                .collect();
+            track
+                .writer
+                .as_mut()
+                .expect("opened above")
+                .write_all(&bytes)
+                .with_context(|| format!("could not write {}", track.path(n).display()))?;
+            track.written += now.len() as u64;
+            rest = later;
+        }
+        Ok(())
     }
 
-    /// The files, complete, in channel order.
-    pub fn finish(self) -> Result<Vec<RecordedFile>> {
-        let mut out = Vec::with_capacity(self.files.len());
-        for (mut writer, file) in self.files {
-            writer
-                .flush()
-                .with_context(|| format!("could not write {}", file.path.display()))?;
-            out.push(file);
+    /// Writes what is buffered, so that a `reader` sees it.
+    pub fn flush(&mut self) -> Result<()> {
+        for track in &mut self.tracks {
+            if let Some(w) = &mut track.writer {
+                w.flush()
+                    .with_context(|| format!("could not write {}", track.stem.display()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads a channel's audio by range while it is written (flush first).
+    pub fn reader(&self, channel: usize) -> Option<RangeReader> {
+        self.tracks.get(channel).map(|t| RangeReader {
+            stem: t.stem.clone(),
+        })
+    }
+
+    /// Deletes the channel's files that end before `time`: the final pass
+    /// is past them. The file being written stays.
+    pub fn forget_before(&mut self, channel: usize, time: f64) {
+        let Some(track) = self.tracks.get_mut(channel) else {
+            return;
+        };
+        let before = (time.max(0.0) * RATE as f64) as u64;
+        let current = track.written / SEGMENT;
+        while let Some(&(n, _)) = track.files.front() {
+            if n >= current || (n + 1) * SEGMENT > before {
+                break;
+            }
+            let (_, path) = track.files.pop_front().unwrap();
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// The channels, complete, in channel order.
+    pub fn finish(mut self) -> Result<Vec<RecordedFile>> {
+        let mut out = Vec::with_capacity(self.tracks.len());
+        for track in &mut self.tracks {
+            if let Some(mut w) = track.writer.take() {
+                w.flush()
+                    .with_context(|| format!("could not write {}", track.stem.display()))?;
+            }
+            out.push(RecordedFile {
+                stem: track.stem.clone(),
+                paths: track.files.drain(..).map(|(_, p)| p).collect(),
+            });
         }
         Ok(out)
     }
 }
 
-/// One channel's file; deleted when dropped.
+/// A range of a channel being recorded. It does not keep the files: a
+/// session that ends deletes them, and a read after that fails.
+#[derive(Clone)]
+pub struct RangeReader {
+    stem: PathBuf,
+}
+
+impl RangeReader {
+    /// Samples [from, to) in seconds, as floats; shorter where the files are.
+    pub fn read(&self, from: f64, to: f64) -> Result<Vec<f32>> {
+        let mut at = (from.max(0.0) * RATE as f64) as u64;
+        let end = (to.max(0.0) * RATE as f64) as u64;
+        let mut out = Vec::with_capacity(end.saturating_sub(at) as usize);
+        while at < end {
+            let n = at / SEGMENT;
+            let path = segment_path(&self.stem, n);
+            let mut file =
+                File::open(&path).with_context(|| format!("could not read {}", path.display()))?;
+            file.seek(SeekFrom::Start((at % SEGMENT) * 2))?;
+            let want = end.min((n + 1) * SEGMENT) - at;
+            let mut bytes = Vec::with_capacity(want as usize * 2);
+            file.take(want * 2).read_to_end(&mut bytes)?;
+            out.extend(
+                bytes
+                    .chunks_exact(2)
+                    .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0),
+            );
+            if (bytes.len() as u64) < want * 2 {
+                break;
+            }
+            at += want;
+        }
+        Ok(out)
+    }
+}
+
+/// One channel's files, complete; deleted when dropped.
 pub struct RecordedFile {
-    path: PathBuf,
+    stem: PathBuf,
+    paths: Vec<PathBuf>,
 }
 
 impl RecordedFile {
+    /// Reads it by range, while it exists.
+    pub fn reader(&self) -> RangeReader {
+        RangeReader {
+            stem: self.stem.clone(),
+        }
+    }
+
     pub fn read(&self) -> Result<Vec<f32>> {
         let mut bytes = Vec::new();
-        File::open(&self.path)
-            .and_then(|mut f| f.read_to_end(&mut bytes))
-            .with_context(|| format!("could not read {}", self.path.display()))?;
+        for path in &self.paths {
+            File::open(path)
+                .and_then(|mut f| f.read_to_end(&mut bytes))
+                .with_context(|| format!("could not read {}", path.display()))?;
+        }
         Ok(bytes
             .chunks_exact(2)
             .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
@@ -115,7 +264,9 @@ impl RecordedFile {
 
 impl Drop for RecordedFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        for path in &self.paths {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -129,16 +280,21 @@ mod tests {
         let mut recording = Recording::create(&dir, "s", 2).unwrap();
         recording.write(1, &[0.5, -0.25]).unwrap();
         recording.write(1, &[0.0]).unwrap();
+        recording.flush().unwrap();
+        let reader = recording.reader(1).unwrap();
+        assert_eq!(reader.read(0.0, 1.0).unwrap(), vec![0.5, -0.25, 0.0]);
+        assert_eq!(reader.read(1.0 / 16_000.0, 1.0).unwrap(), vec![-0.25, 0.0]);
         let files = recording.finish().unwrap();
         assert_eq!(files[0].read().unwrap(), Vec::<f32>::new());
         assert_eq!(files[1].read().unwrap(), vec![0.5, -0.25, 0.0]);
-        let path = files[1].path.clone();
+        let path = files[1].paths[0].clone();
         drop(files);
         assert!(!path.exists());
 
         // Dropped before it is finished (the connection was lost): gone too.
-        let recording = Recording::create(&dir, "t", 1).unwrap();
-        let path = recording.files[0].1.path.clone();
+        let mut recording = Recording::create(&dir, "t", 1).unwrap();
+        recording.write(0, &[0.1]).unwrap();
+        let path = recording.tracks[0].files[0].1.clone();
         drop(recording);
         assert!(!path.exists());
         // Left by a server that died; and a second server on the folder.
@@ -149,6 +305,35 @@ mod tests {
         assert!(claim(&dir).is_err());
         assert!(dir.join("live-0.pcm").exists());
         drop(lock);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_long_recording_is_read_across_files_and_forgotten_as_it_is_passed() {
+        let dir = std::env::temp_dir().join(format!("logbook-seg-{}", std::process::id()));
+        let mut recording = Recording::create(&dir, "s", 1).unwrap();
+        // 11 minutes, each sample its own second (as a small value).
+        let minute: Vec<f32> = vec![0.0; 60 * RATE as usize];
+        for m in 0..11 {
+            let mut chunk = minute.clone();
+            chunk[0] = m as f32 / 100.0;
+            recording.write(0, &chunk).unwrap();
+        }
+        recording.flush().unwrap();
+        assert_eq!(recording.tracks[0].files.len(), 3);
+        let reader = recording.reader(0).unwrap();
+        // Across the first file's end: minute 5 starts the second file.
+        let pcm = reader.read(299.0, 301.0).unwrap();
+        assert_eq!(pcm.len(), 2 * RATE as usize);
+        assert!((pcm[RATE as usize] - 0.05).abs() < 1e-3);
+        // Past the first file: it goes; the one being written never does.
+        recording.forget_before(0, 400.0);
+        assert_eq!(recording.tracks[0].files.len(), 2);
+        assert!(reader.read(10.0, 11.0).is_err());
+        recording.forget_before(0, 10_000.0);
+        assert_eq!(recording.tracks[0].files.len(), 1);
+        drop(recording);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

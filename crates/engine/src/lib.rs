@@ -7,7 +7,9 @@ pub mod codec;
 pub mod echo;
 pub mod final_pass;
 pub mod parakeet;
+pub mod progressive;
 pub mod protocol;
+pub mod speakers;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,8 +18,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
 
 use channel::Channel;
-use final_pass::{Final, Models, Recorded};
+use final_pass::{Final, Recorded};
 use parakeet::{Kind, Latency, Model, Parakeet};
+use progressive::{Progressive, Transcribed};
 use protocol::ChannelConfig;
 
 pub struct Options {
@@ -37,8 +40,12 @@ pub struct Options {
     /// dropped: the model picks the language per clip, and a short phrase
     /// alone ("Ma va là.") comes out in another one ("Mais voilà.").
     pub context: f64,
-    /// Recordings longer than this are not diarized in the final pass.
-    pub diarize_max_seconds: f64,
+    /// The speaker encoder (WeSpeaker; its own file or a bundle's "voice"
+    /// component): the final pass's ranges are diarized alone, and only
+    /// voices tell which of a range's speakers is which of the meeting's.
+    pub voice: PathBuf,
+    /// The voice similarity above which two ranges' voices are one speaker.
+    pub voice_threshold: f32,
 }
 
 /// The shortest pause the VAD reports.
@@ -49,14 +56,16 @@ pub struct Engine {
     pub asr: Arc<Model>,
     vad: Arc<Model>,
     diarization: Vec<Arc<Model>>,
-    /// The final pass's own copy: one call holds it for a whole recording.
+    /// The final passes' diarization context, for whole ranges
+    /// (progressive.rs): the live streams' contexts are kept for low latency.
     final_diarization: Arc<Model>,
-    diarize_max_seconds: f64,
     next: AtomicUsize,
     latency: Latency,
     vad_options: String,
     min_pause: f64,
     context: f64,
+    voice: Arc<Model>,
+    voice_threshold: f32,
 }
 
 impl Engine {
@@ -68,6 +77,10 @@ impl Engine {
             .map(|_| Model::load(&lib, &options.diarization, Kind::Diarization))
             .collect::<Result<_>>()?;
         let final_diarization = Model::load(&lib, &options.diarization, Kind::Diarization)?;
+        // A file of its own, or a bundle's component.
+        let voice = Model::load(&lib, &options.voice, Kind::Speaker).or_else(|_| {
+            Model::load_component(&lib, &options.voice, Some("voice"), Kind::Speaker)
+        })?;
         // The VAD reports every pause from VAD_MIN_PAUSE on; which of them
         // close a phrase is the channel's choice (`Phrasing`). speech_pad
         // must stay at most min_pause / 2 in a stream.
@@ -83,12 +96,13 @@ impl Engine {
             vad,
             diarization,
             final_diarization,
-            diarize_max_seconds: options.diarize_max_seconds,
             next: AtomicUsize::new(0),
             latency: options.latency,
             vad_options,
             min_pause: options.min_pause,
             context: options.context,
+            voice,
+            voice_threshold: options.voice_threshold,
         })
     }
 
@@ -112,15 +126,30 @@ impl Engine {
         ))
     }
 
+    /// A progressive final pass for a live session's channels.
+    pub fn progressive(&self, configs: Vec<ChannelConfig>) -> Result<Progressive> {
+        Progressive::new(configs, self.voice_threshold)
+    }
+
+    /// A range of a channel read again (progressive.rs): `pcm` is its
+    /// audio. Long: run it off the sessions' threads, one at a time (it
+    /// holds the final diarization context).
+    pub fn final_range(&self, pcm: &[f32], range: &progressive::Range) -> Result<Transcribed> {
+        progressive::transcribe_range(&self.range_models(), pcm, range)
+    }
+
     /// The final pass over recorded channels (final_pass.rs). Long: run it
     /// off the sessions' threads.
     pub fn final_pass(&self, channels: Vec<Recorded>) -> Result<Final> {
-        let models = Models {
+        final_pass::run(&self.range_models(), self.voice_threshold, channels)
+    }
+
+    fn range_models(&self) -> progressive::RangeModels<'_> {
+        progressive::RangeModels {
             asr: &self.asr,
             vad: &self.vad,
             diarization: &self.final_diarization,
-            diarize_max_seconds: self.diarize_max_seconds,
-        };
-        final_pass::run(&models, channels)
+            voice: &self.voice,
+        }
     }
 }

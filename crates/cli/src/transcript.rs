@@ -6,6 +6,7 @@
 //! A speaker's consecutive segments go under one heading line.
 
 use logbook_engine::protocol::Utterance;
+use serde::{Deserialize, Serialize};
 
 pub struct Meeting<'a> {
     pub utterances: &'a [Utterance],
@@ -18,63 +19,87 @@ pub struct Meeting<'a> {
 }
 
 pub fn markdown(m: &Meeting) -> String {
-    let mut names: Vec<((String, Option<u32>), String)> = Vec::new();
-    let mut name_of = |u: &Utterance| -> String {
-        let key = (u.channel.clone(), u.speaker);
-        if let Some((_, name)) = names.iter().find(|(k, _)| *k == key) {
-            return name.clone();
-        }
-        let name = match (u.channel.as_str(), u.speaker) {
-            ("mic", None) => m.me.to_string(),
-            ("mic", Some(_)) => {
-                let n = names
-                    .iter()
-                    .filter(|((c, s), _)| c == "mic" && s.is_some())
-                    .count();
-                format!("Room {}", n + 1)
-            }
-            (_, None) => "Unknown speaker".to_string(),
-            (_, Some(_)) => {
-                let n = names
-                    .iter()
-                    .filter(|((c, s), _)| c != "mic" && s.is_some())
-                    .count();
-                format!("Speaker {}", n + 1)
-            }
-        };
-        names.push((key, name.clone()));
-        name
-    };
-
-    let mut body = String::new();
-    let mut previous: Option<String> = None;
-    for u in m.utterances {
-        let name = name_of(u);
-        if previous.as_ref() != Some(&name) {
-            body.push_str(&format!("**{}** · {}\n\n", escape(&name), clock(u.start)));
-            previous = Some(name);
-        }
-        body.push_str(&escape(&u.text));
-        body.push_str("\n\n");
-    }
-
-    let speakers: Vec<&str> = names.iter().map(|(_, n)| n.as_str()).collect();
-    let mut out = format!(
-        "Recorded {} · {} · {}\n\n",
-        m.started,
-        duration(m.duration_s),
-        if speakers.is_empty() {
-            "no speech".to_string()
-        } else {
-            speakers.join(", ")
-        }
-    );
-    for warning in m.warnings {
-        out.push_str(&format!("> {}\n\n", escape(warning)));
-    }
+    let mut writer = Writer::new(m.me);
+    let body = writer.body(m.utterances);
+    let mut out = writer.header(m.started, m.duration_s, m.warnings);
     out.push_str("---\n\n");
     out.push_str(&body);
     out.trim_end().to_string() + "\n"
+}
+
+/// The transcript written a part at a time, as the final segments come
+/// during the meeting: the names and the last speaker carry over from one
+/// part to the next, and are kept with a pending meeting.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Writer {
+    me: String,
+    /// (channel, speaker) → name, in order of first appearance.
+    names: Vec<((String, Option<u32>), String)>,
+    previous: Option<String>,
+}
+
+impl Writer {
+    pub fn new(me: &str) -> Self {
+        Self {
+            me: me.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The Markdown of the next segments.
+    pub fn body(&mut self, utterances: &[Utterance]) -> String {
+        let mut body = String::new();
+        for u in utterances {
+            let name = self.name_of(u);
+            if self.previous.as_ref() != Some(&name) {
+                body.push_str(&format!("**{}** · {}\n\n", escape(&name), clock(u.start)));
+                self.previous = Some(name);
+            }
+            body.push_str(&escape(&u.text));
+            body.push_str("\n\n");
+        }
+        body
+    }
+
+    /// "Recorded … · 1 h 2 min · Marco, Speaker 1", and the warnings.
+    pub fn header(&self, started: &str, duration_s: f64, warnings: &[String]) -> String {
+        let speakers: Vec<&str> = self.names.iter().map(|(_, n)| n.as_str()).collect();
+        let mut out = format!(
+            "Recorded {} · {} · {}\n\n",
+            started,
+            duration(duration_s),
+            if speakers.is_empty() {
+                "no speech".to_string()
+            } else {
+                speakers.join(", ")
+            }
+        );
+        for warning in warnings {
+            out.push_str(&format!("> {}\n\n", escape(warning)));
+        }
+        out
+    }
+
+    fn name_of(&mut self, u: &Utterance) -> String {
+        let key = (u.channel.clone(), u.speaker);
+        if let Some((_, name)) = self.names.iter().find(|(k, _)| *k == key) {
+            return name.clone();
+        }
+        let count = |mic: bool| {
+            self.names
+                .iter()
+                .filter(|((c, s), _)| (c == "mic") == mic && s.is_some())
+                .count()
+        };
+        let name = match (u.channel.as_str(), u.speaker) {
+            ("mic", None) => self.me.clone(),
+            ("mic", Some(_)) => format!("Room {}", count(true) + 1),
+            (_, None) => "Unknown speaker".to_string(),
+            (_, Some(_)) => format!("Speaker {}", count(false) + 1),
+        };
+        self.names.push((key, name.clone()));
+        name
+    }
 }
 
 /// Spoken text is text: characters Markdown reads as marks are escaped.
@@ -149,5 +174,10 @@ mod tests {
         ));
         assert!(md.contains("Le vendite \\*crescono\\*."));
         assert!(md.contains("**Marco** · 01:15"));
+
+        // In parts, the same text: names and the last speaker carry over.
+        let mut w = Writer::new("Marco");
+        let parts = w.body(&utterances[..2]) + &w.body(&utterances[2..]);
+        assert!(md.trim_end().ends_with(parts.trim_end()));
     }
 }

@@ -36,6 +36,11 @@ use crate::finals::Finals;
 use crate::recording::Recording;
 use crate::session::{Input, Shared};
 
+/// The speaker encoder (WeSpeaker ResNet34-LM, the mirror's
+/// `parakeet-voice` bundle) that tells voices apart beyond the
+/// diarization's eight.
+const VOICE: &str = "wespeaker-resnet34-lm.gguf";
+
 /// The largest upload: 14 MB an hour a channel (`codec`), so about 8 hours
 /// of a meeting with two channels.
 const MAX_UPLOAD: usize = 256 << 20;
@@ -77,6 +82,14 @@ struct Args {
     /// sentence; 0 for none. Each clip grows by up to this much.
     #[arg(long, default_value_t = 3.0)]
     context: f64,
+    /// The speaker encoder of the final pass: its GGUF, or a parakeet
+    /// bundle with a "voice" component; by default
+    /// `wespeaker-resnet34-lm.gguf` in the models folder.
+    #[arg(long, env = "LOGBOOK_VOICE")]
+    voice: Option<PathBuf>,
+    /// Voice similarity above which two ranges' voices are one speaker.
+    #[arg(long, default_value_t = 0.45)]
+    voice_threshold: f32,
     /// Phrases transcribed in one call at most.
     #[arg(long, default_value_t = 16)]
     max_batch: usize,
@@ -85,10 +98,6 @@ struct Args {
     /// temporary directory.
     #[arg(long, env = "LOGBOOK_RECORDINGS")]
     recordings: Option<PathBuf>,
-    /// Recordings longer than this are not diarized in the final pass: one
-    /// call reads the whole recording.
-    #[arg(long, default_value_t = 7200.0)]
-    diarize_max_seconds: f64,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -142,7 +151,8 @@ async fn main() -> Result<()> {
         latency: args.latency.into(),
         min_pause: args.min_pause,
         context: args.context,
-        diarize_max_seconds: args.diarize_max_seconds,
+        voice: args.voice.unwrap_or_else(|| models.join(VOICE)),
+        voice_threshold: args.voice_threshold,
     };
     let recordings = args
         .recordings
@@ -227,11 +237,9 @@ async fn start_upload(shared: &Shared, mut multipart: Multipart) -> Result<Strin
     .await??;
     let id = shared.finals.start(audio_s)?;
     info!(audio_s = format!("{audio_s:.1}"), "upload received");
-    let _ = shared.finalizer.send(FinalJob {
-        label: "upload".into(),
+    let _ = shared.finalizer.send(FinalJob::Whole {
         id: id.clone(),
         channels: upload.channels.into_iter().zip(files).collect(),
-        out: None,
     });
     Ok(id)
 }

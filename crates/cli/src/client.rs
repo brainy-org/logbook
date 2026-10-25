@@ -75,8 +75,9 @@ pub struct Finalized {
 }
 
 pub struct Live {
-    /// The final pass, if it came back over the session.
-    pub finalized: Option<Finalized>,
+    /// The final pass completed over the session: its warnings. Its
+    /// segments went to `on_segments` as they came.
+    pub finalized: Option<Vec<String>>,
     /// The final pass the server started, if it said so: its result is at
     /// `GET /finals/{id}` when the connection was lost before it came.
     pub final_id: Option<String>,
@@ -84,17 +85,25 @@ pub struct Live {
     pub intact: bool,
 }
 
-/// With `final_pass`, the first session asks the server to read the whole
-/// recording again after `stop` (`on_finalizing` gets its length and the
-/// pass's id). Only the
-/// first: a later one did not hear the whole meeting.
+/// Callbacks of a live session.
+pub trait Events {
+    fn utterance(&mut self, u: Utterance);
+    /// Final segments starting before `until`, during the meeting and at
+    /// its end (`until` infinite with the last ones).
+    fn final_segments(&mut self, _until: f64, _utterances: Vec<Utterance>) {}
+    /// The meeting has ended; the rest of the final pass runs as `id`.
+    fn finalizing(&mut self, _audio_s: f64, _id: &str) {}
+}
+
+/// With `final_pass`, the first session asks for the final pass, which
+/// follows the meeting (`Events::final_segments`). Only the first: a later
+/// one did not hear the whole meeting.
 pub async fn live(
     server: &Server,
     channels: Vec<ChannelConfig>,
     final_pass: bool,
     mut audio: Audio,
-    mut on_utterance: impl FnMut(Utterance),
-    mut on_finalizing: impl FnMut(f64, &str),
+    events: &mut impl Events,
 ) -> Live {
     let url = server.live();
     let mut out = Live {
@@ -134,8 +143,9 @@ pub async fn live(
                     &mut position,
                     &mut ended,
                     &mut out,
-                    |u| on_utterance(shift(u)),
-                    &mut on_finalizing,
+                    asked,
+                    shift,
+                    events,
                 )
                 .await;
                 match result {
@@ -183,15 +193,19 @@ async fn connect(url: &str, channels: &[ChannelConfig], final_pass: bool) -> Res
     }
 }
 
-/// One session, until `done` (Ok) or until it is lost.
+/// One session, until `done` (Ok) or until it is lost. `shift` puts a
+/// later session's times on the meeting's clock; final segments only come
+/// from the first, which is on it.
+#[allow(clippy::too_many_arguments)]
 async fn session(
     socket: Socket,
     audio: &mut Audio,
     position: &mut [usize],
     ended: &mut bool,
     out: &mut Live,
-    mut on_utterance: impl FnMut(Utterance),
-    on_finalizing: &mut impl FnMut(f64, &str),
+    final_pass: bool,
+    shift: impl Fn(Utterance) -> Utterance,
+    events: &mut impl Events,
 ) -> Result<()> {
     let (mut sink, mut stream) = socket.split();
     loop {
@@ -214,13 +228,18 @@ async fn session(
                 }
             },
             message = next(&mut stream) => match message.context("the connection was lost")? {
-                Some(ServerMessage::Utterance(u)) => on_utterance(u),
+                Some(ServerMessage::Utterance(u)) => events.utterance(shift(u)),
+                Some(ServerMessage::FinalSegments { until, utterances }) if final_pass => {
+                    events.final_segments(until, utterances);
+                }
+                Some(ServerMessage::FinalSegments { .. }) => {}
                 Some(ServerMessage::Finalizing { audio_s, id }) => {
-                    on_finalizing(audio_s, &id);
+                    events.finalizing(audio_s, &id);
                     out.final_id = Some(id);
                 }
                 Some(ServerMessage::Final { utterances, warnings }) => {
-                    out.finalized = Some(Finalized { utterances, warnings });
+                    events.final_segments(f64::INFINITY, utterances);
+                    out.finalized = Some(warnings);
                 }
                 Some(ServerMessage::Done) => {
                     let _ = sink.close().await;

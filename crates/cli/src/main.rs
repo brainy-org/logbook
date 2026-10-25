@@ -271,16 +271,51 @@ fn latency(start: Instant, speed: f64, u: &Utterance) -> f64 {
     start.elapsed().as_secs_f64() - u.end / speed
 }
 
-fn print_live(start: Instant, speed: f64) -> impl FnMut(Utterance) {
-    move |u| {
+/// Prints the live transcript; with a final pass, hands its segments to
+/// the publisher as they come.
+struct Printer {
+    start: Instant,
+    speed: f64,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<Progress>>,
+}
+
+impl client::Events for Printer {
+    fn utterance(&mut self, u: Utterance) {
         println!(
             "[{}] {:<10} {}   (+{:.2} s)",
             clock(u.start),
             label(&u),
             u.text,
-            latency(start, speed, &u)
+            latency(self.start, self.speed, &u)
         );
     }
+
+    fn final_segments(&mut self, until: f64, utterances: Vec<Utterance>) {
+        if let Some(tx) = &self.progress {
+            let _ = tx.send(Progress::Segments {
+                until: until.min(END),
+                utterances,
+            });
+        }
+    }
+
+    fn finalizing(&mut self, audio_s: f64, id: &str) {
+        eprintln!("finishing the final pass ({})…", clock(audio_s));
+        if let Some(tx) = &self.progress {
+            let _ = tx.send(Progress::FinalId(id.to_string()));
+        }
+    }
+}
+
+/// "Up to the end" for `published_until`: JSON has no infinity.
+const END: f64 = f64::MAX;
+
+enum Progress {
+    Segments {
+        until: f64,
+        utterances: Vec<Utterance>,
+    },
+    FinalId(String),
 }
 
 /// The brainy address and token given now; the address falls back to the
@@ -290,74 +325,153 @@ struct Credentials {
     token: Option<String>,
 }
 
-/// The final transcript: printed, or written to brainy.
-async fn publish(
-    saved: &Saved,
-    brainy: &Credentials,
-    started: DateTime<FixedOffset>,
-    finalized: &Finalized,
-) -> Result<PublishOutcome> {
-    let started_text = started.format("%Y-%m-%d %H:%M").to_string();
+impl Credentials {
+    /// None without --brainy; an error if it lacks its address or token.
+    fn brainy(&self, saved: &Saved) -> Result<Option<brainy::Brainy>> {
+        if !saved.brainy {
+            return Ok(None);
+        }
+        let url = self
+            .url
+            .as_deref()
+            .or(saved.brainy_url.as_deref())
+            .context("--brainy needs BRAINY_URL")?;
+        let token = self
+            .token
+            .as_deref()
+            .context("--brainy needs BRAINY_TOKEN")?;
+        Ok(Some(brainy::Brainy::new(url, token)?))
+    }
+}
+
+fn started(pending: &Pending) -> Result<DateTime<FixedOffset>> {
+    DateTime::parse_from_rfc3339(&pending.meeting.started)
+        .context("meeting.json: started is not a date")
+}
+
+/// Writes the segments that start between what the page already has and
+/// `limit` to the meeting's brainy page, creating the page first. What
+/// is written is recorded in the pending folder, so nothing is written
+/// twice, whatever fails.
+async fn write_page(
+    b: &brainy::Brainy,
+    pending: &mut Pending,
+    limit: f64,
+    segments: &[Utterance],
+) -> Result<()> {
+    let saved = pending.meeting.publish.clone();
+    if pending.meeting.page.is_none() {
+        let started = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
+        let title = saved
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("Meeting {started}"));
+        let page = b
+            .create_page(
+                &title,
+                saved.parent.as_deref(),
+                &format!(
+                    "Recording started {started} · the transcript follows the meeting, \
+                     a minute or so behind\n\n---\n"
+                ),
+            )
+            .await?;
+        eprintln!("brainy page: {}", page.url);
+        pending.meeting.page = Some(page);
+        pending.save()?;
+    }
+    let page = pending.meeting.page.clone().expect("created above");
+    let new: Vec<Utterance> = segments
+        .iter()
+        .filter(|u| u.start >= pending.meeting.published_until && u.start < limit)
+        .cloned()
+        .collect();
+    let mut writer = pending
+        .meeting
+        .writer
+        .clone()
+        .unwrap_or_else(|| transcript::Writer::new(&saved.me));
+    if !new.is_empty() {
+        b.append(&page.id, &writer.body(&new)).await?;
+    }
+    pending.meeting.writer = Some(writer);
+    pending.meeting.published_until = pending.meeting.published_until.max(limit);
+    pending.save()
+}
+
+/// The meeting's final segments as they come: kept in the pending folder,
+/// and written to brainy with --brainy. A failed write is tried again with
+/// the next segments. Gives the folder back when the meeting is over.
+async fn publisher(
+    mut pending: Pending,
+    brainy: Option<brainy::Brainy>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Progress>,
+) -> Pending {
+    while let Some(progress) = rx.recv().await {
+        let written = async {
+            match progress {
+                Progress::FinalId(id) => pending.set_final_id(Some(id)),
+                Progress::Segments { until, utterances } => {
+                    pending.add_segments(&utterances)?;
+                    match &brainy {
+                        Some(b) => {
+                            let segments = pending.segments()?;
+                            write_page(b, &mut pending, until, &segments).await
+                        }
+                        None => Ok(()),
+                    }
+                }
+            }
+        }
+        .await;
+        if let Err(error) = written {
+            eprintln!("{error:#} (tried again with the next segments)");
+        }
+    }
+    pending
+}
+
+/// The final transcript, complete: printed, or the rest written to the
+/// brainy page and its header line rewritten.
+async fn publish(pending: &mut Pending, brainy: &Credentials, finalized: &Finalized) -> Result<()> {
+    let saved = pending.meeting.publish.clone();
+    let started_text = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
     let duration_s = finalized
         .utterances
         .iter()
         .map(|u| u.end)
         .fold(0.0, f64::max);
-    let markdown = transcript::markdown(&transcript::Meeting {
-        utterances: &finalized.utterances,
-        warnings: &finalized.warnings,
-        me: &saved.me,
-        started: &started_text,
-        duration_s,
-    });
-    if !saved.brainy {
+    let Some(b) = brainy.brainy(&saved)? else {
+        let markdown = transcript::markdown(&transcript::Meeting {
+            utterances: &finalized.utterances,
+            warnings: &finalized.warnings,
+            me: &saved.me,
+            started: &started_text,
+            duration_s,
+        });
         println!("\n{markdown}");
-        return Ok(PublishOutcome::Done);
+        return Ok(());
+    };
+    write_page(&b, pending, END, &finalized.utterances).await?;
+    let writer = pending.meeting.writer.clone().unwrap_or_default();
+    let mut header = writer
+        .header(&started_text, duration_s, &[])
+        .trim()
+        .to_string();
+    if !finalized.warnings.is_empty() {
+        header.push_str(&format!(" · Note: {}", finalized.warnings.join("; ")));
     }
-    let title = saved
-        .title
-        .clone()
-        .unwrap_or_else(|| format!("Meeting {started_text}"));
-    let written = async {
-        let url = brainy
-            .url
-            .as_deref()
-            .or(saved.brainy_url.as_deref())
-            .context("--brainy needs BRAINY_URL")?;
-        let token = brainy
-            .token
-            .as_deref()
-            .context("--brainy needs BRAINY_TOKEN")?;
-        brainy::Brainy::new(url, token)?
-            .create_page(&title, saved.parent.as_deref(), &markdown)
-            .await
-    }
-    .await;
-    Ok(match written {
-        Ok(url) => {
-            eprintln!("written to brainy: {url}");
-            PublishOutcome::Done
-        }
-        Err(error) => PublishOutcome::Refused {
-            error,
-            markdown: format!("# {title}\n\n{markdown}"),
-        },
-    })
+    let page = pending.meeting.page.clone().expect("written above");
+    b.rewrite_first_block(&page.id, &header).await?;
+    eprintln!("written to brainy: {}", page.url);
+    Ok(())
 }
 
-enum PublishOutcome {
-    Done,
-    /// brainy could not be written: the transcript, to keep.
-    Refused {
-        error: anyhow::Error,
-        markdown: String,
-    },
-}
-
-/// Brings a pending meeting to its end: its final pass (the server's
-/// result, the one it is running, or a new one over the audio kept here),
-/// then the transcript published and the folder removed. On any failure
-/// the folder stays, with whatever was reached, for `logbook finish`.
+/// Brings a pending meeting to its end: its final pass (complete over the
+/// session, the one the server is running, or a new one over the audio
+/// kept here), then the transcript published and the folder removed. On
+/// any failure the folder stays, with whatever was reached, for
+/// `logbook finish`.
 async fn finish(server: &Server, pending: &mut Pending, brainy: &Credentials) -> Result<()> {
     let kept = |error: anyhow::Error, dir: &Path| {
         error.context(format!(
@@ -375,11 +489,21 @@ async fn finish(server: &Server, pending: &mut Pending, brainy: &Credentials) ->
             Err(error) => return Err(kept(error, &pending.dir)),
         },
     };
-    let started = DateTime::parse_from_rfc3339(&pending.meeting.started)
-        .context("meeting.json: started is not a date")?;
-    match publish(&pending.meeting.publish, brainy, started, &finalized).await? {
-        PublishOutcome::Done => pending.remove(),
-        PublishOutcome::Refused { error, markdown } => {
+    match publish(pending, brainy, &finalized).await {
+        Ok(()) => pending.remove(),
+        Err(error) => {
+            let started_text = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
+            let markdown = transcript::markdown(&transcript::Meeting {
+                utterances: &finalized.utterances,
+                warnings: &finalized.warnings,
+                me: &pending.meeting.publish.me,
+                started: &started_text,
+                duration_s: finalized
+                    .utterances
+                    .iter()
+                    .map(|u| u.end)
+                    .fold(0.0, f64::max),
+            });
             let file = pending.save_transcript(&markdown)?;
             Err(kept(
                 error.context(format!(
@@ -417,30 +541,48 @@ async fn final_pass(server: &Server, pending: &mut Pending) -> Result<Finalized>
 }
 
 /// A meeting being recorded: the audio of `audio` goes to the server, and,
-/// with a final pass, to a pending folder too. Returns when the audio ends
-/// and the meeting is finished.
+/// with a final pass, to a pending folder too, where the final segments
+/// are kept as they come (and written to brainy with --brainy). Returns
+/// when the audio ends and the meeting is finished.
 async fn meeting(
     server: &Server,
     data: &Path,
     channels: Vec<ChannelConfig>,
     p: &Publish,
     mut audio: client::Audio,
-    on_utterance: impl FnMut(Utterance),
+    start: Instant,
+    speed: f64,
 ) -> Result<()> {
     let started = Local::now();
-    let mut pending = None;
+    let credentials = Credentials {
+        url: p.brainy_url.clone(),
+        token: p.brainy_token.clone(),
+    };
     let mut spool: Option<Spool> = None;
+    let mut publishing = None;
+    let mut printer = Printer {
+        start,
+        speed,
+        progress: None,
+    };
     if p.final_pass() {
         let meeting = Meeting {
             started: started.to_rfc3339(),
             channels: channels.clone(),
             publish: p.saved(),
             final_id: None,
+            page: None,
+            writer: None,
+            published_until: 0.0,
         };
         let (created, writer) =
             Pending::create(data, &started.format("%Y%m%d-%H%M%S").to_string(), meeting)?;
         eprintln!("keeping the meeting in {}", created.dir.display());
-        pending = Some(created);
+        // A missing token fails now, not at the end of the meeting.
+        let brainy = credentials.brainy(&created.meeting.publish)?;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        printer.progress = Some(tx);
+        publishing = Some(tokio::spawn(publisher(created, brainy, rx)));
         spool = Some(writer);
     }
     // Every frame is written here before it goes to the server.
@@ -465,46 +607,26 @@ async fn meeting(
             (None, None) => Ok(()),
         }
     });
-    let live = client::live(
-        server,
-        channels,
-        p.final_pass(),
-        rx,
-        on_utterance,
-        |audio_s, id| {
-            eprintln!("reading the whole meeting again ({})…", clock(audio_s));
-            // Kept at once: if this process dies now, `finish` fetches it.
-            if let Some(p) = &mut pending
-                && let Err(error) = p.set_final_id(Some(id.to_string()))
-            {
-                eprintln!("{error:#}");
-            }
-        },
-    )
-    .await;
+    let live = client::live(server, channels, p.final_pass(), rx, &mut printer).await;
+    drop(printer);
     let kept = tee.await?;
-    let Some(mut pending) = pending else {
+    let Some(publishing) = publishing else {
         if !live.intact {
             bail!("the connection was lost: the live transcript has gaps");
         }
         return Ok(());
     };
-    if let Some(f) = &live.finalized {
-        pending.save_final(f)?;
-    } else if live.final_id.is_some() {
-        pending.set_final_id(live.final_id)?;
+    let mut pending = publishing.await?;
+    if let Some(warnings) = live.finalized {
+        let utterances = pending.segments()?;
+        pending.save_final(&Finalized {
+            utterances,
+            warnings,
+        })?;
     } else if let Err(error) = kept {
         eprintln!("the final pass reads only what was kept before: {error:#}");
     }
-    finish(
-        server,
-        &mut pending,
-        &Credentials {
-            url: p.brainy_url.clone(),
-            token: p.brainy_token.clone(),
-        },
-    )
-    .await
+    finish(server, &mut pending, &credentials).await
 }
 
 async fn play(
@@ -524,7 +646,7 @@ async fn play(
     }];
     let start = Instant::now();
     tokio::spawn(audio::play(samples, speed, start, tx));
-    meeting(server, data, channels, p, rx, print_live(start, speed)).await
+    meeting(server, data, channels, p, rx, start, speed).await
 }
 
 /// What the microphone hears of the system channel.
@@ -586,7 +708,7 @@ async fn live(
         eprintln!("stopping…");
         stop.lock().unwrap().clear();
     });
-    meeting(server, data, channels, p, rx, print_live(start, 1.0)).await
+    meeting(server, data, channels, p, rx, start, 1.0).await
 }
 
 async fn bench(
@@ -620,20 +742,8 @@ async fn bench(
             }];
             let start = Instant::now();
             tokio::spawn(audio::play(samples, 1.0, start, tx));
-            let live = client::live(
-                &server,
-                channels,
-                false,
-                rx,
-                |u| {
-                    results
-                        .lock()
-                        .unwrap()
-                        .push((u.end, latency(start, 1.0, &u)));
-                },
-                |_, _| {},
-            )
-            .await;
+            let mut events = Latencies { start, results };
+            let live = client::live(&server, channels, false, rx, &mut events).await;
             if !live.intact {
                 bail!("the connection was lost");
             }
@@ -668,6 +778,21 @@ async fn bench(
         }
     }
     Ok(())
+}
+
+/// (audio time of the phrase's end, latency) of every utterance.
+struct Latencies {
+    start: Instant,
+    results: Arc<Mutex<Vec<(f64, f64)>>>,
+}
+
+impl client::Events for Latencies {
+    fn utterance(&mut self, u: Utterance) {
+        self.results
+            .lock()
+            .unwrap()
+            .push((u.end, latency(self.start, 1.0, &u)));
+    }
 }
 
 fn summary(values: &mut [f64]) -> String {

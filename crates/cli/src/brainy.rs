@@ -4,7 +4,8 @@
 //! write; logbook-server never holds brainy credentials.
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// brainy refuses Markdown longer than 200 000 characters in one call
@@ -23,6 +24,23 @@ struct Created {
     url: String,
 }
 
+/// A page being written: its id, and its address to show.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Page {
+    pub id: String,
+    pub url: String,
+}
+
+#[derive(Deserialize)]
+struct Blocks {
+    blocks: Vec<Block>,
+}
+
+#[derive(Deserialize)]
+struct Block {
+    block_id: String,
+}
+
 impl Brainy {
     pub fn new(url: &str, token: &str) -> Result<Self> {
         // reqwest is built without a crypto provider (rustls on ring, as
@@ -36,45 +54,93 @@ impl Brainy {
     }
 
     /// Creates the page under `parent` (a page id), or at the top of the
-    /// token owner's default workspace; returns its address.
+    /// token owner's default workspace.
     pub async fn create_page(
         &self,
         title: &str,
         parent: Option<&str>,
         markdown: &str,
-    ) -> Result<String> {
+    ) -> Result<Page> {
         let mut parts = split(markdown, PART).into_iter();
         let mut body =
             json!({ "title": title, "icon": "🎙️", "content": parts.next().unwrap_or("") });
         if let Some(parent) = parent {
             body["parent_id"] = json!(parent);
         }
-        let created: Created = self.post("/api/v1/pages", &body).await?;
+        let created: Created = self.send(Method::POST, "/api/v1/pages", &body).await?;
+        let page = Page {
+            id: created.page_id,
+            url: created.url,
+        };
         for part in parts {
-            let path = format!("/api/v1/pages/{}/append", created.page_id);
-            let _: serde_json::Value = self.post(&path, &json!({ "content": part })).await?;
+            self.append(&page.id, part).await?;
         }
-        Ok(created.url)
+        Ok(page)
     }
 
-    async fn post<T: for<'de> Deserialize<'de>>(
+    /// Adds Markdown at the end of the page.
+    pub async fn append(&self, page: &str, markdown: &str) -> Result<()> {
+        let path = format!("/api/v1/pages/{page}/append");
+        for part in split(markdown, PART) {
+            if part.trim().is_empty() {
+                continue;
+            }
+            let _: serde_json::Value = self
+                .send(Method::POST, &path, &json!({ "content": part }))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Rewrites the page's first block (one block of Markdown): the
+    /// header, written once the meeting is over.
+    pub async fn rewrite_first_block(&self, page: &str, markdown: &str) -> Result<()> {
+        let blocks: Blocks = self
+            .send(
+                Method::GET,
+                &format!("/api/v1/pages/{page}/blocks"),
+                &serde_json::Value::Null,
+            )
+            .await?;
+        let first = blocks
+            .blocks
+            .first()
+            .context("the page has no blocks to rewrite")?;
+        let _: serde_json::Value = self
+            .send(
+                Method::PATCH,
+                &format!("/api/v1/blocks/{}", first.block_id),
+                &json!({ "content": markdown }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn send<T: for<'de> Deserialize<'de>>(
         &self,
+        method: Method,
         path: &str,
         body: &serde_json::Value,
     ) -> Result<T> {
         let url = format!("{}{path}", self.base);
-        let response = self
+        let mut request = self
             .http
-            .post(&url)
-            .bearer_auth(&self.token)
-            .json(body)
+            .request(method.clone(), &url)
+            .bearer_auth(&self.token);
+        if !body.is_null() {
+            request = request.json(body);
+        }
+        let response = request
             .send()
             .await
             .with_context(|| format!("could not reach {url}"))?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
-            bail!("brainy answered {status} to POST {path}: {}", text.trim());
+            bail!(
+                "brainy answered {status} to {method} {path}: {}",
+                text.trim()
+            );
         }
         Ok(response.json().await?)
     }

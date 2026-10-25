@@ -45,20 +45,28 @@ also over HTTP, at `http://HOST:3300/finals`. Types in
   for words no turn covers. Utterances of one channel arrive in order;
   channels interleave freely, and a channel with `echo_of` lags behind
   the one it is filtered against.
+- `{"type":"final_segments","until":118.4,"utterances":[...]}` with a
+  final pass, during the meeting, about a minute or so behind it: every
+  channel's final segments that start before `until`, by start time, in
+  the shape of `utterance` without the `type`. Never sent again, never
+  changed: the next ones start at `until` or later. The final pass's
+  speakers are numbered once for the whole meeting (not as the live ones).
+  The last ones have `until` 1.8e308 (JSON has no infinity).
 - `{"type":"finalizing","audio_s":1834.2,"id":"9f3c…"}` with a final
-  pass: the live transcript is complete and the whole recording is being
-  read again (seconds to minutes). The result is also at
-  `GET /finals/{id}` for an hour after it is ready.
-- `{"type":"final","utterances":[...],"warnings":[...]}` with a final pass:
-  every channel's segments by start time, in the shape of `utterance`
-  without the `type`; `warnings` says what was left out ("speakers were
-  not told apart on system: ...").
+  pass: the live transcript is complete; the final pass finishes the last
+  minute or so (seconds). The whole result is also at `GET /finals/{id}`
+  for an hour after it is ready.
+- `{"type":"final","utterances":[],"warnings":[...]}` with a final pass:
+  it is complete (`utterances`: any segment not sent as `final_segments`;
+  the server sends them all there); `warnings` says what was left out
+  ("120–181 s of system was not transcribed again: ...").
 - `{"type":"done"}` after `stop`, once every phrase (and the final pass,
   if asked) has been sent. The server then closes.
 - `{"type":"error","message":"..."}` ends the session.
 
 Closing the socket without `stop` drops the session, what it held and its
-recording. Closing it during the final pass does not stop the pass.
+recording. Closing it after `stop` does not stop the final pass: its
+result is kept under the `finalizing` id.
 
 ## Reconnection
 

@@ -3,8 +3,11 @@
 //! Audio, transcripts and the end of the audio all arrive in one inbox, so
 //! the channels are touched by this thread alone. A tick wakes it when
 //! nothing arrives, to send what diarization has meanwhile made ready.
-//! With a final pass, the audio is also recorded, and handed to the
-//! finalizer once the live transcript is complete.
+//! With a final pass, the audio is also recorded, and the progressive pass
+//! (engine progressive.rs) follows the meeting: its ranges are transcribed
+//! by the finalizer thread from the recording, and its segments sent as
+//! they are ready. After `stop`, the session lives until the pass is
+//! complete, even if the client has gone: its result is kept in `Finals`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +19,8 @@ use logbook_engine::Engine;
 use logbook_engine::channel::Channel;
 use logbook_engine::echo::EchoFilter;
 use logbook_engine::parakeet::Transcript;
-use logbook_engine::protocol::{ChannelConfig, ServerMessage};
+use logbook_engine::progressive::{Progressive, Range, Transcribed};
+use logbook_engine::protocol::{ChannelConfig, FinalState, ServerMessage, Utterance};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 
@@ -42,6 +46,11 @@ pub enum Input {
         id: u64,
         transcript: Transcript,
     },
+    /// A range the progressive pass asked for, read again.
+    FinalWords {
+        range: Range,
+        result: Result<Transcribed, String>,
+    },
     /// The client has no more audio.
     Stop,
     /// The connection is gone: nobody is left to send to.
@@ -49,6 +58,17 @@ pub enum Input {
 }
 
 const TICK: Duration = Duration::from_millis(100);
+
+/// A session's final pass.
+struct Final {
+    pass: Progressive,
+    recording: Recording,
+    /// Every segment sent, for `Finals` once the pass is complete.
+    sent: Vec<Utterance>,
+    warnings: Vec<String>,
+    /// The id under which the result is kept, once the meeting has ended.
+    id: Option<String>,
+}
 
 pub fn run(
     shared: &Shared,
@@ -59,57 +79,77 @@ pub fn run(
     reply: Sender<Input>,
     out: UnboundedSender<ServerMessage>,
 ) {
-    let engine = &shared.engine;
-    let batcher = &shared.batcher;
-    let configs_echo: Vec<Option<String>> = configs.iter().map(|c| c.echo_of.clone()).collect();
-    let mut recording = None;
+    let mut fin = None;
     if final_pass {
-        match Recording::create(&shared.recordings, &session, configs.len()) {
-            Ok(r) => recording = Some(r),
+        let created =
+            Recording::create(&shared.recordings, &session, configs.len()).and_then(|recording| {
+                Ok(Final {
+                    pass: shared.engine.progressive(configs.clone())?,
+                    recording,
+                    sent: Vec::new(),
+                    warnings: Vec::new(),
+                    id: None,
+                })
+            });
+        match created {
+            Ok(f) => fin = Some(f),
             Err(error) => {
                 let _ = out.send(ServerMessage::Error {
-                    message: format!("could not record for the final pass: {error:#}"),
+                    message: format!("could not start the final pass: {error:#}"),
                 });
                 return;
             }
         }
     }
-    // Why the recording stopped, if it did: the final pass is then refused.
-    let mut recording_failed: Option<String> = None;
-    let mut channels: Vec<Channel> = match configs
+    let result = live(shared, &session, configs, &mut fin, inbox, reply, &out);
+    // A pass whose meeting ended but which did not complete is failed, not
+    // left running for a client that polls it.
+    if let Some(Final { id: Some(id), .. }) = &fin
+        && let Err(message) = &result
+    {
+        shared.finals.finish(
+            id,
+            FinalState::Failed {
+                message: message.clone(),
+            },
+        );
+    }
+    if let Err(message) = result {
+        let _ = out.send(ServerMessage::Error { message });
+    }
+}
+
+fn live(
+    shared: &Shared,
+    session: &str,
+    configs: Vec<ChannelConfig>,
+    fin: &mut Option<Final>,
+    inbox: Receiver<Input>,
+    reply: Sender<Input>,
+    out: &UnboundedSender<ServerMessage>,
+) -> Result<(), String> {
+    let engine = &shared.engine;
+    let batcher = &shared.batcher;
+    let mut channels: Vec<Channel> = configs
         .iter()
         .cloned()
         .enumerate()
         .map(|(i, config)| engine.channel(i, config))
         .collect::<Result<_>>()
-    {
-        Ok(channels) => channels,
-        Err(error) => {
-            let _ = out.send(ServerMessage::Error {
-                message: format!("{error:#}"),
-            });
-            return;
-        }
-    };
+        .map_err(|e| format!("{e:#}"))?;
     // For each channel that may hear another again: that one's index and the filter.
     let mut echo: Vec<Option<(usize, EchoFilter)>> = Vec::new();
-    for (i, config) in configs_echo.iter().enumerate() {
-        let source = match config {
+    for (i, config) in configs.iter().enumerate() {
+        echo.push(match &config.echo_of {
             None => None,
             Some(name) => match channels.iter().position(|c| c.name() == name) {
                 Some(j) if j != i => Some((j, EchoFilter::default())),
-                _ => {
-                    let _ = out.send(ServerMessage::Error {
-                        message: format!("echo_of names no other channel: {name:?}"),
-                    });
-                    return;
-                }
+                _ => return Err(format!("echo_of names no other channel: {name:?}")),
             },
-        };
-        echo.push(source);
+        });
     }
     let names: Vec<&str> = channels.iter().map(|c| c.name()).collect();
-    info!(session, channels = ?names, final_pass, "session started");
+    info!(session, channels = ?names, final_pass = fin.is_some(), "session started");
     let _ = out.send(ServerMessage::Ready);
 
     let submit = |clips: Vec<logbook_engine::channel::Clip>| {
@@ -122,21 +162,19 @@ pub fn run(
         }
     };
     let mut stopping = false;
+    let mut live_done = false;
     loop {
         let input = match inbox.recv_timeout(TICK) {
             Ok(input) => Some(input),
             Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
         };
         let step = (|| -> Result<bool> {
             match input {
                 Some(Input::Audio(index, pcm)) if !stopping => {
-                    if let Some(r) = &mut recording
-                        && let Err(error) = r.write(index, &pcm)
-                    {
-                        warn!(session, "recording stopped: {error:#}");
-                        recording_failed = Some(format!("{error:#}"));
-                        recording = None;
+                    if let Some(f) = fin.as_mut() {
+                        f.recording.write(index, &pcm)?;
+                        f.pass.feed(index, &pcm);
                     }
                     if let Some(channel) = channels.get_mut(index) {
                         submit(channel.feed(&pcm)?);
@@ -152,6 +190,20 @@ pub fn run(
                         channel.transcribed(id, transcript);
                     }
                 }
+                Some(Input::FinalWords { range, result }) => {
+                    if let Some(f) = fin.as_mut() {
+                        let result = result.unwrap_or_else(|error| {
+                            f.warnings.push(format!(
+                                "{:.0}–{:.0} s of {} was not transcribed again: {error}",
+                                range.from,
+                                range.to,
+                                channels[range.channel].name()
+                            ));
+                            Transcribed::default()
+                        });
+                        f.pass.transcribed(&range, result);
+                    }
+                }
                 Some(Input::Stop) => {
                     if !stopping {
                         stopping = true;
@@ -160,7 +212,9 @@ pub fn run(
                         }
                     }
                 }
-                Some(Input::Closed) => return Ok(false),
+                // Before the end, the meeting is dropped with the client;
+                // after it, its final pass completes for `Finals`.
+                Some(Input::Closed) => return Ok(stopping && fin.is_some()),
             }
             for i in 0..channels.len() {
                 for utterance in channels[i].ready()? {
@@ -186,62 +240,106 @@ pub fn run(
                     debug!(session, "echo: {seen}");
                 }
             }
+            if let Some(f) = fin.as_mut() {
+                progress(shared, session, f, &channels, stopping, &reply, out)?;
+            }
             Ok(true)
         })();
         match step {
             Ok(true) => {}
             Ok(false) => {
                 info!(session, "session closed by the client");
-                return;
+                return Ok(());
             }
             Err(error) => {
-                warn!("session failed: {error:#}");
-                let _ = out.send(ServerMessage::Error {
-                    message: format!("{error:#}"),
-                });
-                return;
+                warn!(session, "session failed: {error:#}");
+                return Err(format!("{error:#}"));
             }
         }
         if stopping
+            && !live_done
             && channels.iter().all(Channel::idle)
             && echo.iter().flatten().all(|(_, f)| f.is_empty())
         {
+            live_done = true;
             let audio = channels.iter().map(|c| c.time()).fold(0.0, f64::max);
             info!(
                 session,
                 audio_s = format!("{audio:.1}"),
                 "live transcript done"
             );
-            if !final_pass {
-                let _ = out.send(ServerMessage::Done);
-                return;
-            }
-            let files = match (recording.take(), recording_failed.take()) {
-                (Some(r), None) => r.finish(),
-                (_, Some(reason)) => Err(anyhow::anyhow!("the recording stopped: {reason}")),
-                (None, None) => Err(anyhow::anyhow!("nothing was recorded")),
-            };
-            match files.and_then(|files| Ok((files, shared.finals.start(audio)?))) {
-                Ok((files, id)) => {
-                    let _ = out.send(ServerMessage::Finalizing {
-                        audio_s: audio,
-                        id: id.clone(),
-                    });
-                    let job = FinalJob {
-                        label: session,
-                        id,
-                        channels: configs.into_iter().zip(files).collect(),
-                        out: Some(out),
-                    };
-                    let _ = shared.finalizer.send(job);
+            match fin.as_mut() {
+                None => {
+                    let _ = out.send(ServerMessage::Done);
+                    return Ok(());
                 }
-                Err(error) => {
-                    let _ = out.send(ServerMessage::Error {
-                        message: format!("no final pass: {error:#}"),
-                    });
+                Some(f) => {
+                    f.pass.finish();
+                    let id = shared.finals.start(audio).map_err(|e| format!("{e:#}"))?;
+                    f.id = Some(id.clone());
+                    let _ = out.send(ServerMessage::Finalizing { audio_s: audio, id });
                 }
             }
-            return;
+        }
+        if live_done
+            && let Some(f) = fin.as_mut()
+            && f.pass.is_done()
+        {
+            info!(session, segments = f.sent.len(), "final pass done");
+            let _ = out.send(ServerMessage::Final {
+                utterances: Vec::new(),
+                warnings: f.warnings.clone(),
+            });
+            let _ = out.send(ServerMessage::Done);
+            if let Some(id) = &f.id {
+                shared.finals.finish(
+                    id,
+                    FinalState::Done {
+                        utterances: std::mem::take(&mut f.sent),
+                        warnings: f.warnings.clone(),
+                    },
+                );
+            }
+            return Ok(());
         }
     }
+}
+
+/// The progressive pass's turn: quiet points, ranges to transcribe, and the
+/// segments that are ready.
+fn progress(
+    shared: &Shared,
+    session: &str,
+    f: &mut Final,
+    channels: &[Channel],
+    stopping: bool,
+    reply: &Sender<Input>,
+    out: &UnboundedSender<ServerMessage>,
+) -> Result<()> {
+    if !stopping {
+        for (i, channel) in channels.iter().enumerate() {
+            f.pass.quiet(i, channel.quiet_point());
+        }
+    }
+    while let Some((until, utterances)) = f.pass.ready() {
+        f.sent.extend(utterances.iter().cloned());
+        let _ = out.send(ServerMessage::FinalSegments { until, utterances });
+        for i in 0..channels.len() {
+            f.recording.forget_before(i, f.pass.cut(i));
+        }
+    }
+    let ranges = f.pass.next_ranges();
+    if !ranges.is_empty() {
+        f.recording.flush()?;
+        let ranges = ranges
+            .into_iter()
+            .filter_map(|r| f.recording.reader(r.channel).map(|reader| (r, reader)))
+            .collect();
+        let _ = shared.finalizer.send(FinalJob::Ranges {
+            session: session.to_string(),
+            ranges,
+            reply: reply.clone(),
+        });
+    }
+    Ok(())
 }

@@ -42,7 +42,14 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Ready,
     Utterance(Utterance),
-    /// The live transcript is complete; the final pass has started.
+    /// Final segments, during the meeting: every channel's segments that
+    /// start before `until` (seconds), by start, never sent again. The
+    /// final pass follows the meeting a minute or so behind.
+    FinalSegments {
+        until: f64,
+        utterances: Vec<Utterance>,
+    },
+    /// The live transcript is complete; the rest of the final pass runs.
     Finalizing {
         /// Seconds of the session's recording.
         audio_s: f64,
@@ -50,7 +57,8 @@ pub enum ServerMessage {
         /// `GET /finals/{id}` for a while.
         id: String,
     },
-    /// The whole meeting read again: every channel's segments by start.
+    /// The final pass is complete: the segments not yet sent as
+    /// `final_segments`, by start.
     Final {
         utterances: Vec<Utterance>,
         warnings: Vec<String>,

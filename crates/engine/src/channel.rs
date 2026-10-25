@@ -28,6 +28,10 @@ const CLIP_PAD: f64 = 0.1;
 /// Audio kept before the oldest point a clip may still start at: a VAD start
 /// is known min_speech late, and is padded by speech_pad.
 const KEEP: f64 = 2.0;
+/// How long before now a channel with no phrase open may still have
+/// speech starting: the VAD reports a start min_speech (0.25 s) late, and
+/// pads it.
+const QUIET_LAG: f64 = 0.5;
 /// A word in no turn goes to the nearest turn up to this far (turns start a
 /// little after their first word); further, it has no speaker.
 const NEAREST_TURN: f64 = 1.0;
@@ -180,6 +184,18 @@ impl Channel {
             .unwrap_or(self.time())
     }
 
+    /// The latest point known to be quiet: where the VAD last heard speech
+    /// end, or, while nobody speaks, a little before now (the VAD hears a
+    /// start some 0.3 s late). Where the progressive final pass may cut;
+    /// never inside speech, unlike a phrase cut at MAX_PHRASE.
+    pub fn quiet_point(&self) -> f64 {
+        if self.phrasing.in_speech {
+            self.phrasing.quiet
+        } else {
+            self.phrasing.quiet.max(self.time() - QUIET_LAG)
+        }
+    }
+
     /// The utterances of the phrases that can leave now, in order.
     pub fn ready(&mut self) -> Result<Vec<Utterance>> {
         let diarized = match (&self.diar, self.finished) {
@@ -279,6 +295,8 @@ struct Phrasing {
     /// End of its last speech, while it is in a pause.
     last_end: Option<f64>,
     in_speech: bool,
+    /// Where speech last ended.
+    quiet: f64,
 }
 
 impl Phrasing {
@@ -288,6 +306,7 @@ impl Phrasing {
             open: None,
             last_end: None,
             in_speech: false,
+            quiet: 0.0,
         }
     }
 
@@ -318,6 +337,7 @@ impl Phrasing {
                     self.last_end = Some(time);
                 }
                 self.in_speech = false;
+                self.quiet = self.quiet.max(time);
             }
         }
     }

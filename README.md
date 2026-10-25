@@ -20,7 +20,8 @@ scripts/client.sh live --system            # the microphone and the call, until 
 `scripts/server.sh` fetches libparakeet v0.6.1 for this platform into
 `vendor/` (Metal on Apple silicon, CUDA on Linux with `nvidia-smi`, CPU
 otherwise) and the models into `~/.cache/brainy-org/parakeet-741158ae`
-when they are missing, then builds and starts the server; its arguments
+when they are missing (the speaker encoder from the mirror's
+`parakeet-voice` bundle), then builds and starts the server; its arguments
 go to the server. Both come from the mirror on ghcr.io/brainy-org
 (github.com/brainy-org/models: the files brainy-worker uses), fetched by
 sha256 with [oras](https://oras.land), which needs a login once:
@@ -59,11 +60,15 @@ scripts/client.sh live --system --brainy --parent PAGE_ID --title "Weekly sync"
 scripts/client.sh play meeting.m4a --final                           # the final transcript, printed
 ```
 
-After Ctrl-C the live transcript finishes, then the server reads the
-whole meeting again (`--final`, implied by `--brainy`) and the CLI writes
-the page: who spoke (your name for the microphone, "Speaker 1", "Speaker
-2"… for the call), when, and what. Without `--parent` the page goes at the
-top of your default workspace.
+With `--final` (implied by `--brainy`) the server reads the meeting again
+as it goes, a minute or so behind, in longer pieces and with speakers
+numbered once for the whole meeting: the final transcript. With
+`--brainy` the page is created when the meeting starts and the final
+transcript is added to it as it comes: who spoke (your name for the
+microphone, "Speaker 1", "Speaker 2"… for the call), when, and what.
+After Ctrl-C only the last minute or so is left (seconds), then the
+page's first line becomes "Recorded … · duration · speakers". Without
+`--parent` the page goes at the top of your default workspace.
 
 ### When the network or the server fails
 
@@ -118,7 +123,8 @@ compare.
 | `--context` | 3 | seconds of audio before a phrase transcribed with it, so that a short phrase keeps its language; 0 for none |
 | `--max-batch` | 16 | phrases per transcription call |
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
-| `--diarize-max-seconds` | 7200 | longer recordings are not diarized in the final pass |
+| `--voice` / `LOGBOOK_VOICE` | `wespeaker-resnet34-lm.gguf` in the models folder | speaker encoder of the final pass (required): links each minute's speakers to the meeting's, with no limit of eight |
+| `--voice-threshold` | 0.45 | voice similarity above which two minutes' voices are one speaker |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes
 the first GPU.

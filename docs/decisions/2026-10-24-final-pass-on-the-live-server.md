@@ -1,5 +1,10 @@
 # The final pass runs on logbook-server; the client writes the page
 
+> How the pass reads the meeting changed: it follows the meeting a minute
+> at a time and links speakers by voice
+> (`2026-10-24-speakers-across-a-long-meeting.md`); the page is written as
+> it goes. Where it runs and who writes the page, below, still hold.
+
 **Verdict.** When a meeting ends, logbook-server reads its whole recording
 again, channel by channel, the way brainy-worker reads a recording, and
 returns the final transcript over the session's WebSocket. The CLI turns

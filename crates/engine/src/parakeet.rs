@@ -1,8 +1,8 @@
 //! libparakeet (parakeet.cpp's C API, `parakeet_capi.h`) loaded at run time.
 //!
-//! Only the calls the live pipeline makes are declared: load a model, Silero
-//! VAD as a stream, batched transcription with word times, diarization as a
-//! stream. Every string the library returns is copied and freed at once;
+//! Only the calls logbook makes are declared: load a model (or one model of
+//! a bundle), Silero VAD as a stream, batched transcription with word
+//! times, diarization as a stream and over a recording, speaker embeddings. Every string the library returns is copied and freed at once;
 //! every failure becomes an error carrying the library's own message.
 
 use std::ffi::{CStr, CString, c_char, c_float, c_int, c_void};
@@ -20,6 +20,7 @@ pub const SAMPLE_RATE: u32 = 16_000;
 
 const KIND_ASR: c_int = 1;
 const KIND_DIARIZATION: c_int = 2;
+const KIND_SPEAKER: c_int = 4;
 const KIND_VAD: c_int = 5;
 
 type Ctx = *mut c_void;
@@ -34,6 +35,7 @@ struct DiarSegment {
 struct Functions {
     abi_version: unsafe extern "C" fn() -> c_int,
     load: unsafe extern "C" fn(*const c_char) -> Ctx,
+    load_component: unsafe extern "C" fn(*const c_char, *const c_char) -> Ctx,
     load_error: unsafe extern "C" fn() -> *const c_char,
     free: unsafe extern "C" fn(Ctx),
     last_error: unsafe extern "C" fn(Ctx) -> *const c_char,
@@ -62,6 +64,15 @@ struct Functions {
     ) -> c_int,
     free_diar_segments: unsafe extern "C" fn(*mut DiarSegment),
     diarize_stream_free: unsafe extern "C" fn(*mut c_void),
+    speaker_embed_pcm: unsafe extern "C" fn(
+        Ctx,
+        *const c_float,
+        c_int,
+        c_int,
+        *mut *mut c_float,
+        *mut c_int,
+    ) -> c_int,
+    free_floats: unsafe extern "C" fn(*mut c_float),
 }
 
 /// The loaded library. Models and streams keep it alive.
@@ -95,6 +106,7 @@ impl Parakeet {
         let f = Functions {
             abi_version: symbol!("abi_version"),
             load: symbol!("load"),
+            load_component: symbol!("load_component"),
             load_error: symbol!("load_error"),
             free: symbol!("free"),
             last_error: symbol!("last_error"),
@@ -112,6 +124,8 @@ impl Parakeet {
             diarize_stream_feed: symbol!("diarize_stream_feed"),
             free_diar_segments: symbol!("free_diar_segments"),
             diarize_stream_free: symbol!("diarize_stream_free"),
+            speaker_embed_pcm: symbol!("speaker_embed_pcm"),
+            free_floats: symbol!("free_floats"),
         };
         let abi = unsafe { (f.abi_version)() };
         if abi != ABI {
@@ -147,10 +161,13 @@ pub enum Kind {
     Asr,
     Diarization,
     Vad,
+    /// A speaker encoder: a voice as a vector (WeSpeaker).
+    Speaker,
 }
 
 /// A loaded model. ASR and VAD contexts may be called from several threads;
-/// a diarization context may not, so its streams take `serial` for each call.
+/// diarization and speaker contexts may not, so every call on them takes
+/// `serial`.
 pub struct Model {
     lib: Arc<Parakeet>,
     ctx: Ctx,
@@ -167,8 +184,25 @@ unsafe impl Sync for Model {}
 
 impl Model {
     pub fn load(lib: &Arc<Parakeet>, path: &Path, expected: Kind) -> Result<Arc<Self>> {
+        Self::load_component(lib, path, None, expected)
+    }
+
+    /// One named component of a bundle GGUF ("voice", "diar"…), or with
+    /// None the file's own model.
+    pub fn load_component(
+        lib: &Arc<Parakeet>,
+        path: &Path,
+        component: Option<&str>,
+        expected: Kind,
+    ) -> Result<Arc<Self>> {
         let c_path = CString::new(path.to_string_lossy().as_bytes())?;
-        let ctx = unsafe { (lib.f.load)(c_path.as_ptr()) };
+        let ctx = match component {
+            None => unsafe { (lib.f.load)(c_path.as_ptr()) },
+            Some(name) => {
+                let c_name = CString::new(name)?;
+                unsafe { (lib.f.load_component)(c_path.as_ptr(), c_name.as_ptr()) }
+            }
+        };
         if ctx.is_null() {
             let reason = borrowed(unsafe { (lib.f.load_error)() });
             bail!("could not load {}: {reason}", path.display());
@@ -176,6 +210,7 @@ impl Model {
         let kind = match unsafe { (lib.f.model_kind)(ctx) } {
             KIND_ASR => Some(Kind::Asr),
             KIND_DIARIZATION => Some(Kind::Diarization),
+            KIND_SPEAKER => Some(Kind::Speaker),
             KIND_VAD => Some(Kind::Vad),
             _ => None,
         };
@@ -304,6 +339,30 @@ impl Model {
                 end: s.end,
             })
             .collect())
+    }
+
+    /// A voice as an L2-normalized vector (the cosine of two is their dot
+    /// product), from 16 kHz mono audio of one speaker.
+    pub fn embed(&self, pcm: &[f32]) -> Result<Vec<f32>> {
+        let _turn = self.serial.lock().unwrap();
+        let mut out = std::ptr::null_mut();
+        let mut dim = 0;
+        let status = unsafe {
+            (self.lib.f.speaker_embed_pcm)(
+                self.ctx,
+                pcm.as_ptr(),
+                pcm.len() as c_int,
+                SAMPLE_RATE as c_int,
+                &mut out,
+                &mut dim,
+            )
+        };
+        if status != 0 || out.is_null() {
+            bail!("speaker embedding: {}", self.error());
+        }
+        let vector = unsafe { std::slice::from_raw_parts(out, dim.max(0) as usize) }.to_vec();
+        unsafe { (self.lib.f.free_floats)(out) };
+        Ok(vector)
     }
 
     /// A diarization stream in one of the model card's latency modes.

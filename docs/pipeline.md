@@ -91,26 +91,58 @@ over the call); an utterance without echo is untouched.
 
 ## Final pass
 
-With `final_pass`, the session records each channel as it arrives
+The final pass follows the meeting instead of reading it once it ends
+(`crates/engine/src/progressive.rs`), so what is left at the end is the
+last minute or so, whatever the meeting's length, nothing reads a whole
+meeting at once, and the speakers are not limited to the diarization
+model's eight
+(`docs/decisions/2026-10-24-speakers-across-a-long-meeting.md`). With
+`final_pass`, the session records each channel as it arrives
 (`crates/server/src/recording.rs`: raw s16le in `--recordings`, 32 KB a
-second per channel) and, once the live transcript is complete, hands the
-files to the finalizer thread, which runs one pass at a time
-(`finalizer.rs`, `crates/engine/src/final_pass.rs`):
+second per channel), and:
 
-1. each channel, one at a time in memory (4 bytes a sample: 230 MB an
-   hour), is cut by Silero VAD into pieces of at most 30 s and
-   transcribed 8 pieces a call;
-2. a diarized channel is diarized in one call over the whole recording,
-   on a context of its own (a live stream's context would be held for the
-   whole call), unless it is longer than `--diarize-max-seconds` (2 h:
-   a warning);
-3. words become segments with brainy-worker's rules (a change of speaker,
-   a pause of 1.2 s, a sentence end past 8 s, 30 s at most);
-4. the mic's echo of the call is dropped, as live, over the whole meeting.
+1. **Ranges**: the live channel tells where it is quiet
+   (`Channel::quiet_point`: where the VAD last heard speech end, or a
+   little before now in silence; never inside speech). Once a channel has
+   45 s of new audio, its range from the last cut to the latest quiet
+   point within 60 s (or, in speech that long, the first one after it)
+   goes to the finalizer thread, one job at a time for every session.
+2. **Words**: the finalizer reads the range from the recording, cuts it
+   with Silero VAD into pieces of at most 30 s and transcribes them 8 a
+   call.
+3. **Speakers**: a diarized range is diarized alone (Nemotron-3, offline,
+   on the final passes' context): at most eight voices in a minute, which
+   the model's eight slots hold. Each slot's voice, from up to 30 s where
+   it speaks alone, is a WeSpeaker embedding, matched to the meeting's
+   speakers by cosine: above 0.45 the same speaker; two slots of one range
+   never one speaker; only a voice of 4 s or more founds a new speaker (a
+   shorter one joins the most similar above 0.2, or is no one); a slot
+   heard alone for under 1.5 s has no voice, and its words go to the
+   nearest turn (`crates/engine/src/speakers.rs`). A range's slots are its
+   own, unrelated to the next range's: only voices link them, so the
+   encoder (`--voice`) is required. The meeting has no limit of eight, and
+   its numbering holds from the first minute to the last.
+4. **Segments**: words become segments with brainy-worker's rules (a
+   change of speaker, a pause of 1.2 s, a sentence end past 8 s, 30 s at
+   most), and are sent as `final_segments` up to the earliest cut of all
+   channels, so they come in order; a channel with `echo_of` stops 2 s
+   before the cut of the channel it echoes, whose words the echo filter
+   must have heard.
+5. **The end**: after `stop`, every channel's rest is cut in ranges the
+   same way; then `final` and `done`. The session lives until then even
+   if the client has gone, and the result is kept under the `finalizing`
+   id.
 
-A recording file deletes itself when dropped (`RecordedFile`): after the
-pass, whether it worked or not, when a session ends without a final pass,
-and when the connection is lost; a server that dies leaves its files, and
+A meeting uploaded whole (`POST /finals`) goes through the same steps:
+each channel is read once for its pauses (Silero VAD), then range by range
+(`final_pass.rs`).
+
+The recording is kept in files of 5 minutes per channel, and the files the
+pass has transcribed past are deleted as it goes (`Recording::forget_before`):
+the server holds minutes of a meeting, not hours (115 MB an hour a channel
+otherwise, on a server with tens of meetings). What is left is deleted
+when dropped (`Recording`, `RecordedFile`): when the session ends, with or
+without a final pass, when the connection is lost, after an upload's pass; a server that dies leaves its files, and
 deletes them when it starts again, having first taken the folder's lock
 (a second server on the same folder is refused, not let loose on the
 first one's live recordings). An uploaded meeting (`POST /finals`)
