@@ -28,6 +28,12 @@ sha256 with [oras](https://oras.land), which needs a login once:
 `gh auth token | oras login ghcr.io -u <user> --password-stdin`.
 `scripts/client.sh` builds the CLI and passes its arguments on, from the
 current folder.
+
+For now, with a [Groq](https://groq.com) API key in
+`~/.config/logbook/groq.key` (or `LOGBOOK_POLISH_KEY`), `scripts/server.sh`
+also has the final transcript cleaned up by `qwen/qwen3.8-27b` there
+(`--polish-url`, below). Groq then reads every meeting's text: it is for
+testing, not for meetings that must stay on your servers.
 `play` and `bench` need ffmpeg on the PATH.
 
 ## Use
@@ -125,6 +131,11 @@ compare.
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--voice` / `LOGBOOK_VOICE` | `wespeaker-resnet34-lm.gguf` in the models folder | speaker encoder of the final pass (required): links each minute's speakers to the meeting's, with no limit of eight |
 | `--voice-threshold` | 0.45 | voice similarity above which two minutes' voices are one speaker |
+| `--polish-url` / `LOGBOOK_POLISH_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model cleans the final transcript up: fillers, false starts, punctuation. The meeting's text goes there: a hosted provider reads every meeting |
+| `--polish-model` / `LOGBOOK_POLISH_MODEL` | none | its model; required with `--polish-url` |
+| `--polish-key` / `LOGBOOK_POLISH_KEY` | none | its API key, if it asks for one |
+| `--polish-parallel` | 4 | parts the model is asked to clean at once (one per meeting at most) |
+| `--polish-timeout` | 120 | seconds a request may take; a part that takes longer stays as heard |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes
 the first GPU.

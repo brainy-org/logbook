@@ -13,13 +13,15 @@ workspace. A prototype: why it exists and how it is built is in
 crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet.rs),
                  one channel's pipeline (channel.rs), echo (echo.rs), the final pass
                  as the meeting goes (progressive.rs) or over an upload (final_pass.rs),
-                 the wire protocol (protocol.rs), the upload's Opus (codec.rs)
+                 the wire protocol (protocol.rs), the upload's Opus (codec.rs),
+                 the final transcript cleaned up by a language model (polish.rs)
                  examples/diarize.rs: diarization strategies scored with
                  scripts/der.py                                    → docs/pipeline.md
 crates/server/   logbook-server: WebSocket /live and HTTP /finals (axum), a thread per
                  session, one batcher thread for every transcription, recordings
                  (recording.rs), one finalizer thread for final passes, their results
-                 by id (finals.rs)                                 → docs/protocol.md
+                 by id (finals.rs), the threads that ask the clean-up model
+                 (polisher.rs)                                     → docs/protocol.md
 crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
                  with --system, the call; its echo cancelled from the mic: aec.rs),
                  finish (pending meetings), devices, bench;
@@ -86,6 +88,11 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
   voices (`speakers::Linker`) make them the meeting's speakers. Carrying a
   slot number across ranges mixes people up silently
   (`docs/decisions/2026-10-24-speakers-across-a-long-meeting.md`).
+- **A session has one part with the clean-up model at a time**
+  (`Final::polishing`, server `session.rs`): final segments leave in the
+  order they were ready. Two parts out at once can come back swapped and
+  be appended to the page out of order, and the second misses the first
+  as context (`docs/pipeline.md`, "Final pass", step 6).
 - **Times that go out as JSON are never infinite**: serde_json writes
   infinity as `null`, which does not read back as a number. "To the end"
   is `f64::MAX` (`until`, `published_until`).

@@ -5,13 +5,14 @@
 mod batcher;
 mod finalizer;
 mod finals;
+mod polisher;
 mod recording;
 mod session;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -25,6 +26,7 @@ use futures_util::{SinkExt, StreamExt};
 use logbook_engine::codec;
 use logbook_engine::parakeet::Latency;
 use logbook_engine::parakeet::SAMPLE_RATE;
+use logbook_engine::polish::{self, Polisher};
 use logbook_engine::protocol::{
     ClientMessage, FinalState, ServerMessage, Started, Upload, decode_audio,
 };
@@ -98,6 +100,23 @@ struct Args {
     /// temporary directory.
     #[arg(long, env = "LOGBOOK_RECORDINGS")]
     recordings: Option<PathBuf>,
+    /// An OpenAI-compatible API, up to `/v1`, whose model cleans the final
+    /// transcript up (fillers, false starts, punctuation):
+    /// `http://localhost:11434/v1` for Ollama. The text goes there: a
+    /// hosted one reads every meeting. None: the transcript as heard.
+    #[arg(long, env = "LOGBOOK_POLISH_URL", requires = "polish_model")]
+    polish_url: Option<String>,
+    #[arg(long, env = "LOGBOOK_POLISH_MODEL")]
+    polish_model: Option<String>,
+    /// Its API key, if it asks for one.
+    #[arg(long, env = "LOGBOOK_POLISH_KEY", hide_env_values = true)]
+    polish_key: Option<String>,
+    /// Parts the model is asked to clean at once (one per session at most).
+    #[arg(long, default_value_t = 4)]
+    polish_parallel: usize,
+    /// Seconds a request may take; a part that takes longer stays as heard.
+    #[arg(long, default_value_t = 120)]
+    polish_timeout: u64,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -164,10 +183,28 @@ async fn main() -> Result<()> {
     }
     let engine = Arc::new(Engine::load(&options)?);
     let finals = Arc::new(Finals::default());
+    let polisher = match (args.polish_url, args.polish_model) {
+        (Some(url), Some(model)) => {
+            info!(url, model, "the final transcript is cleaned up");
+            let polisher = Polisher::new(polish::Options {
+                url,
+                model,
+                key: args.polish_key,
+                timeout: Duration::from_secs(args.polish_timeout),
+            });
+            Some(polisher::spawn(
+                polisher,
+                finals.clone(),
+                args.polish_parallel,
+            ))
+        }
+        _ => None,
+    };
     let shared = Shared {
         batcher: batcher::spawn(engine.asr.clone(), args.max_batch),
-        finalizer: finalizer::spawn(engine.clone(), finals.clone()),
+        finalizer: finalizer::spawn(engine.clone(), finals.clone(), polisher.clone()),
         finals,
+        polisher,
         engine,
         recordings,
     };

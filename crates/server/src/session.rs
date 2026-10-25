@@ -8,7 +8,10 @@
 //! by the finalizer thread from the recording, and its segments sent as
 //! they are ready. After `stop`, the session lives until the pass is
 //! complete, even if the client has gone: its result is kept in `Finals`.
+//! With a model to clean the transcript up (polisher.rs), the segments go
+//! through it before they are sent, a part at a time and in order.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -19,6 +22,7 @@ use logbook_engine::Engine;
 use logbook_engine::channel::Channel;
 use logbook_engine::echo::EchoFilter;
 use logbook_engine::parakeet::Transcript;
+use logbook_engine::polish::{self, Polished};
 use logbook_engine::progressive::{Progressive, Range, Transcribed};
 use logbook_engine::protocol::{ChannelConfig, FinalState, ServerMessage, Utterance};
 use tokio::sync::mpsc::UnboundedSender;
@@ -27,6 +31,7 @@ use tracing::{debug, info, warn};
 use crate::batcher::Job;
 use crate::finalizer::FinalJob;
 use crate::finals::Finals;
+use crate::polisher::{self, PolishJob};
 use crate::recording::Recording;
 
 /// What every session shares.
@@ -35,6 +40,8 @@ pub struct Shared {
     pub batcher: Sender<Job>,
     pub finalizer: Sender<FinalJob>,
     pub finals: Arc<Finals>,
+    /// Cleans the final transcript up; None to send it as heard.
+    pub polisher: Option<Sender<PolishJob>>,
     /// Where sessions with a final pass record their audio.
     pub recordings: PathBuf,
 }
@@ -50,6 +57,11 @@ pub enum Input {
     FinalWords {
         range: Range,
         result: Result<Transcribed, String>,
+    },
+    /// Final segments back from the model, cleaned where it could.
+    Polished {
+        until: f64,
+        polished: Polished,
     },
     /// The client has no more audio.
     Stop,
@@ -68,6 +80,18 @@ struct Final {
     warnings: Vec<String>,
     /// The id under which the result is kept, once the meeting has ended.
     id: Option<String>,
+    /// Segments ready, waiting for the model, in order: (until, them).
+    waiting: VecDeque<(f64, Vec<Utterance>)>,
+    /// A part is with the model: the next waits for it.
+    polishing: bool,
+    /// Parts the model could not clean.
+    unpolished: Vec<String>,
+}
+
+impl Final {
+    fn is_done(&self) -> bool {
+        self.pass.is_done() && self.waiting.is_empty() && !self.polishing
+    }
 }
 
 pub fn run(
@@ -89,6 +113,9 @@ pub fn run(
                     sent: Vec::new(),
                     warnings: Vec::new(),
                     id: None,
+                    waiting: VecDeque::new(),
+                    polishing: false,
+                    unpolished: Vec::new(),
                 })
             });
         match created {
@@ -204,6 +231,13 @@ fn live(
                         f.pass.transcribed(&range, result);
                     }
                 }
+                Some(Input::Polished { until, polished }) => {
+                    if let Some(f) = fin.as_mut() {
+                        f.polishing = false;
+                        f.unpolished.extend(polished.errors);
+                        send(f, until, polished.utterances, out);
+                    }
+                }
                 Some(Input::Stop) => {
                     if !stopping {
                         stopping = true;
@@ -283,9 +317,10 @@ fn live(
         }
         if live_done
             && let Some(f) = fin.as_mut()
-            && f.pass.is_done()
+            && f.is_done()
         {
             info!(session, segments = f.sent.len(), "final pass done");
+            f.warnings.extend(polisher::warning(&f.unpolished));
             let _ = out.send(ServerMessage::Final {
                 utterances: Vec::new(),
                 warnings: f.warnings.clone(),
@@ -321,13 +356,13 @@ fn progress(
             f.pass.quiet(i, channel.quiet_point());
         }
     }
-    while let Some((until, utterances)) = f.pass.ready() {
-        f.sent.extend(utterances.iter().cloned());
-        let _ = out.send(ServerMessage::FinalSegments { until, utterances });
+    while let Some(ready) = f.pass.ready() {
+        f.waiting.push_back(ready);
         for i in 0..channels.len() {
             f.recording.forget_before(i, f.pass.cut(i));
         }
     }
+    release(shared, session, f, reply, out);
     let ranges = f.pass.next_ranges();
     if !ranges.is_empty() {
         f.recording.flush()?;
@@ -342,4 +377,58 @@ fn progress(
         });
     }
     Ok(())
+}
+
+/// The segments waiting, in order: through the model when there is one, a
+/// part at a time (the next one's context is this one cleaned); straight
+/// out otherwise.
+fn release(
+    shared: &Shared,
+    session: &str,
+    f: &mut Final,
+    reply: &Sender<Input>,
+    out: &UnboundedSender<ServerMessage>,
+) {
+    while !f.polishing {
+        let Some((until, utterances)) = f.waiting.pop_front() else {
+            return;
+        };
+        let Some(polisher) = shared.polisher.as_ref().filter(|_| !utterances.is_empty()) else {
+            send(f, until, utterances, out);
+            continue;
+        };
+        let context = f.sent[f.sent.len().saturating_sub(polish::CONTEXT)..].to_vec();
+        let job = PolishJob::Segments {
+            session: session.to_string(),
+            context,
+            until,
+            utterances,
+            reply: reply.clone(),
+        };
+        match polisher.send(job) {
+            Ok(()) => f.polishing = true,
+            // No polisher left: as heard.
+            Err(std::sync::mpsc::SendError(job)) => {
+                if let PolishJob::Segments {
+                    until, utterances, ..
+                } = job
+                {
+                    f.unpolished
+                        .push(format!("{until:.0} s: the polisher has stopped"));
+                    send(f, until, utterances, out);
+                }
+            }
+        }
+    }
+}
+
+/// Final segments out to the client, and kept for `Finals`.
+fn send(
+    f: &mut Final,
+    until: f64,
+    utterances: Vec<Utterance>,
+    out: &UnboundedSender<ServerMessage>,
+) {
+    f.sent.extend(utterances.iter().cloned());
+    let _ = out.send(ServerMessage::FinalSegments { until, utterances });
 }

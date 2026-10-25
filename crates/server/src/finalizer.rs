@@ -5,7 +5,8 @@
 //! session, or a whole uploaded meeting, whose result goes to `Finals`.
 //! Running them one after another bounds what final passes take from the
 //! live sessions' GPU to one call at a time, and keeps them off the
-//! sessions' threads.
+//! sessions' threads. An upload's result goes through the model that
+//! cleans the transcript up, when there is one (polisher.rs).
 
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
@@ -18,6 +19,7 @@ use logbook_engine::protocol::{ChannelConfig, FinalState};
 use tracing::{info, warn};
 
 use crate::finals::Finals;
+use crate::polisher::PolishJob;
 use crate::recording::{RangeReader, RecordedFile};
 use crate::session::Input;
 
@@ -35,7 +37,11 @@ pub enum FinalJob {
     },
 }
 
-pub fn spawn(engine: Arc<Engine>, finals: Arc<Finals>) -> Sender<FinalJob> {
+pub fn spawn(
+    engine: Arc<Engine>,
+    finals: Arc<Finals>,
+    polisher: Option<Sender<PolishJob>>,
+) -> Sender<FinalJob> {
     let (tx, rx) = channel::<FinalJob>();
     std::thread::Builder::new()
         .name("finalizer".into())
@@ -47,7 +53,9 @@ pub fn spawn(engine: Arc<Engine>, finals: Arc<Finals>) -> Sender<FinalJob> {
                         ranges,
                         reply,
                     } => run_ranges(&engine, &session, ranges, &reply),
-                    FinalJob::Whole { id, channels } => run_whole(&engine, &finals, id, channels),
+                    FinalJob::Whole { id, channels } => {
+                        run_whole(&engine, &finals, polisher.as_ref(), id, channels)
+                    }
                 }
             }
         })
@@ -87,6 +95,7 @@ fn run_ranges(
 fn run_whole(
     engine: &Engine,
     finals: &Finals,
+    polisher: Option<&Sender<PolishJob>>,
     id: String,
     channels: Vec<(ChannelConfig, RecordedFile)>,
 ) {
@@ -110,6 +119,33 @@ fn run_whole(
                 took_ms = started.elapsed().as_millis() as u64,
                 "final pass of an upload"
             );
+            if let Some(polisher) = polisher {
+                let job = PolishJob::Whole {
+                    id: id.clone(),
+                    utterances: result.utterances,
+                    warnings: result.warnings,
+                };
+                match polisher.send(job) {
+                    Ok(()) => return,
+                    Err(std::sync::mpsc::SendError(job)) => {
+                        if let PolishJob::Whole {
+                            utterances,
+                            warnings,
+                            ..
+                        } = job
+                        {
+                            finals.finish(
+                                &id,
+                                FinalState::Done {
+                                    utterances,
+                                    warnings,
+                                },
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
             FinalState::Done {
                 utterances: result.utterances,
                 warnings: result.warnings,

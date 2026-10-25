@@ -51,7 +51,10 @@ also over HTTP, at `http://HOST:3300/finals`. Types in
   the shape of `utterance` without the `type`. Never sent again, never
   changed: the next ones start at `until` or later. The final pass's
   speakers are numbered once for the whole meeting (not as the live ones).
-  The last ones have `until` 1.8e308 (JSON has no infinity).
+  The last ones have `until` 1.8e308 (JSON has no infinity). On a server
+  that cleans the transcript up (`--polish-url`), `text` is the cleaned
+  text and `words` stay as heard: the two may differ, and a segment of
+  fillers alone may be missing.
 - `{"type":"finalizing","audio_s":1834.2,"id":"9f3c…"}` with a final
   pass: the live transcript is complete; the final pass finishes the last
   minute or so (seconds). The whole result is also at `GET /finals/{id}`

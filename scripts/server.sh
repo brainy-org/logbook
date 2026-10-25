@@ -2,7 +2,8 @@
 # Runs logbook-server from this checkout: fetches libparakeet for this
 # platform into vendor/ and the models into ~/.cache/brainy-org when they
 # are missing, from the mirror, then builds and starts the server. Arguments go to the server
-# (`scripts/server.sh --latency very-low`).
+# (`scripts/server.sh --latency very-low`). With a Groq key in
+# ~/.config/logbook/groq.key the final transcript is cleaned up there.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -75,5 +76,20 @@ done
 export LD_LIBRARY_PATH="$PWD/vendor${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PARAKEET_LIB="$PWD/vendor/$lib"
 export LOGBOOK_MODELS="$models"
+
+# The clean-up of the final transcript (docs/pipeline.md, "Final pass"):
+# for now Qwen3.8-27B on Groq, when a key is in POLISH_KEY_FILE (or
+# LOGBOOK_POLISH_KEY is set); LOGBOOK_POLISH_URL and LOGBOOK_POLISH_MODEL
+# pick another. Groq reads every meeting's text: a test setup, not the
+# promise of the README.
+key_file="${POLISH_KEY_FILE:-$HOME/.config/logbook/groq.key}"
+if [[ -z "${LOGBOOK_POLISH_KEY:-}" && -s "$key_file" ]]; then
+  LOGBOOK_POLISH_KEY="$(<"$key_file")"
+  export LOGBOOK_POLISH_KEY
+fi
+if [[ -n "${LOGBOOK_POLISH_KEY:-}" ]]; then
+  export LOGBOOK_POLISH_URL="${LOGBOOK_POLISH_URL:-https://api.groq.com/openai/v1}"
+  export LOGBOOK_POLISH_MODEL="${LOGBOOK_POLISH_MODEL:-qwen/qwen3.8-27b}"
+fi
 cargo build --release -q -p logbook-server
 exec target/release/logbook-server "$@"

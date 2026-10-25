@@ -133,6 +133,18 @@ second per channel), and:
    if the client has gone, and the result is kept under the `finalizing`
    id.
 
+6. **Clean-up** (with `--polish-url` and `--polish-model`): before they
+   are sent, the segments go to a language model that removes fillers,
+   false starts and the words a speaker took back, and punctuates
+   (`crates/engine/src/polish.rs`). A pool of threads asks it
+   (`crates/server/src/polisher.rs`), never the finalizer; a session has
+   one part out at a time, so segments still leave in order, each part
+   with the last three cleaned as context. Only `text` changes; `words`
+   stay as heard. A text that grew, shrank past what fillers explain, or
+   is mostly words not heard in its segment keeps the heard text: a small
+   model copied a neighbour's text into a segment
+   (`docs/decisions/2026-10-25-llm-clean-up-of-the-final-transcript.md`).
+
 A meeting uploaded whole (`POST /finals`) goes through the same steps:
 each channel is read once for its pauses (Silero VAD), then range by range
 (`final_pass.rs`).
