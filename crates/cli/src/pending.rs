@@ -29,6 +29,9 @@ pub struct Meeting {
     /// RFC 3339, local time.
     pub started: String,
     pub channels: Vec<ChannelConfig>,
+    /// The server's model may clean the transcript up (--polish).
+    #[serde(default)]
+    pub polish: bool,
     pub publish: Saved,
     /// The server's final pass for it, once one is known to be running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -258,6 +261,7 @@ mod tests {
                 diarize: false,
                 echo_of: None,
             }],
+            polish: false,
             publish: Saved {
                 brainy: false,
                 brainy_url: None,

@@ -32,6 +32,10 @@ pub enum ClientMessage {
         /// The server keeps the audio for it, and deletes it afterwards.
         #[serde(default)]
         final_pass: bool,
+        /// Let the server's model clean the final transcript up, if it has
+        /// one. Off, the default, keeps the meeting's text away from it.
+        #[serde(default)]
+        polish: bool,
     },
     /// No more audio: the server sends what it still holds, then `Done`.
     Stop,
@@ -74,6 +78,9 @@ pub enum ServerMessage {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Upload {
     pub channels: Vec<ChannelConfig>,
+    /// As in `Start`.
+    #[serde(default)]
+    pub polish: bool,
 }
 
 /// `POST /finals` answers with the id of the pass it started.
@@ -151,7 +158,7 @@ mod tests {
             serde_json::from_str(r#"{"type":"start","channels":[{"name":"mic","diarize":false}]}"#)
                 .unwrap();
         assert!(
-            matches!(start, ClientMessage::Start { channels, final_pass: false } if channels[0].name == "mic")
+            matches!(start, ClientMessage::Start { channels, final_pass: false, polish: false } if channels[0].name == "mic")
         );
     }
 }

@@ -96,12 +96,13 @@ pub trait Events {
 }
 
 /// With `final_pass`, the first session asks for the final pass, which
-/// follows the meeting (`Events::final_segments`). Only the first: a later
-/// one did not hear the whole meeting.
+/// follows the meeting (`Events::final_segments`); its value is whether the
+/// server's model may clean it up. Only the first: a later one did not hear
+/// the whole meeting.
 pub async fn live(
     server: &Server,
     channels: Vec<ChannelConfig>,
-    final_pass: bool,
+    final_pass: Option<bool>,
     mut audio: Audio,
     events: &mut impl Events,
 ) -> Live {
@@ -118,7 +119,7 @@ pub async fn live(
     let mut first = true;
     let mut retry = RETRY_MIN;
     loop {
-        let asked = final_pass && first;
+        let asked = final_pass.filter(|_| first);
         let lost = match connect(&url, &channels, asked).await {
             Ok(socket) => {
                 if !first {
@@ -143,7 +144,7 @@ pub async fn live(
                     &mut position,
                     &mut ended,
                     &mut out,
-                    asked,
+                    asked.is_some(),
                     shift,
                     events,
                 )
@@ -175,13 +176,18 @@ pub async fn live(
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn connect(url: &str, channels: &[ChannelConfig], final_pass: bool) -> Result<Socket> {
+async fn connect(
+    url: &str,
+    channels: &[ChannelConfig],
+    final_pass: Option<bool>,
+) -> Result<Socket> {
     let (mut socket, _) = connect_async(url)
         .await
         .with_context(|| format!("could not connect to {url}"))?;
     let start = serde_json::to_string(&ClientMessage::Start {
         channels: channels.to_vec(),
-        final_pass,
+        final_pass: final_pass.is_some(),
+        polish: final_pass.unwrap_or(false),
     })?;
     socket.send(Message::Text(start.into())).await?;
     match next(&mut socket).await? {
@@ -296,6 +302,7 @@ fn http() -> Result<reqwest::Client> {
 pub async fn upload(
     server: &Server,
     channels: Vec<ChannelConfig>,
+    polish: bool,
     audio: Vec<Vec<i16>>,
 ) -> Result<String> {
     // Encoding an hour takes a few seconds of CPU.
@@ -308,7 +315,7 @@ pub async fn upload(
     .await??;
     let bytes: usize = encoded.iter().map(Vec::len).sum();
     eprintln!("uploading the meeting ({:.1} MB)…", bytes as f64 / 1e6);
-    let meeting = serde_json::to_vec(&Upload { channels })?;
+    let meeting = serde_json::to_vec(&Upload { channels, polish })?;
     let mut form = reqwest::multipart::Form::new().part(
         "meeting",
         reqwest::multipart::Part::bytes(meeting).mime_str("application/json")?,

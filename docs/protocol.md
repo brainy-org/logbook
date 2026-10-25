@@ -18,6 +18,9 @@ also over HTTP, at `http://HOST:3300/finals`. Types in
    the speakers): its echoed words are dropped (docs/pipeline.md, "Echo").
    `"final_pass": true`, optional, asks for the final pass after `stop`:
    the server records the audio for it and deletes it afterwards.
+   `"polish": true`, optional, has the final transcript cleaned up on a
+   server with a model for it (`--polish-url`), which then reads the
+   meeting's text. Default `false`: as heard, and nothing sent to it.
 
 2. Binary frames, the audio: one byte, the channel's index in `channels`,
    then 16 kHz mono PCM, signed 16-bit little-endian. The CLI sends 100 ms
@@ -52,7 +55,8 @@ also over HTTP, at `http://HOST:3300/finals`. Types in
   changed: the next ones start at `until` or later. The final pass's
   speakers are numbered once for the whole meeting (not as the live ones).
   The last ones have `until` 1.8e308 (JSON has no infinity). On a server
-  that cleans the transcript up (`--polish-url`), `text` is the cleaned
+  that cleans the transcript up (`--polish-url`), when `start` said
+  `"polish": true`, `text` is the cleaned
   text and `words` stay as heard: the two may differ, and a segment of
   fillers alone may be missing.
 - `{"type":"finalizing","audio_s":1834.2,"id":"9f3c…"}` with a final
@@ -83,7 +87,8 @@ the final pass (`docs/decisions/2026-10-24-the-client-keeps-the-meeting.md`).
 ## Final passes over HTTP
 
 - `POST /finals`, multipart: a part `meeting`, JSON
-  `{"channels":[...]}` as in `start`, then one part `audio` per channel
+  `{"channels":[...],"polish":true}` as in `start` (`polish` optional, default `false`),
+then one part `audio` per channel
   in the same order. Answers `202 {"id":"…"}`, or `400` with the reason.
   At most 256 MB.
 - `GET /finals/{id}`: `{"state":"running","audio_s":…}`,

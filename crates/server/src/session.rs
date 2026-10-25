@@ -8,8 +8,9 @@
 //! by the finalizer thread from the recording, and its segments sent as
 //! they are ready. After `stop`, the session lives until the pass is
 //! complete, even if the client has gone: its result is kept in `Finals`.
-//! With a model to clean the transcript up (polisher.rs), the segments go
-//! through it before they are sent, a part at a time and in order.
+//! With a model to clean the transcript up (polisher.rs), and unless the
+//! client declined it, the segments go through it before they are sent, a
+//! part at a time and in order.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -86,6 +87,8 @@ struct Final {
     polishing: bool,
     /// Parts the model could not clean.
     unpolished: Vec<String>,
+    /// The model, if the server has one and the client wants it.
+    polisher: Option<Sender<PolishJob>>,
 }
 
 impl Final {
@@ -94,17 +97,18 @@ impl Final {
     }
 }
 
+/// `final_pass`, if asked: whether the model may clean it up.
 pub fn run(
     shared: &Shared,
     session: String,
     configs: Vec<ChannelConfig>,
-    final_pass: bool,
+    final_pass: Option<bool>,
     inbox: Receiver<Input>,
     reply: Sender<Input>,
     out: UnboundedSender<ServerMessage>,
 ) {
     let mut fin = None;
-    if final_pass {
+    if let Some(polish) = final_pass {
         let created =
             Recording::create(&shared.recordings, &session, configs.len()).and_then(|recording| {
                 Ok(Final {
@@ -116,6 +120,7 @@ pub fn run(
                     waiting: VecDeque::new(),
                     polishing: false,
                     unpolished: Vec::new(),
+                    polisher: shared.polisher.clone().filter(|_| polish),
                 })
             });
         match created {
@@ -176,7 +181,8 @@ fn live(
         });
     }
     let names: Vec<&str> = channels.iter().map(|c| c.name()).collect();
-    info!(session, channels = ?names, final_pass = fin.is_some(), "session started");
+    let polish = fin.as_ref().is_some_and(|f| f.polisher.is_some());
+    info!(session, channels = ?names, final_pass = fin.is_some(), polish, "session started");
     let _ = out.send(ServerMessage::Ready);
 
     let submit = |clips: Vec<logbook_engine::channel::Clip>| {
@@ -362,7 +368,7 @@ fn progress(
             f.recording.forget_before(i, f.pass.cut(i));
         }
     }
-    release(shared, session, f, reply, out);
+    release(session, f, reply, out);
     let ranges = f.pass.next_ranges();
     if !ranges.is_empty() {
         f.recording.flush()?;
@@ -383,7 +389,6 @@ fn progress(
 /// part at a time (the next one's context is this one cleaned); straight
 /// out otherwise.
 fn release(
-    shared: &Shared,
     session: &str,
     f: &mut Final,
     reply: &Sender<Input>,
@@ -393,7 +398,7 @@ fn release(
         let Some((until, utterances)) = f.waiting.pop_front() else {
             return;
         };
-        let Some(polisher) = shared.polisher.as_ref().filter(|_| !utterances.is_empty()) else {
+        let Some(polisher) = f.polisher.as_ref().filter(|_| !utterances.is_empty()) else {
             send(f, until, utterances, out);
             continue;
         };

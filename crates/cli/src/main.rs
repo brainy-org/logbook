@@ -50,6 +50,11 @@ struct Publish {
     /// phrases) and print the final transcript as Markdown.
     #[arg(long = "final")]
     final_pass: bool,
+    /// Have the final transcript cleaned up by the server's language model,
+    /// if it has one (fillers, false starts, punctuation). The model reads
+    /// the meeting's text; without this it stays as heard.
+    #[arg(long)]
+    polish: bool,
     /// Write the final transcript as a page in brainy (implies --final).
     #[arg(long)]
     brainy: bool,
@@ -534,7 +539,8 @@ async fn final_pass(server: &Server, pending: &mut Pending) -> Result<Finalized>
         pending.set_final_id(None)?;
     }
     let audio = pending.audio()?;
-    let id = client::upload(server, pending.meeting.channels.clone(), audio).await?;
+    let meeting = &pending.meeting;
+    let id = client::upload(server, meeting.channels.clone(), meeting.polish, audio).await?;
     pending.set_final_id(Some(id.clone()))?;
     eprintln!("reading the whole meeting again…");
     match client::poll(server, &id).await? {
@@ -576,6 +582,7 @@ async fn meeting(
         let meeting = Meeting {
             started: started.to_rfc3339(),
             channels: channels.clone(),
+            polish: p.polish,
             publish: p.saved(),
             final_id: None,
             page: None,
@@ -614,7 +621,8 @@ async fn meeting(
             (None, None) => Ok(()),
         }
     });
-    let live = client::live(server, channels, p.final_pass(), rx, &mut printer).await;
+    let final_pass = p.final_pass().then_some(p.polish);
+    let live = client::live(server, channels, final_pass, rx, &mut printer).await;
     drop(printer);
     let kept = tee.await?;
     let Some(publishing) = publishing else {
@@ -755,7 +763,7 @@ async fn bench(
             let start = Instant::now();
             tokio::spawn(audio::play(samples, 1.0, start, tx));
             let mut events = Latencies { start, results };
-            let live = client::live(&server, channels, false, rx, &mut events).await;
+            let live = client::live(&server, channels, None, rx, &mut events).await;
             if !live.intact {
                 bail!("the connection was lost");
             }

@@ -6,7 +6,8 @@
 //! Running them one after another bounds what final passes take from the
 //! live sessions' GPU to one call at a time, and keeps them off the
 //! sessions' threads. An upload's result goes through the model that
-//! cleans the transcript up, when there is one (polisher.rs).
+//! cleans the transcript up, when there is one and the client did not
+//! decline it (polisher.rs).
 
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
@@ -34,6 +35,8 @@ pub enum FinalJob {
     Whole {
         id: String,
         channels: Vec<(ChannelConfig, RecordedFile)>,
+        /// Through the clean-up model, if there is one.
+        polish: bool,
     },
 }
 
@@ -53,8 +56,13 @@ pub fn spawn(
                         ranges,
                         reply,
                     } => run_ranges(&engine, &session, ranges, &reply),
-                    FinalJob::Whole { id, channels } => {
-                        run_whole(&engine, &finals, polisher.as_ref(), id, channels)
+                    FinalJob::Whole {
+                        id,
+                        channels,
+                        polish,
+                    } => {
+                        let polisher = polisher.as_ref().filter(|_| polish);
+                        run_whole(&engine, &finals, polisher, id, channels)
                     }
                 }
             }

@@ -37,7 +37,8 @@ For now, with a [Groq](https://groq.com) API key in
 `~/.config/logbook/groq.key` (or `LOGBOOK_POLISH_KEY`), `scripts/server.sh`
 also has the final transcript cleaned up by `qwen/qwen3.8-27b` there
 (`--polish-url`, below). Groq then reads every meeting's text: it is for
-testing, not for meetings that must stay on your servers.
+testing, not for meetings that must stay on your servers: only meetings
+started with `--polish` go there.
 `play` and `bench` need ffmpeg on the PATH.
 
 ## Use
@@ -68,6 +69,7 @@ along it means the server does not keep up.
 export BRAINY_URL=https://brainy.example.com BRAINY_TOKEN=brainy_…   # a personal token with write access
 scripts/client.sh live --system --brainy --me Marco                  # Ctrl-C at the end of the meeting
 scripts/client.sh live --system --brainy --parent PAGE_ID --title "Weekly sync"
+scripts/client.sh live --system --brainy --polish                    # cleaned up by the server's model
 scripts/client.sh play meeting.m4a --final                           # the final transcript, printed
 ```
 
@@ -80,6 +82,12 @@ microphone, "Speaker 1", "Speaker 2"… for the call), when, and what.
 After Ctrl-C only the last minute or so is left (seconds), then the
 page's first line becomes "Recorded … · duration · speakers". Without
 `--parent` the page goes at the top of your default workspace.
+
+On a server with a language model (`--polish-url`, below), `--polish`
+has the final transcript cleaned up there: fillers, false starts,
+punctuation. Without it the transcript stays as heard and the meeting's
+text never reaches the model; a pending meeting keeps the choice for
+`finish`.
 
 ### When the network or the server fails
 
@@ -144,7 +152,7 @@ Sound → Input) is the other knob.
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--voice` / `LOGBOOK_VOICE` | `wespeaker-resnet34-lm.gguf` in the models folder | speaker encoder of the final pass (required): links each minute's speakers to the meeting's, with no limit of eight |
 | `--voice-threshold` | 0.45 | voice similarity above which two minutes' voices are one speaker |
-| `--polish-url` / `LOGBOOK_POLISH_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model cleans the final transcript up: fillers, false starts, punctuation. The meeting's text goes there: a hosted provider reads every meeting |
+| `--polish-url` / `LOGBOOK_POLISH_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model cleans the final transcript up: fillers, false starts, punctuation. The meeting's text goes there: a hosted provider reads every meeting whose client asks for it (`--polish`) |
 | `--polish-model` / `LOGBOOK_POLISH_MODEL` | none | its model; required with `--polish-url` |
 | `--polish-key` / `LOGBOOK_POLISH_KEY` | none | its API key, if it asks for one |
 | `--polish-parallel` | 4 | parts the model is asked to clean at once (one per meeting at most) |

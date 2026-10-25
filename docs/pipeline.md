@@ -133,7 +133,8 @@ second per channel), and:
    if the client has gone, and the result is kept under the `finalizing`
    id.
 
-6. **Clean-up** (with `--polish-url` and `--polish-model`): before they
+6. **Clean-up** (with `--polish-url` and `--polish-model`, for a meeting
+   that asks for it: `"polish": true`, the CLI's `--polish`): before they
    are sent, the segments go to a language model that removes fillers,
    false starts and the words a speaker took back, and punctuates
    (`crates/engine/src/polish.rs`). A pool of threads asks it

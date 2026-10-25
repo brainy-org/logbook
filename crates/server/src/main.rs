@@ -322,6 +322,7 @@ async fn start_upload(shared: &Shared, mut multipart: Multipart) -> Result<Strin
     let _ = shared.finalizer.send(FinalJob::Whole {
         id: id.clone(),
         channels: upload.channels.into_iter().zip(files).collect(),
+        polish: upload.polish,
     });
     Ok(id)
 }
@@ -344,13 +345,14 @@ async fn live(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Respo
 
 async fn handle(socket: WebSocket, state: Arc<AppState>) {
     let (mut sink, mut stream) = socket.split();
-    let (configs, final_pass) = loop {
+    let (configs, final_pass, polish) = loop {
         match stream.next().await {
             Some(Ok(Message::Text(text))) => match serde_json::from_str(text.as_str()) {
                 Ok(ClientMessage::Start {
                     channels,
                     final_pass,
-                }) => break (channels, final_pass),
+                    polish,
+                }) => break (channels, final_pass, polish),
                 Ok(_) | Err(_) => {
                     warn!("the first message was not a start");
                     return;
@@ -378,7 +380,7 @@ async fn handle(socket: WebSocket, state: Arc<AppState>) {
             &thread_state.shared,
             session,
             configs,
-            final_pass,
+            final_pass.then_some(polish),
             in_rx,
             reply,
             out_tx,

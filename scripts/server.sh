@@ -3,7 +3,8 @@
 # server (`scripts/server.sh --latency very-low`). The server itself
 # fetches libparakeet and the models from the mirror on first start
 # (crates/engine/src/mirror.rs), with LOGBOOK_REGISTRY_TOKEN from .env. With a Groq key in
-# ~/.config/logbook/groq.key the final transcript is cleaned up there.
+# ~/.config/logbook/groq.key the final transcript of a meeting started with
+# --polish is cleaned up there.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -21,8 +22,8 @@ fi
 # The clean-up of the final transcript (docs/pipeline.md, "Final pass"):
 # for now Qwen3.8-27B on Groq, when a key is in POLISH_KEY_FILE (or
 # LOGBOOK_POLISH_KEY is set); LOGBOOK_POLISH_URL and LOGBOOK_POLISH_MODEL
-# pick another. Groq reads every meeting's text: a test setup, not the
-# promise of the README.
+# pick another. Groq reads the text of every meeting started with --polish:
+# a test setup, not the promise of the README.
 key_file="${POLISH_KEY_FILE:-$HOME/.config/logbook/groq.key}"
 if [[ -z "${LOGBOOK_POLISH_KEY:-}" && -s "$key_file" ]]; then
   LOGBOOK_POLISH_KEY="$(<"$key_file")"

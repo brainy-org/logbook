@@ -7,7 +7,9 @@ as Wispr Flow does for dictation (`crates/engine/src/polish.rs`,
 `crates/server/src/polisher.rs`). Only `text` changes; speakers, times and
 `words` stay as heard. Every answer is checked against what was heard, and
 a segment the model rewrote keeps the heard text. It is off unless
-`--polish-url` and `--polish-model` are set. Of the models tried,
+`--polish-url` and `--polish-model` are set, and then only for a meeting
+that asks for it (`"polish": true` in `start` or the upload; the CLI's
+`--polish`): another meeting's text never reaches the model. Of the models tried,
 Qwen3.8-27B (on Groq) cleans well in under a second a part; LFM2.5-8B-A1B
 is too slow and copies segments; gpt-oss-120b rewrites names: see
 "Measured".
@@ -35,7 +37,14 @@ is too slow and copies segments; gpt-oss-120b rewrites names: see
   `warnings` says how many parts.
 - **The text goes to the endpoint**: a hosted provider reads every meeting.
   A model on the server's own machine or network keeps the README's
-  promise; the flag's help says so.
+  promise; the flag's help says so. The choice is per meeting, made by
+  the person through the client, and kept with a pending meeting so that
+  its upload honours it too. Off by default: the server's operator picks
+  the model, but whether a meeting's text leaves for it is the person's
+  to say, and a hosted model must not read a meeting nobody agreed to
+  send. (Rejected: on by default with `--no-polish`, which sent every
+  meeting on a server with a key to Groq unless someone remembered the
+  flag.)
 
 ## Measured (2026-10-25, M3 16 GB, Unsloth Studio)
 
