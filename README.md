@@ -68,7 +68,7 @@ along it means the server does not keep up.
 ```bash
 export BRAINY_URL=https://brainy.example.com BRAINY_TOKEN=brainy_…   # a personal token with write access
 scripts/client.sh live --system --brainy --me Marco                  # Ctrl-C at the end of the meeting
-scripts/client.sh live --system --brainy --parent PAGE_ID --title "Weekly sync"
+scripts/client.sh live --system --brainy --parent "Engineering/Meetings" --title "Weekly sync"
 scripts/client.sh live --system --brainy --polish                    # cleaned up by the server's model
 scripts/client.sh play meeting.m4a --final                           # the final transcript, printed
 ```
@@ -82,6 +82,14 @@ microphone, "Speaker 1", "Speaker 2"… for the call), when, and what.
 After Ctrl-C only the last minute or so is left (seconds), then the
 page's first line becomes "Recorded … · duration · speakers". Without
 `--parent` the page goes at the top of your default workspace.
+
+`--parent` (or `LOGBOOK_PARENT`, to set it once) takes the page's
+address as the browser shows it, its id, or its path of titles from the
+top of your default workspace: `"Meetings"`, `"Engineering/Meetings"`,
+in any case. It is looked up when the meeting starts: a title that
+matches no page, or more than one, stops there and lists what it found
+(for two pages with one title, pass the address of one). A title with a
+`/` in it can be named only by its address.
 
 On a server with a language model (`--polish-url`, below), `--polish`
 has the final transcript cleaned up there: fillers, false starts,

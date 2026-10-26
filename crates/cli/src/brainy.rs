@@ -31,6 +31,14 @@ pub struct Page {
     pub url: String,
 }
 
+/// A page as `list_pages` lists it.
+#[derive(Debug, Deserialize)]
+struct Listed {
+    page_id: String,
+    title: String,
+    url: String,
+}
+
 #[derive(Deserialize)]
 struct Blocks {
     blocks: Vec<Block>,
@@ -76,6 +84,43 @@ impl Brainy {
             self.append(&page.id, part).await?;
         }
         Ok(page)
+    }
+
+    /// The id of the page `reference` names: its id, its address (as the
+    /// browser shows it, `…/w/<workspace>/<page>`), or its path of titles
+    /// from the top of the default workspace, "Engineering/Meetings" (any
+    /// case). A title that matches no page or more than one is an error
+    /// that lists what is there, so a meeting never lands somewhere else.
+    pub async fn resolve_page(&self, reference: &str) -> Result<String> {
+        let reference = reference.trim();
+        if is_id(reference) {
+            return Ok(reference.to_string());
+        }
+        if reference.starts_with("http://") || reference.starts_with("https://") {
+            return id_in_url(reference)
+                .with_context(|| format!("{reference} is not the address of a brainy page"));
+        }
+        let mut parent: Option<Listed> = None;
+        for name in reference
+            .split('/')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
+            let path = match &parent {
+                Some(p) => format!("/api/v1/pages?parent_id={}", p.page_id),
+                None => "/api/v1/pages".to_string(),
+            };
+            let pages: Vec<Listed> = self
+                .send(Method::GET, &path, &serde_json::Value::Null)
+                .await?;
+            let under = parent
+                .as_ref()
+                .map_or("the top of your workspace".to_string(), |p| {
+                    format!("\"{}\"", p.title)
+                });
+            parent = Some(pick(pages, name).map_err(|e| e.context(format!("under {under}")))?);
+        }
+        Ok(parent.context("--parent names no page")?.page_id)
     }
 
     /// Adds Markdown at the end of the page.
@@ -146,6 +191,51 @@ impl Brainy {
     }
 }
 
+/// A page id: a UUID, 8-4-4-4-12 hexadecimal digits.
+fn is_id(text: &str) -> bool {
+    text.len() == 36
+        && text.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+/// The page id at the end of a page's address, `…/w/<workspace>/<page>`.
+fn id_in_url(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next()?;
+    let last = path.trim_end_matches('/').rsplit('/').next()?;
+    is_id(last).then(|| last.to_string())
+}
+
+/// The one page titled `name`, any case.
+fn pick(pages: Vec<Listed>, name: &str) -> Result<Listed> {
+    let wanted = name.to_lowercase();
+    let (mut matches, others): (Vec<Listed>, Vec<Listed>) = pages
+        .into_iter()
+        .partition(|p| p.title.to_lowercase() == wanted);
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => {
+            let titles: Vec<String> = others.iter().map(|p| format!("\"{}\"", p.title)).collect();
+            if titles.is_empty() {
+                bail!("no page is titled \"{name}\", and none is there")
+            }
+            bail!(
+                "no page is titled \"{name}\"; there are {}",
+                titles.join(", ")
+            )
+        }
+        _ => {
+            let urls: Vec<&str> = matches.iter().map(|p| p.url.as_str()).collect();
+            bail!(
+                "{} pages are titled \"{name}\": pass the address of one instead ({})",
+                matches.len(),
+                urls.join(", ")
+            )
+        }
+    }
+}
+
 /// `text` in parts of at most `max` bytes, cut between paragraphs.
 fn split(text: &str, max: usize) -> Vec<&str> {
     let mut parts = Vec::new();
@@ -183,5 +273,39 @@ mod tests {
         assert_eq!(split("short", 100), vec!["short"]);
         // No paragraph to cut at, and a character across the limit.
         assert_eq!(split("perché", 6), vec!["perch", "é"]);
+    }
+
+    const ID: &str = "0b5c6a1e-3f2d-4c8b-9a7e-1d2f3a4b5c6d";
+
+    #[test]
+    fn a_page_is_found_by_its_id_or_its_address() {
+        assert!(is_id(ID));
+        assert!(!is_id("Meetings"));
+        assert!(!is_id(&ID.replace('-', "x")));
+        let url = format!("https://brainy.example.com/w/{ID}/{ID}");
+        assert_eq!(id_in_url(&url).as_deref(), Some(ID));
+        assert_eq!(id_in_url(&format!("{url}/?x=1#b")).as_deref(), Some(ID));
+        assert_eq!(id_in_url("https://brainy.example.com/w/"), None);
+    }
+
+    fn listed(title: &str, n: u8) -> Listed {
+        Listed {
+            page_id: format!("id{n}"),
+            title: title.into(),
+            url: format!("https://b/w/x/id{n}"),
+        }
+    }
+
+    #[test]
+    fn a_title_names_exactly_one_page() {
+        let pages = vec![listed("Meetings", 1), listed("Notes", 2)];
+        assert_eq!(pick(pages, "meetings").unwrap().page_id, "id1");
+        let missing = pick(vec![listed("Notes", 2)], "Meetings").unwrap_err();
+        assert!(missing.to_string().contains("\"Notes\""));
+        let twice = pick(
+            vec![listed("Meetings", 1), listed("meetings", 2)],
+            "Meetings",
+        );
+        assert!(twice.unwrap_err().to_string().contains("https://b/w/x/id2"));
     }
 }

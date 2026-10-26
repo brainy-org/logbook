@@ -70,8 +70,9 @@ struct Publish {
         requires = "brainy"
     )]
     brainy_token: Option<String>,
-    /// The page the meeting goes under (its id); by default the top of your
-    /// default workspace.
+    /// The page the meeting goes under: its address (copied from the
+    /// browser), its id, or its path of titles, e.g. "Engineering/Meetings";
+    /// by default the top of your default workspace.
     #[arg(long, env = "LOGBOOK_PARENT", requires = "brainy")]
     parent: Option<String>,
     /// The page's title; by default "Meeting" and the date.
@@ -590,11 +591,19 @@ async fn meeting(
         progress: None,
     };
     if p.final_pass() {
+        // A missing token or a parent that names no page fails now, not
+        // at the end of the meeting. The parent is kept as its id: a page
+        // renamed before `finish` still takes the meeting.
+        let mut publish = p.saved();
+        let brainy = credentials.brainy(&publish)?;
+        if let (Some(b), Some(parent)) = (&brainy, &publish.parent) {
+            publish.parent = Some(b.resolve_page(parent).await.context("--parent")?);
+        }
         let meeting = Meeting {
             started: started.to_rfc3339(),
             channels: channels.clone(),
             polish: p.polish,
-            publish: p.saved(),
+            publish,
             final_id: None,
             page: None,
             writer: None,
@@ -603,8 +612,6 @@ async fn meeting(
         let (created, writer) =
             Pending::create(data, &started.format("%Y%m%d-%H%M%S").to_string(), meeting)?;
         eprintln!("keeping the meeting in {}", created.dir.display());
-        // A missing token fails now, not at the end of the meeting.
-        let brainy = credentials.brainy(&created.meeting.publish)?;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         printer.progress = Some(tx);
         publishing = Some(tokio::spawn(publisher(created, brainy, rx)));
