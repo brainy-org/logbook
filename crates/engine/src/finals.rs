@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::protocol::FinalState;
 use anyhow::Result;
-use logbook_engine::protocol::FinalState;
 
 const KEEP: Duration = Duration::from_secs(3600);
 

@@ -1,16 +1,24 @@
-//! Logbook's engine: libparakeet, the per-channel pipeline and the wire
-//! protocol. The server and the client drive it; neither holds pipeline
-//! logic of its own.
+//! Logbook's engine: libparakeet, the per-channel pipeline, a meeting's
+//! session and the threads it shares with the others (batcher, finalizer,
+//! polisher), and the wire protocol. logbook-server drives sessions over
+//! a WebSocket, the CLI in its own process (`--server` not given); neither
+//! holds pipeline logic of its own.
 
+pub mod batcher;
 pub mod channel;
 pub mod codec;
 pub mod echo;
 pub mod final_pass;
+pub mod finalizer;
+pub mod finals;
 pub mod mirror;
 pub mod parakeet;
 pub mod polish;
+pub mod polisher;
 pub mod progressive;
 pub mod protocol;
+pub mod recording;
+pub mod session;
 pub mod speakers;
 
 use std::path::PathBuf;
@@ -48,6 +56,41 @@ pub struct Options {
     pub voice: PathBuf,
     /// The voice similarity above which two ranges' voices are one speaker.
     pub voice_threshold: f32,
+}
+
+/// The files of the mirror's `parakeet` bundle that logbook loads by
+/// default: the ASR, the VAD, the streaming diarization, and the speaker
+/// encoder (WeSpeaker ResNet34-LM, the `parakeet-voice` bundle) that tells
+/// voices apart beyond the diarization's eight.
+pub const ASR: &str = "tdt-0.6b-v3-q8_0.gguf";
+pub const VAD: &str = "silero-vad-f16.gguf";
+pub const DIARIZATION: &str = "nemotron-3-diarization-q8_0.gguf";
+pub const VOICE: &str = "wespeaker-resnet34-lm.gguf";
+
+/// Defaults of `Options`, the server's and the CLI's alike.
+pub const MIN_PAUSE: f64 = 0.5;
+pub const CONTEXT: f64 = 3.0;
+pub const VOICE_THRESHOLD: f32 = 0.45;
+/// Phrases transcribed in one call at most.
+pub const MAX_BATCH: usize = 16;
+
+impl Options {
+    /// The default models of the folder `models`, `contexts` copies of
+    /// the diarization.
+    pub fn defaults(models: &std::path::Path, library: PathBuf, contexts: usize) -> Self {
+        Self {
+            library: Some(library),
+            asr: models.join(ASR),
+            vad: models.join(VAD),
+            diarization: models.join(DIARIZATION),
+            diarization_contexts: contexts,
+            latency: Latency::Low,
+            min_pause: MIN_PAUSE,
+            context: CONTEXT,
+            voice: models.join(VOICE),
+            voice_threshold: VOICE_THRESHOLD,
+        }
+    }
 }
 
 /// The shortest pause the VAD reports.

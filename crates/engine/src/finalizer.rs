@@ -13,10 +13,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 use std::time::Instant;
 
-use logbook_engine::Engine;
-use logbook_engine::final_pass::Recorded;
-use logbook_engine::progressive::Range;
-use logbook_engine::protocol::{ChannelConfig, FinalState};
+use crate::Engine;
+use crate::final_pass::Recorded;
+use crate::progressive::Range;
+use crate::protocol::{ChannelConfig, FinalState};
 use tracing::{info, warn};
 
 use crate::finals::Finals;

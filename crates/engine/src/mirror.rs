@@ -6,10 +6,10 @@
 //! files: the `parakeet` bundle's are brainy-worker's (`models.json`).
 //!
 //! Nothing outside the binary is used: no oras, docker or nvidia-smi, no
-//! file another tool wrote. The mirror is private: a GitHub token with
-//! `read:packages` (`LOGBOOK_REGISTRY_TOKEN`). Authentication follows the
-//! registry's 401: a Bearer token from the realm it names, asked with that
-//! token. A blob is redirected to a CDN, which gets no Authorization header.
+//! file another tool wrote. logbook's packages are public, so no
+//! credentials either: the registry's 401 names a realm, which gives an
+//! anonymous Bearer token for pulling. A blob is redirected to a CDN, which
+//! gets no Authorization header.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -19,7 +19,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 pub const REGISTRY: &str = "ghcr.io";
@@ -102,22 +101,20 @@ pub fn build() -> Result<(&'static str, &'static str)> {
     })
 }
 
-/// The username and token for the registry; none for anonymous pulls,
-/// which a private mirror refuses.
-pub fn credentials(username: Option<String>, token: Option<String>) -> Option<(String, String)> {
-    let token = token.filter(|t| !t.is_empty())?;
-    Some((username.unwrap_or_else(|| "token".into()), token))
-}
-
 pub struct Mirror {
     agent: ureq::Agent,
-    auth: Option<(String, String)>,
     /// Bearer tokens by repository.
     tokens: Mutex<HashMap<String, String>>,
 }
 
+impl Default for Mirror {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Mirror {
-    pub fn new(auth: Option<(String, String)>) -> Self {
+    pub fn new() -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
@@ -126,9 +123,33 @@ impl Mirror {
             .into();
         Self {
             agent,
-            auth,
             tokens: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The models folder (the one given, used as it is, or the pinned one
+    /// in the cache) and libparakeet for this machine (the pinned build),
+    /// fetched when missing. A platform without a build gets one in the
+    /// mirror, not a path of its own. On Linux
+    /// the process may start again here, to find the CUDA build's
+    /// libraries (`beside_its_libraries`).
+    pub fn locate(
+        &self,
+        models: Option<PathBuf>,
+        say: impl Fn(&str),
+    ) -> Result<(PathBuf, PathBuf)> {
+        let models = match models {
+            Some(dir) => dir,
+            None => {
+                let dir = cache_dir()?.join(MODELS_DIR);
+                self.models(&dir, &say)?;
+                dir
+            }
+        };
+        let library = self.library(&cache_dir()?, &say)?;
+        #[cfg(target_os = "linux")]
+        beside_its_libraries(&library)?;
+        Ok((models, library))
     }
 
     /// The model files missing from `dir`, fetched. `say` hears what is
@@ -275,23 +296,13 @@ impl Mirror {
         for (k, v) in &fields {
             request = request.query(k, v);
         }
-        if let Some((user, password)) = &self.auth {
-            let basic =
-                base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
-            request = request.header("Authorization", &format!("Basic {basic}"));
-        }
         let mut response = request
             .call()
             .with_context(|| format!("could not reach {realm}"))?;
         if !response.status().is_success() {
-            let hint = if self.auth.is_some() {
-                ""
-            } else {
-                " (no credentials: set LOGBOOK_REGISTRY_TOKEN to a GitHub token with \
-                 read:packages)"
-            };
             bail!(
-                "{REGISTRY}: a token for {repository} was refused ({}){hint}",
+                "{REGISTRY}: a token for {repository} was refused ({}): is the package \
+                 still public?",
                 response.status()
             );
         }
@@ -334,18 +345,36 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The CUDA build ships cudart and cuBLAS next to libparakeet, which the
+/// loader finds only through LD_LIBRARY_PATH, read when the process
+/// starts: the process (server or CLI) starts again with that folder in it.
+#[cfg(target_os = "linux")]
+fn beside_its_libraries(library: &Path) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let Some(dir) = library.parent() else {
+        return Ok(());
+    };
+    let others = std::fs::read_dir(dir)?.flatten().any(|e| {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        name.contains(".so") && !name.starts_with("libparakeet")
+    });
+    let path = std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default();
+    if !others || std::env::split_paths(&path).any(|p| p == dir) {
+        return Ok(());
+    }
+    let mut paths = vec![dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&path));
+    let error = std::process::Command::new(std::env::current_exe()?)
+        .args(std::env::args_os().skip(1))
+        .env("LD_LIBRARY_PATH", std::env::join_paths(paths)?)
+        .exec();
+    Err(error).context("could not start again with libparakeet's libraries")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_token_given_comes_first() {
-        assert_eq!(
-            credentials(None, Some("t".into())),
-            Some(("token".into(), "t".into()))
-        );
-        assert_eq!(credentials(Some("u".into()), Some(String::new())), None);
-    }
 
     #[test]
     fn the_archive_loses_its_top_folder_and_keeps_inside() {

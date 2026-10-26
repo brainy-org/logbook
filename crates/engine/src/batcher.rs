@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
-use logbook_engine::channel::Clip;
-use logbook_engine::parakeet::{Model, SAMPLE_RATE};
+use crate::channel::Clip;
+use crate::parakeet::{Model, SAMPLE_RATE};
 use tracing::{info, warn};
 
 use crate::session::Input;

@@ -1,35 +1,48 @@
 # logbook
 
-Live meeting transcription with speakers, self-hosted. `logbook-server`
-holds the models (parakeet.cpp: Silero VAD, NVIDIA parakeet-tdt-0.6b-v3,
-Nemotron-3-Diarization) and transcribes the audio that `logbook` streams
-to it, phrase by phrase, about a second after each is spoken.
+Live meeting transcription with speakers, self-hosted. `logbook`
+transcribes the meeting phrase by phrase, about a second after each is
+spoken, with parakeet.cpp's models (Silero VAD, NVIDIA
+parakeet-tdt-0.6b-v3, Nemotron-3-Diarization): on your computer, or, with
+`--server`, on a `logbook-server` that holds the models for everyone.
 
-A prototype: a server and a CLI. Once the meeting ends, the server can
-read it all again (better speakers and phrases) and the CLI writes it as
-a page in brainy. The desktop app is still to come.
+A prototype: a CLI and a server. Once the meeting ends it can be read all
+again (better speakers and phrases) and written as a page in brainy. The
+desktop app is still to come.
 
 ## Quick start
 
 ```bash
-scripts/server.sh                          # terminal 1: wait for "listening on http://127.0.0.1:3300"
-scripts/client.sh play meeting.m4a         # terminal 2: a recording, at the pace of speech
+scripts/client.sh play meeting.m4a         # a recording, at the pace of speech, transcribed here
 scripts/client.sh live --system            # the microphone and the call, until Ctrl-C
 ```
 
+or with a server:
+
+```bash
+scripts/server.sh                          # terminal 1: wait for "listening on http://127.0.0.1:3300"
+export LOGBOOK_SERVER=http://127.0.0.1:3300
+scripts/client.sh live --system            # terminal 2
+```
+
+Without `--server` (`LOGBOOK_SERVER`) the CLI loads the models itself
+(about 1 GB of files) and runs the same pipeline as the server, in its
+own process: an M3 laptop kept up with a recording played at four times
+the pace of speech; a laptop without a GPU may not (`bench` tells). A server is for clients that
+cannot, and gives every one of them the same quality.
+
 `scripts/server.sh` builds and starts the server; its arguments go to the
-server. On its first start the server fetches what it lacks into
+server. On its first start the server (or the CLI without one) fetches
+what it lacks into
 `~/.cache/brainy-org`: libparakeet v0.6.1 for this platform (Metal on
 Apple silicon, CUDA on Linux with NVIDIA's driver, CPU otherwise) and the
 models (`parakeet-741158ae`, the speaker encoder from the
 `parakeet-voice` bundle). Both come from the mirror on ghcr.io/brainy-org
 (github.com/brainy-org/models: the files brainy-worker uses), by sha256,
-over the registry's API: the server needs no other tool. The mirror is
-private: set `LOGBOOK_REGISTRY_TOKEN` to a GitHub token with
-`read:packages` for the first start (later ones find everything in the
-cache and ask for nothing). `scripts/server.sh` reads it, and any other
-`LOGBOOK_*` setting, from `.env` in the checkout (not committed):
-`echo "LOGBOOK_REGISTRY_TOKEN=$(gh auth token)" > .env`.
+over the registry's API: no other tool is needed, and no token: the
+three packages logbook fetches (`parakeet`, `parakeet-voice`,
+`libparakeet`) are public. `scripts/server.sh` reads any `LOGBOOK_*`
+setting from `.env` in the checkout (not committed).
 `scripts/client.sh` builds the CLI and passes its arguments on, from the
 current folder.
 
@@ -91,8 +104,10 @@ matches no page, or more than one, stops there and lists what it found
 (for two pages with one title, pass the address of one). A title with a
 `/` in it can be named only by its address.
 
-On a server with a language model (`--polish-url`, below), `--polish`
-has the final transcript cleaned up there: fillers, false starts,
+With a language model (the server's `--polish-url`, below, or the same
+`LOGBOOK_POLISH_URL`, `LOGBOOK_POLISH_MODEL` and `LOGBOOK_POLISH_KEY`
+given to the CLI without a server), `--polish` has the final transcript
+cleaned up there: fillers, false starts,
 punctuation. Without it the transcript stays as heard and the meeting's
 text never reaches the model; a pending meeting keeps the choice for
 `finish`.
@@ -145,14 +160,17 @@ number is a fixed gain in dB (0 to 50); `off`, the default, keeps the
 device's level. The system's input volume (macOS: System Settings →
 Sound → Input) is the other knob.
 
+Without a server, `finish` reads the pending meeting again on this
+computer, and the audio is kept only in the meeting's pending folder.
+The CLI takes the server's `--models` too (same variable), for its own
+models.
+
 ### Server options
 
 | Option | Default | |
 |---|---|---|
 | `--listen` / `LOGBOOK_LISTEN` | `127.0.0.1:3300` | |
-| `--library` / `PARAKEET_LIB` | the pinned release in `~/.cache/brainy-org`, fetched if missing | libparakeet |
 | `--models` / `LOGBOOK_MODELS` | `~/.cache/brainy-org/parakeet-741158ae`, the missing files fetched | folder of the GGUF files; one given is used as it is |
-| `--registry-token` / `LOGBOOK_REGISTRY_TOKEN` | none | GitHub token (`read:packages`) for the mirror, while something is fetched; `--registry-username` / `LOGBOOK_REGISTRY_USERNAME` its user |
 | `--diarization-contexts` | 2 | copies of the diarization model (about 110 MB each) |
 | `--latency` | `low` | diarization: `low` 1.04 s, `very-low` 0.64 s, `ultra-low` 0.32 s |
 | `--min-pause` | 0.5 | seconds of silence that close a phrase |
@@ -172,5 +190,9 @@ the first GPU.
 
 ## Licences
 
-Code: parakeet.cpp and ggml MIT. Weights: parakeet-tdt-0.6b-v3 CC-BY-4.0
-(attribution: NVIDIA), Nemotron-3-Diarization OpenMDW-1.1, Silero VAD MIT.
+Code: parakeet.cpp and ggml MIT; the CUDA build of libparakeet carries
+NVIDIA's cudart and cuBLAS under their redistributable EULA. Weights:
+parakeet-tdt-0.6b-v3 CC-BY-4.0 (attribution: NVIDIA),
+Nemotron-3-Diarization OpenMDW-1.1, Silero VAD MIT, WeSpeaker ResNet34-LM
+CC-BY-4.0 (attribution: the WeSpeaker project; trained on VoxCeleb2).
+Each bundle of the mirror carries a `NOTICE.md` with its sources.

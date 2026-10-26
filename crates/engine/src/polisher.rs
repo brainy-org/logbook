@@ -9,8 +9,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use logbook_engine::polish::{Polished, Polisher};
-use logbook_engine::protocol::{FinalState, Utterance};
+use crate::polish::{Polished, Polisher};
+use crate::protocol::{FinalState, Utterance};
 use tracing::{info, warn};
 
 use crate::finals::Finals;

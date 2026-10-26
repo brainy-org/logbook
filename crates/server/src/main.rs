@@ -2,13 +2,6 @@
 //! (`/live`), final passes over HTTP (`/finals`): docs/protocol.md. The
 //! models are loaded once and stay loaded; every session shares them.
 
-mod batcher;
-mod finalizer;
-mod finals;
-mod polisher;
-mod recording;
-mod session;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,25 +17,19 @@ use axum::{Json, Router};
 use clap::{Parser, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
 use logbook_engine::codec;
-use logbook_engine::mirror::{self, Mirror};
+use logbook_engine::finalizer::{self, FinalJob};
+use logbook_engine::finals::Finals;
+use logbook_engine::mirror::Mirror;
 use logbook_engine::parakeet::Latency;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::polish::{self, Polisher};
 use logbook_engine::protocol::{
     ClientMessage, FinalState, ServerMessage, Started, Upload, decode_audio,
 };
-use logbook_engine::{Engine, Options};
+use logbook_engine::recording::{self, Recording};
+use logbook_engine::session::{self, Input, Shared};
+use logbook_engine::{Engine, Options, batcher, polisher};
 use tracing::{info, warn};
-
-use crate::finalizer::FinalJob;
-use crate::finals::Finals;
-use crate::recording::Recording;
-use crate::session::{Input, Shared};
-
-/// The speaker encoder (WeSpeaker ResNet34-LM, the mirror's
-/// `parakeet-voice` bundle) that tells voices apart beyond the
-/// diarization's eight.
-const VOICE: &str = "wespeaker-resnet34-lm.gguf";
 
 /// The largest upload: 14 MB an hour a channel (`codec`), so about 8 hours
 /// of a meeting with two channels.
@@ -53,27 +40,16 @@ const MAX_UPLOAD: usize = 256 << 20;
 struct Args {
     #[arg(long, env = "LOGBOOK_LISTEN", default_value = "127.0.0.1:3300")]
     listen: String,
-    /// libparakeet; by default the pinned release for this machine, fetched
-    /// from the mirror into ~/.cache/brainy-org when missing.
-    #[arg(long, env = "PARAKEET_LIB")]
-    library: Option<PathBuf>,
     /// Folder of the GGUF files, used as it is; by default
     /// ~/.cache/brainy-org/parakeet-741158ae, where the pinned files
     /// missing are fetched from the mirror (the ones brainy-worker loads).
     #[arg(long, env = "LOGBOOK_MODELS")]
     models: Option<PathBuf>,
-    /// A GitHub token with read:packages for the mirror on ghcr.io, needed
-    /// only while something is fetched.
-    #[arg(long, env = "LOGBOOK_REGISTRY_TOKEN", hide_env_values = true)]
-    registry_token: Option<String>,
-    /// The token's user.
-    #[arg(long, env = "LOGBOOK_REGISTRY_USERNAME")]
-    registry_username: Option<String>,
-    #[arg(long, default_value = "tdt-0.6b-v3-q8_0.gguf")]
+    #[arg(long, default_value = logbook_engine::ASR)]
     asr: String,
-    #[arg(long, default_value = "silero-vad-f16.gguf")]
+    #[arg(long, default_value = logbook_engine::VAD)]
     vad: String,
-    #[arg(long, default_value = "nemotron-3-diarization-q8_0.gguf")]
+    #[arg(long, default_value = logbook_engine::DIARIZATION)]
     diarization: String,
     /// Copies of the diarization model (about 110 MB each); one runs one call
     /// at a time.
@@ -82,12 +58,12 @@ struct Args {
     #[arg(long, value_enum, default_value_t = LatencyArg::Low)]
     latency: LatencyArg,
     /// Seconds of silence that close a phrase.
-    #[arg(long, default_value_t = 0.5)]
+    #[arg(long, default_value_t = logbook_engine::MIN_PAUSE)]
     min_pause: f64,
     /// Seconds of the audio before a phrase transcribed with it (then
     /// dropped), so that a short phrase is read in its language and
     /// sentence; 0 for none. Each clip grows by up to this much.
-    #[arg(long, default_value_t = 3.0)]
+    #[arg(long, default_value_t = logbook_engine::CONTEXT)]
     context: f64,
     /// The speaker encoder of the final pass: its GGUF, or a parakeet
     /// bundle with a "voice" component; by default
@@ -95,10 +71,10 @@ struct Args {
     #[arg(long, env = "LOGBOOK_VOICE")]
     voice: Option<PathBuf>,
     /// Voice similarity above which two ranges' voices are one speaker.
-    #[arg(long, default_value_t = 0.45)]
+    #[arg(long, default_value_t = logbook_engine::VOICE_THRESHOLD)]
     voice_threshold: f32,
     /// Phrases transcribed in one call at most.
-    #[arg(long, default_value_t = 16)]
+    #[arg(long, default_value_t = logbook_engine::MAX_BATCH)]
     max_batch: usize,
     /// Where final passes keep their audio until they have run (32 KB a
     /// second per channel); by default a folder in the system's
@@ -120,7 +96,7 @@ struct Args {
     #[arg(long, default_value_t = 4)]
     polish_parallel: usize,
     /// Seconds a request may take; a part that takes longer stays as heard.
-    #[arg(long, default_value_t = 120)]
+    #[arg(long, default_value_t = polish::TIMEOUT)]
     polish_timeout: u64,
 }
 
@@ -159,26 +135,7 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
-    // What is not given comes from the mirror, fetched once into the cache.
-    let mirror = Mirror::new(mirror::credentials(
-        args.registry_username,
-        args.registry_token,
-    ));
-    let say = |message: &str| info!("{message}");
-    let models = match args.models {
-        Some(dir) => dir,
-        None => {
-            let dir = mirror::cache_dir()?.join(mirror::MODELS_DIR);
-            mirror.models(&dir, say)?;
-            dir
-        }
-    };
-    let library = match args.library {
-        Some(path) => path,
-        None => mirror.library(&mirror::cache_dir()?, say)?,
-    };
-    #[cfg(target_os = "linux")]
-    beside_its_libraries(&library)?;
+    let (models, library) = Mirror::new().locate(args.models, |message| info!("{message}"))?;
     let options = Options {
         library: Some(library),
         asr: models.join(&args.asr),
@@ -188,7 +145,9 @@ async fn main() -> Result<()> {
         latency: args.latency.into(),
         min_pause: args.min_pause,
         context: args.context,
-        voice: args.voice.unwrap_or_else(|| models.join(VOICE)),
+        voice: args
+            .voice
+            .unwrap_or_else(|| models.join(logbook_engine::VOICE)),
         voice_threshold: args.voice_threshold,
     };
     let recordings = args
@@ -242,33 +201,6 @@ async fn main() -> Result<()> {
     info!("listening on http://{}", args.listen);
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-/// The CUDA build ships cudart and cuBLAS next to libparakeet, which the
-/// loader finds only through LD_LIBRARY_PATH, read when the process
-/// starts: the server starts again with that folder in it.
-#[cfg(target_os = "linux")]
-fn beside_its_libraries(library: &std::path::Path) -> Result<()> {
-    use std::os::unix::process::CommandExt;
-    let Some(dir) = library.parent() else {
-        return Ok(());
-    };
-    let others = std::fs::read_dir(dir)?.flatten().any(|e| {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        name.contains(".so") && !name.starts_with("libparakeet")
-    });
-    let path = std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default();
-    if !others || std::env::split_paths(&path).any(|p| p == dir) {
-        return Ok(());
-    }
-    let mut paths = vec![dir.to_path_buf()];
-    paths.extend(std::env::split_paths(&path));
-    let error = std::process::Command::new(std::env::current_exe()?)
-        .args(std::env::args_os().skip(1))
-        .env("LD_LIBRARY_PATH", std::env::join_paths(paths)?)
-        .exec();
-    Err(error).context("could not start again with libparakeet's libraries")
 }
 
 /// A final pass over a meeting the client recorded itself: a `meeting`

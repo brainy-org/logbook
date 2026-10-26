@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the logbook CLI from this checkout, built in release; arguments go to
-# it (`scripts/client.sh live --system`). LOGBOOK_SERVER picks another server
-# (default http://127.0.0.1:3300). Stays in the current folder, so that a
+# it (`scripts/client.sh live --system`). Without LOGBOOK_SERVER the meeting
+# is transcribed in the CLI itself. Stays in the current folder, so that a
 # relative path given to `play` or `bench` is the caller's.
 set -euo pipefail
 

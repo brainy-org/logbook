@@ -2,15 +2,15 @@
 # Builds and starts logbook-server from this checkout; arguments go to the
 # server (`scripts/server.sh --latency very-low`). The server itself
 # fetches libparakeet and the models from the mirror on first start
-# (crates/engine/src/mirror.rs), with LOGBOOK_REGISTRY_TOKEN from .env. With a Groq key in
+# (crates/engine/src/mirror.rs), public packages, no token. With a Groq key in
 # ~/.config/logbook/groq.key the final transcript of a meeting started with
 # --polish is cleaned up there.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# .env (not committed): LOGBOOK_REGISTRY_TOKEN and any other setting of the
-# server; the environment wins over it.
+# .env (not committed): any setting of the server; the environment wins
+# over it.
 if [[ -f .env ]]; then
   while IFS='=' read -r name value || [[ -n $name ]]; do
     if [[ $name =~ ^[A-Z_][A-Z0-9_]*$ && -z "${!name:-}" ]]; then

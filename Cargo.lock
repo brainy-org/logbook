@@ -1241,14 +1241,16 @@ name = "logbook-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.23.1",
  "flate2",
+ "getrandom 0.4.3",
  "libloading",
  "opus",
  "serde",
  "serde_json",
  "sha2",
  "tar",
+ "tokio",
+ "tracing",
  "ureq",
 ]
 

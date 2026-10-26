@@ -238,30 +238,50 @@ async fn session(
                         .context("the connection was lost")?;
                 }
             },
-            message = next(&mut stream) => match message.context("the connection was lost")? {
-                Some(ServerMessage::Utterance(u)) => events.utterance(shift(u)),
-                Some(ServerMessage::FinalSegments { until, utterances }) if final_pass => {
-                    events.final_segments(until, utterances);
-                }
-                Some(ServerMessage::FinalSegments { .. }) => {}
-                Some(ServerMessage::Finalizing { audio_s, id }) => {
-                    events.finalizing(audio_s, &id);
-                    out.final_id = Some(id);
-                }
-                Some(ServerMessage::Final { utterances, warnings }) => {
-                    events.final_segments(f64::INFINITY, utterances);
-                    out.finalized = Some(warnings);
-                }
-                Some(ServerMessage::Done) => {
+            message = next(&mut stream) => {
+                let Some(message) = message.context("the connection was lost")? else {
+                    bail!("the server closed the connection");
+                };
+                if handle(message, out, final_pass, &shift, events)? {
                     let _ = sink.close().await;
                     return Ok(());
                 }
-                Some(ServerMessage::Error { message }) => bail!("server: {message}"),
-                Some(ServerMessage::Ready) => {}
-                None => bail!("the server closed the connection"),
-            },
+            }
         }
     }
+}
+
+/// A message of the session, to `events` and `out`; true once it is done.
+/// The local session (local.rs) hears the same messages.
+pub fn handle(
+    message: ServerMessage,
+    out: &mut Live,
+    final_pass: bool,
+    shift: impl Fn(Utterance) -> Utterance,
+    events: &mut impl Events,
+) -> Result<bool> {
+    match message {
+        ServerMessage::Utterance(u) => events.utterance(shift(u)),
+        ServerMessage::FinalSegments { until, utterances } if final_pass => {
+            events.final_segments(until, utterances);
+        }
+        ServerMessage::FinalSegments { .. } => {}
+        ServerMessage::Finalizing { audio_s, id } => {
+            events.finalizing(audio_s, &id);
+            out.final_id = Some(id);
+        }
+        ServerMessage::Final {
+            utterances,
+            warnings,
+        } => {
+            events.final_segments(f64::INFINITY, utterances);
+            out.finalized = Some(warnings);
+        }
+        ServerMessage::Done => return Ok(true),
+        ServerMessage::Error { message } => bail!("server: {message}"),
+        ServerMessage::Ready => {}
+    }
+    Ok(false)
 }
 
 /// Takes the audio without sending it for `wait`; true if it ended.

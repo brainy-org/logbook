@@ -61,6 +61,10 @@ Answer with JSON only, every id of \"segments\" once, in this shape:
 {\"segments\": [{\"id\": 0, \"text\": \"...\"}]}";
 
 /// Where the model is and how to ask it.
+/// Seconds a request may take by default; a part that takes longer stays
+/// as heard.
+pub const TIMEOUT: u64 = 120;
+
 #[derive(Clone, Debug)]
 pub struct Options {
     /// The API's base, up to `/v1`: `http://localhost:11434/v1` for Ollama.

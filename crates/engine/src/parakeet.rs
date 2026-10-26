@@ -25,6 +25,39 @@ const KIND_VAD: c_int = 5;
 
 type Ctx = *mut c_void;
 
+/// `ggml_log_set` and its callback, from ggml.h at the commit parakeet.cpp
+/// v0.6.1 pins as its submodule (ggml-org/ggml e705c5fe): libparakeet
+/// carries ggml and exports it, but `parakeet_capi.h` does not declare it.
+/// `level` is `enum ggml_log_level`, an int.
+type GgmlLogCallback = unsafe extern "C" fn(level: c_int, text: *const c_char, data: *mut c_void);
+type GgmlLogSet = unsafe extern "C" fn(callback: GgmlLogCallback, data: *mut c_void);
+
+const GGML_LOG_LEVEL_WARN: c_int = 3;
+/// Continues the previous message, at its level.
+const GGML_LOG_LEVEL_CONT: c_int = 5;
+
+/// ggml's log: only warnings and errors, to stderr. Its info and debug
+/// lines (a hundred of them as Metal compiles its kernels) would bury the
+/// CLI's transcript, which goes to the same terminal.
+unsafe extern "C" fn ggml_log(level: c_int, text: *const c_char, _data: *mut c_void) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicI32, Ordering};
+    static LAST: AtomicI32 = AtomicI32::new(0);
+    let level = if level == GGML_LOG_LEVEL_CONT {
+        LAST.load(Ordering::Relaxed)
+    } else {
+        LAST.store(level, Ordering::Relaxed);
+        level
+    };
+    if level < GGML_LOG_LEVEL_WARN || text.is_null() {
+        return;
+    }
+    // SAFETY: ggml passes a NUL-terminated string, valid for the call.
+    let text = unsafe { CStr::from_ptr(text) };
+    // Never a panic across the FFI boundary: a failed write is dropped.
+    let _ = std::io::stderr().write_all(text.to_bytes());
+}
+
 #[repr(C)]
 struct DiarSegment {
     speaker: c_int,
@@ -130,6 +163,12 @@ impl Parakeet {
         let abi = unsafe { (f.abi_version)() };
         if abi != ABI {
             bail!("libparakeet has ABI {abi}, this build speaks {ABI}");
+        }
+        // ggml's own log, before any model brings up a GPU. A build without
+        // the symbol keeps ggml's default (everything to stderr).
+        // SAFETY: the type is ggml.h's (see `GgmlLogSet`).
+        if let Ok(set) = unsafe { library.get::<GgmlLogSet>(b"ggml_log_set") } {
+            unsafe { set(ggml_log, std::ptr::null_mut()) };
         }
         Ok(Arc::new(Self {
             f,

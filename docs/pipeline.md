@@ -1,7 +1,8 @@
 # The live pipeline
 
 What happens to a channel's audio between the socket and an utterance.
-Code: `crates/engine/src/channel.rs`, `crates/server/src/{session,batcher}.rs`.
+Code: `crates/engine/src/{channel,session,batcher}.rs`, run by the server
+or, without `--server`, by the CLI itself (`crates/cli/src/local.rs`).
 
 ```
 audio ──▶ VAD stream (Silero) ── phrase closed at a pause ──▶ batcher ──▶ tdt-0.6b-v3
@@ -98,8 +99,8 @@ meeting at once, and the speakers are not limited to the diarization
 model's eight
 (`docs/decisions/2026-10-24-speakers-across-a-long-meeting.md`). With
 `final_pass`, the session records each channel as it arrives
-(`crates/server/src/recording.rs`: raw s16le in `--recordings`, 32 KB a
-second per channel), and:
+(`crates/engine/src/recording.rs`: raw s16le in the server's
+`--recordings`, or the CLI's pending folder, 32 KB a second per channel), and:
 
 1. **Ranges**: the live channel tells where it is quiet
    (`Channel::quiet_point`: where the VAD last heard speech end, or a
@@ -141,7 +142,7 @@ second per channel), and:
    are sent, the segments go to a language model that removes fillers,
    false starts and the words a speaker took back, and punctuates
    (`crates/engine/src/polish.rs`). A pool of threads asks it
-   (`crates/server/src/polisher.rs`), never the finalizer; a session has
+   (`crates/engine/src/polisher.rs`), never the finalizer; a session has
    one part out at a time, so segments still leave in order, each part
    with the last three cleaned as context. Only `text` changes; `words`
    stay as heard. A text that grew, shrank past what fillers explain, or

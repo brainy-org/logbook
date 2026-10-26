@@ -15,19 +15,22 @@ crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet
                  as the meeting goes (progressive.rs) or over an upload (final_pass.rs),
                  the wire protocol (protocol.rs), the upload's Opus (codec.rs),
                  the final transcript cleaned up by a language model (polish.rs),
-                 libparakeet and the models from the mirror (mirror.rs)
+                 libparakeet and the models from the mirror (mirror.rs);
+                 a meeting's session, one thread each (session.rs), and what sessions
+                 share: the batcher thread for every transcription (batcher.rs), the
+                 finalizer thread for final passes (finalizer.rs), their audio
+                 (recording.rs) and results by id (finals.rs), the threads that ask
+                 the clean-up model (polisher.rs)
                  examples/diarize.rs: diarization strategies scored with
                  scripts/der.py                                    → docs/pipeline.md
-crates/server/   logbook-server: WebSocket /live and HTTP /finals (axum), a thread per
-                 session, one batcher thread for every transcription, recordings
-                 (recording.rs), one finalizer thread for final passes, their results
-                 by id (finals.rs), the threads that ask the clean-up model
-                 (polisher.rs)                                     → docs/protocol.md
+crates/server/   logbook-server: the engine's sessions over WebSocket /live, final
+                 passes over HTTP /finals (axum)                   → docs/protocol.md
 crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
                  with --system, the call; its echo cancelled from the mic and its
                  level raised, --mic-gain: aec.rs),
                  finish (pending meetings), devices, bench;
-                 the session with reconnection (client.rs), the meeting kept until
+                 the session on a server with reconnection (client.rs), or in this
+                 process without --server (local.rs), the meeting kept until
                  published (pending.rs), the final transcript as Markdown, a part
                  at a time (transcript.rs), into brainy as it comes (brainy.rs)
 scripts/         server.sh (builds and runs the server), client.sh
@@ -46,13 +49,15 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
 ## Invariants
 
 - **The pipeline is `crates/engine`; the server and the client only drive
-  it.** Pipeline logic in `crates/server` is logic the future local mode
-  lacks.
+  it.** Pipeline logic in `crates/server` is logic the CLI without
+  `--server` lacks (local.rs runs the engine's session, as the server does).
 - **libparakeet is loaded at run time and its ABI is checked at open**
   (`ABI` in `parakeet.rs`, v0.6.1). A function declared with the wrong
   signature does not fail to build: it corrupts memory. Declare from
   `parakeet_capi.h` of the pinned release (beside the library in
-  `~/.cache/brainy-org/libparakeet-<build>-<sha>/`), nothing from memory.
+  `~/.cache/brainy-org/libparakeet-<build>-<sha>/`), nothing from memory;
+  the one ggml call (`ggml_log_set`) from `ggml.h` at the ggml commit that
+  release pins.
 - **A diarization context runs one call at a time**: every call on it goes
   through `Model::serial`. Two sessions on one context without it pass a
   light test and crash or mix speakers under load.
@@ -91,7 +96,7 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
   slot number across ranges mixes people up silently
   (`docs/decisions/2026-10-24-speakers-across-a-long-meeting.md`).
 - **A session has one part with the clean-up model at a time**
-  (`Final::polishing`, server `session.rs`): final segments leave in the
+  (`Final::polishing`, engine `session.rs`): final segments leave in the
   order they were ready. Two parts out at once can come back swapped and
   be appended to the page out of order, and the second misses the first
   as context (`docs/pipeline.md`, "Final pass", step 6).

@@ -18,14 +18,14 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+use crate::Engine;
+use crate::channel::Channel;
+use crate::echo::EchoFilter;
+use crate::parakeet::Transcript;
+use crate::polish::{self, Polished};
+use crate::progressive::{Progressive, Range, Transcribed};
+use crate::protocol::{ChannelConfig, FinalState, ServerMessage, Utterance};
 use anyhow::Result;
-use logbook_engine::Engine;
-use logbook_engine::channel::Channel;
-use logbook_engine::echo::EchoFilter;
-use logbook_engine::parakeet::Transcript;
-use logbook_engine::polish::{self, Polished};
-use logbook_engine::progressive::{Progressive, Range, Transcribed};
-use logbook_engine::protocol::{ChannelConfig, FinalState, ServerMessage, Utterance};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 
@@ -185,7 +185,7 @@ fn live(
     info!(session, channels = ?names, final_pass = fin.is_some(), polish, "session started");
     let _ = out.send(ServerMessage::Ready);
 
-    let submit = |clips: Vec<logbook_engine::channel::Clip>| {
+    let submit = |clips: Vec<crate::channel::Clip>| {
         for clip in clips {
             let _ = batcher.send(Job {
                 clip,
