@@ -5,7 +5,9 @@
 //! A lost connection does not end it: the audio keeps coming (and being
 //! recorded by the caller), and a new session is opened as soon as the
 //! server answers; what was said in between has no live text, the final
-//! pass covers it. `upload` and `poll`: final passes over HTTP.
+//! pass covers it. `upload` and `poll`: final passes over HTTP; both try
+//! again for a while when the server does not answer, then give up, and
+//! the caller keeps the meeting pending.
 
 use std::time::Duration;
 
@@ -33,6 +35,9 @@ const RETRY_MAX: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_secs(1);
 /// Failed requests in a row before polling gives up.
 const POLL_FAILURES: u32 = 10;
+/// Tries of an upload the server does not answer, `RETRY_MIN` apart and
+/// doubling: about a minute before the meeting is left pending.
+const UPLOAD_TRIES: u32 = 6;
 
 /// The server: `http://host:3300`; `ws://host:3300/live` is taken too.
 #[derive(Clone)]
@@ -316,20 +321,36 @@ pub async fn upload(
     let bytes: usize = encoded.iter().map(Vec::len).sum();
     eprintln!("uploading the meeting ({:.1} MB)…", bytes as f64 / 1e6);
     let meeting = serde_json::to_vec(&Upload { channels, polish })?;
-    let mut form = reqwest::multipart::Form::new().part(
-        "meeting",
-        reqwest::multipart::Part::bytes(meeting).mime_str("application/json")?,
-    );
-    for data in encoded {
-        form = form.part("audio", reqwest::multipart::Part::bytes(data));
-    }
     let url = format!("{}/finals", server.http);
-    let response = http()?
-        .post(&url)
-        .multipart(form)
-        .send()
-        .await
-        .with_context(|| format!("could not reach {url}"))?;
+    let client = http()?;
+    let mut retry = RETRY_MIN;
+    let mut tries = 1;
+    let response = loop {
+        // A form is consumed by its request: built again for each try.
+        let mut form = reqwest::multipart::Form::new().part(
+            "meeting",
+            reqwest::multipart::Part::bytes(meeting.clone()).mime_str("application/json")?,
+        );
+        for data in &encoded {
+            form = form.part("audio", reqwest::multipart::Part::bytes(data.clone()));
+        }
+        match client.post(&url).multipart(form).send().await {
+            Ok(response) => break response,
+            // The server not up yet, or the network back in a moment.
+            Err(error) if (error.is_connect() || error.is_timeout()) && tries < UPLOAD_TRIES => {
+                eprintln!(
+                    "could not reach {url}; trying again in {} s",
+                    retry.as_secs()
+                );
+                tokio::time::sleep(retry).await;
+                retry = (retry * 2).min(RETRY_MAX);
+                tries += 1;
+            }
+            Err(error) => {
+                return Err(anyhow::Error::new(error).context(format!("could not reach {url}")));
+            }
+        }
+    };
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();

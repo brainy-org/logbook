@@ -14,6 +14,7 @@ mod pending;
 mod transcript;
 
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -175,8 +176,18 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+async fn main() -> ExitCode {
+    // One line, causes included, instead of `Result`'s debug dump.
+    match run(Cli::parse()).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
     let server = Server::new(&cli.server);
     let data = match cli.data {
         Some(dir) => dir,

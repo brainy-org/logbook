@@ -100,8 +100,9 @@ A meeting with `--final` is also kept on your computer, in
   connects again as soon as the server answers (no live text for what
   was said in between), and at the end it uploads its own copy for the
   final pass (14 MB an hour a channel);
-- the server cannot be reached at the end, the connection drops during
-  the final pass, or brainy refuses the page: the meeting stays pending
+- the server cannot be reached at the end (for about a minute: the
+  upload is tried again), the connection drops during the final pass,
+  or brainy refuses the page: the meeting stays pending
   (with `transcript.md` once the transcript exists), and
 
 ```bash
