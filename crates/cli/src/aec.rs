@@ -13,10 +13,13 @@
 //!
 //! Both channels are on the session's clock, so sample i of the mic is
 //! processed after sample i of the system channel has been given to AEC3
-//! as the far end: the mic waits for the system channel to reach it (at
-//! most `IDLE_AFTER` in audio.rs while nothing plays, a callback's worth
-//! otherwise). AEC3 estimates the remaining delay, the speakers' and the
-//! room's, by itself. The system channel goes on unchanged.
+//! as the far end, and `LEAD` more: on a real meeting the call reached the
+//! mic 40 ms before the system channel had it on the session's clock, and
+//! AEC3 subtracts only an echo that comes after its far end. The mic waits for the system channel to reach
+//! it plus `LEAD` (at most `IDLE_AFTER` in audio.rs while nothing plays, a
+//! callback's worth otherwise). AEC3 estimates the remaining delay, the
+//! speakers' and the room's, by itself. The system channel goes on
+//! unchanged.
 //!
 //! The gain comes after the echo is cancelled, so the call's echo is not
 //! raised with the voice; AGC2's limiter keeps it from clipping.
@@ -32,6 +35,12 @@ use crate::client::Audio;
 
 /// AEC3 works on 10 ms blocks.
 const BLOCK: usize = SAMPLE_RATE as usize / 100;
+/// How far the system channel is given to AEC3 ahead of the mic: an echo up
+/// to this much before its far end on the session's clock is still
+/// cancelled (40 ms measured, docs/decisions/2026-10-26-the-far-end-ahead-
+/// of-the-mic.md). It is what the mic's live text waits more, and well
+/// inside AEC3's delay range and its render queue (100 blocks). Whole blocks.
+const LEAD: usize = 15 * BLOCK;
 
 /// How the mic's level is raised.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -83,8 +92,7 @@ pub fn process(mut audio: Audio, mic: u8, system: Option<u8>, gain: Gain) -> Aud
                 return;
             }
         }
-        // The end: what the system channel never reached goes as it is.
-        let rest: Vec<i16> = canceller.near.drain(..).collect();
+        let rest = canceller.flush();
         if !rest.is_empty() {
             let _ = tx.send((mic, rest));
         }
@@ -100,8 +108,11 @@ struct Canceller {
     /// The system channel's samples not yet given to AEC3.
     far: VecDeque<i16>,
     /// The mic's samples not yet processed. `far` and `near` start at the
-    /// same sample of the session, and are consumed a block of each at once.
+    /// same sample of the session; `LEAD` of `far` is given to AEC3 alone,
+    /// then they are consumed a block of each at once.
     near: VecDeque<i16>,
+    /// How much of `far` AEC3 has had without a mic block: up to `LEAD`.
+    ahead: usize,
     far_block: Vec<i16>,
     near_block: Vec<i16>,
     scratch: Vec<i16>,
@@ -136,6 +147,7 @@ impl Canceller {
             echo,
             far: VecDeque::new(),
             near: VecDeque::new(),
+            ahead: 0,
             far_block: vec![0; BLOCK],
             near_block: vec![0; BLOCK],
             scratch: vec![0; BLOCK],
@@ -145,6 +157,10 @@ impl Canceller {
     /// The mic's samples ready, processed: the ones both channels have
     /// reached, when the echo is cancelled.
     fn process(&mut self) -> Vec<i16> {
+        while self.echo && self.ahead < LEAD && self.far.len() >= BLOCK {
+            self.render();
+            self.ahead += BLOCK;
+        }
         let ready = if self.echo {
             self.far.len().min(self.near.len())
         } else {
@@ -157,20 +173,13 @@ impl Canceller {
                 *dst = src;
             }
             if self.echo {
-                for (dst, src) in self.far_block.iter_mut().zip(self.far.drain(..BLOCK)) {
-                    *dst = src;
-                }
                 // A failed block goes through as it was: a word with echo
                 // is better than a hole in the mic's audio.
-                if self
-                    .apm
-                    .process_render_i16(&self.far_block, &mut self.scratch)
-                    .is_err()
-                {
+                if !self.render() {
                     out.extend_from_slice(&self.near_block);
                     continue;
                 }
-                // The delay between the two is the session's clock: none.
+                // The delay is AEC3's to estimate (`LEAD` included).
                 let _ = self.apm.set_stream_delay_ms(0);
             }
             match self
@@ -182,6 +191,22 @@ impl Canceller {
             }
         }
         out
+    }
+
+    /// A block of the system channel given to AEC3; false if it failed.
+    fn render(&mut self) -> bool {
+        for (dst, src) in self.far_block.iter_mut().zip(self.far.drain(..BLOCK)) {
+            *dst = src;
+        }
+        self.apm
+            .process_render_i16(&self.far_block, &mut self.scratch)
+            .is_ok()
+    }
+
+    /// The end: the mic the system channel never reached (`LEAD` of it at
+    /// least, with the echo), as it is.
+    fn flush(&mut self) -> Vec<i16> {
+        self.near.drain(..).collect()
     }
 }
 
@@ -260,14 +285,23 @@ mod tests {
         assert!("-3".parse::<Gain>().is_err());
     }
 
-    #[test]
-    fn the_far_end_is_taken_out_of_the_mic() {
-        // The mic hears the system channel 30 ms later, at half its level.
+    /// The mic's echo of `far`, `delay` samples after it (before it, if
+    /// negative), at half its level, through the canceller: the echo's
+    /// energy in the last 2 s, before and after. AEC3's suppressor alone
+    /// takes some 18 dB off whatever the delay; subtracted, the echo falls
+    /// by over 40: the tests ask for 30.
+    fn cancel(delay: isize) -> (f64, f64) {
         let n = SAMPLE_RATE as usize * 6;
         let far = noise(7, n);
-        let delay = 480;
-        let near: Vec<i16> = (0..n)
-            .map(|i| if i >= delay { far[i - delay] / 2 } else { 0 })
+        let near: Vec<i16> = (0..n as isize)
+            .map(|i| {
+                let j = i - delay;
+                if (0..n as isize).contains(&j) {
+                    far[j as usize] / 2
+                } else {
+                    0
+                }
+            })
             .collect();
         let mut c = Canceller::new(true, Gain::Off);
         let mut out = Vec::new();
@@ -282,11 +316,26 @@ mod tests {
             m = m_end;
             out.extend(c.process());
         }
+        out.extend(c.flush());
         assert_eq!(out.len(), n);
-        // After AEC3 has converged (the last 2 s): far quieter than before.
-        let tail = out.len() - 2 * SAMPLE_RATE as usize..out.len();
-        let before = energy(&near[tail.clone()]);
-        let after = energy(&out[tail]);
-        assert!(after < before / 10.0, "{before} -> {after}");
+        // After AEC3 has converged (the last 2 s, before the flushed lead).
+        let tail = n - 2 * SAMPLE_RATE as usize - LEAD..n - LEAD;
+        (energy(&near[tail.clone()]), energy(&out[tail]))
+    }
+
+    #[test]
+    fn the_far_end_is_taken_out_of_the_mic() {
+        // The mic hears the system channel 30 ms later.
+        let (before, after) = cancel(480);
+        assert!(after < before / 1000.0, "{before} -> {after}");
+    }
+
+    #[test]
+    fn an_echo_ahead_of_the_system_channel_is_taken_out_too() {
+        // The mic hears the call 40 ms before the system channel has it on
+        // the session's clock: measured on a real meeting (the decision
+        // record).
+        let (before, after) = cancel(-640);
+        assert!(after < before / 1000.0, "{before} -> {after}");
     }
 }

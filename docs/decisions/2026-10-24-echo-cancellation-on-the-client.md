@@ -21,12 +21,16 @@ not recover the words under them: the sound has to be cleaned first.
 ## How
 
 `crates/cli/src/aec.rs`. Both channels are on the session's clock, so the
-mic's sample i is processed after the system channel's sample i has been
-given to AEC3: the mic waits for the system channel to reach it. AEC3
-estimates the rest of the delay (the output's latency, the room) by
-itself; the stream delay is set to 0. While nothing plays, the system
-channel is filled with silence after 0.25 s (`IDLE_AFTER`, audio.rs, down
-from 0.5): that wait is what the mic's live text loses at most.
+mic's sample i is processed after the system channel's sample i + 150 ms
+has been given to AEC3: the mic waits for the system channel to reach it,
+and 150 ms more, because on a real meeting the call reached the mic before
+the system channel had it on the clock
+(`docs/decisions/2026-10-26-the-far-end-ahead-of-the-mic.md`; until then,
+sample i after sample i). AEC3 estimates the rest of the delay (the
+output's latency, the room) by itself; the stream delay is set to 0. While
+nothing plays, the system channel is filled with silence after 0.25 s
+(`IDLE_AFTER`, audio.rs, down from 0.5): that wait, plus the 150 ms, is
+what the mic's live text loses at most.
 
 ## Measured, 2026-10-24
 
