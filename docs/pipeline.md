@@ -105,8 +105,11 @@ second per channel), and:
    (`Channel::quiet_point`: where the VAD last heard speech end, or a
    little before now in silence; never inside speech). Once a channel has
    45 s of new audio, its range from the last cut to the latest quiet
-   point within 60 s (or, in speech that long, the first one after it)
-   goes to the finalizer thread, one job at a time for every session.
+   point between 45 and 60 s on (or, with none there, the first one
+   after 45 s) goes to the finalizer thread, one job at a time for every
+   session. A pause before 45 s is never an end: taken as "the latest
+   within 60 s" after more than 60 s of speech, it held the channel, and
+   with it every channel's final segments, until the meeting ended.
 2. **Words**: the finalizer reads the range from the recording, cuts it
    with Silero VAD into pieces of at most 30 s and transcribes them 8 a
    call.

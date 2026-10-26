@@ -178,15 +178,18 @@ impl Progressive {
             } else {
                 track.time() - MARGIN
             };
-            // The latest quiet point within MAX_RANGE, or, in speech that
-            // long, the first one after it.
+            // The latest quiet point at least STEP on and within MAX_RANGE,
+            // or, in speech that long, the first one after it. A point
+            // short of STEP is no range: taken as the latest within
+            // MAX_RANGE, it would wait for one that never comes there.
             let cap = limit.min(track.cut + MAX_RANGE);
+            let enough = |q: f64| self.finishing || q - track.cut >= STEP;
             let to = track
                 .quiet
                 .iter()
                 .rev()
-                .find(|&&q| q <= cap)
-                .or_else(|| track.quiet.iter().find(|&&q| q <= limit))
+                .find(|&&q| q <= cap && enough(q))
+                .or_else(|| track.quiet.iter().find(|&&q| q <= limit && enough(q)))
                 .copied();
             let Some(to) = to else {
                 continue;
@@ -196,9 +199,6 @@ impl Progressive {
                 while track.quiet.front().is_some_and(|&q| q <= to) {
                     track.quiet.pop_front();
                 }
-                continue;
-            }
-            if !self.finishing && to - track.cut < STEP {
                 continue;
             }
             while track.quiet.front().is_some_and(|&q| q <= to) {
@@ -535,6 +535,23 @@ mod tests {
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].text, "b2");
         assert!(p.is_done());
+    }
+
+    #[test]
+    fn a_pause_too_early_does_not_hold_the_channel_after_long_speech() {
+        let mut p = Progressive::new(vec![config("a", None)], 0.5).unwrap();
+        let second = vec![0.0f32; SAMPLE_RATE as usize];
+        for _ in 0..200 {
+            p.feed(0, &second);
+        }
+        // A pause at 20 s, then speech past MAX_RANGE, then quiet again.
+        p.quiet(0, 20.0);
+        for tenth in 900..1500 {
+            p.quiet(0, tenth as f64 / 10.0);
+        }
+        let ranges = p.next_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].from, ranges[0].to), (0.0, 90.0));
     }
 
     #[test]
