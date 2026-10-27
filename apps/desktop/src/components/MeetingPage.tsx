@@ -58,6 +58,8 @@ export function MeetingPage({ id, onDeleted, onChanged }: Props) {
       setMeeting(m);
       setTab('report');
       if (m.reportError) setError(m.reportError);
+      // The rename's notice offered this: it is done.
+      else setNotice(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -135,10 +137,11 @@ export function MeetingPage({ id, onDeleted, onChanged }: Props) {
               {meeting.report && (
                 <button
                   type="button"
-                  className="text-accent hover:underline"
+                  disabled={writing}
+                  className="text-accent hover:underline disabled:no-underline disabled:opacity-70"
                   onClick={() => void rewrite()}
                 >
-                  Write the report again with the new names
+                  {writing ? 'Writing the report…' : 'Write the report again with the new names'}
                 </button>
               )}
             </p>
