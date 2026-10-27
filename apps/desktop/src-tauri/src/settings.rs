@@ -4,7 +4,9 @@
 //! language model's key are not there: they are in the system's keychain
 //! (`Secret`), and never go back to the pages.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use logbook_client::aec::Gain;
@@ -220,12 +222,19 @@ impl Secrets {
     }
 }
 
-/// A secret in the system's keychain, under the service "logbook".
-#[derive(Clone, Copy)]
+/// A secret in the system's keychain, under the service "logbook", read
+/// from there once per run: macOS may ask the person at every read (a
+/// build signed otherwise than when they chose "Always"), and the
+/// settings are read at every command.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Secret {
     BrainyToken,
     ModelKey,
 }
+
+/// What the keychain answered this run, by secret: None when unset or
+/// refused (refused, it is not asked again until the app starts again).
+static READ: Mutex<Option<HashMap<Secret, Option<String>>>> = Mutex::new(None);
 
 impl Secret {
     fn entry(self) -> keyring::Result<keyring::Entry> {
@@ -237,10 +246,16 @@ impl Secret {
     }
 
     pub fn get(self) -> Option<String> {
-        self.entry()
-            .and_then(|e| e.get_password())
-            .ok()
-            .filter(|s| !s.is_empty())
+        let mut read = READ.lock().unwrap();
+        read.get_or_insert_default()
+            .entry(self)
+            .or_insert_with(|| {
+                self.entry()
+                    .and_then(|e| e.get_password())
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
+            .clone()
     }
 
     /// Sets it, or removes it when `value` is empty.
@@ -249,12 +264,18 @@ impl Secret {
         let value = value.trim();
         if value.is_empty() {
             match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(error) => Err(error.into()),
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(error) => return Err(error.into()),
             }
         } else {
-            Ok(entry.set_password(value)?)
+            entry.set_password(value)?;
         }
+        let set = Some(value.to_string()).filter(|v| !v.is_empty());
+        READ.lock()
+            .unwrap()
+            .get_or_insert_default()
+            .insert(self, set);
+        Ok(())
     }
 }
 

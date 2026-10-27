@@ -455,14 +455,19 @@ pub async fn finish(
     if saved.report {
         info!("writing the report…");
         write_report(backend, page_brainy.as_ref(), &mut kept_meeting).await;
-    } else if !kept_meeting.notes.trim().is_empty()
+    }
+    if kept_meeting.report.is_none()
+        && !kept_meeting.notes.trim().is_empty()
         && let Some(b) = &page_brainy
     {
-        // No report: the notes go on the page as they were written.
+        // No report, or it failed: the notes go on the page as they were
+        // written, in the report's place (a report written later
+        // replaces them, since it holds them).
         let page = kept_meeting.page.clone().expect("checked above");
         let notes = format!("## Notes\n\n{}", kept_meeting.notes.trim());
-        if let Err(error) = insert_under_header(b, &page, &notes).await {
-            warn!("the notes were not written to the page: {error:#}");
+        match insert_under_header(b, &page, &notes).await {
+            Ok(blocks) => kept_meeting.report_blocks = blocks,
+            Err(error) => warn!("the notes were not written to the page: {error:#}"),
         }
     }
     if saved.keep {

@@ -35,7 +35,23 @@ has_identity() {
 case "${1:-}" in
 dev)
   install
+  # Each build of `tauri dev` is a new binary: signed ad hoc, macOS asks
+  # again for the keychain's secrets ("Always" holds for one build) and
+  # the microphone. With the certificate, cargo runs it through
+  # `signed-run`, which signs it first; without it, it runs as it is.
+  if has_identity; then
+    triple=$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')
+    export "CARGO_TARGET_${triple}_RUNNER=$root/scripts/desktop.sh signed-run"
+  fi
   cd "$app" && exec pnpm tauri dev
+  ;;
+signed-run)
+  # cargo's runner for `dev`: the binary, then its arguments. No hardened
+  # runtime, as any debug build: libparakeet loads without entitlements.
+  bin="$2"
+  shift 2
+  codesign --force --sign "$identity" "$bin"
+  exec "$bin" "$@"
   ;;
 cert)
   if has_identity; then

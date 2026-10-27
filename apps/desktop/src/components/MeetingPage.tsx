@@ -88,7 +88,7 @@ export function MeetingPage({ id, onDeleted, onChanged }: Props) {
           <button
             type="button"
             className={secondaryButtonSmClass}
-            onClick={() => void openUrl(meeting.page!)}
+            onClick={() => openUrl(meeting.page!).catch((e) => setError(String(e)))}
           >
             <span className="flex items-center gap-1.5">
               <ExternalLink className="size-3.5" />

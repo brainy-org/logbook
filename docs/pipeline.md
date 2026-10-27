@@ -181,6 +181,13 @@ never sees the client's voices, so the client sends the Markdown
 it only with `--polish-url`; without a server the client asks the model
 itself (`LOGBOOK_POLISH_URL`, the app's settings).
 
+The report goes on the page under its header line, and holds the notes.
+Without one (not asked for, or the model failed: a wrong key, a model
+down), the notes go there as they were written, under "Notes", in the
+report's place: a report written again later replaces them
+(`meeting.rs`, `finish`). Notes written only into a report that failed
+reach the page nowhere.
+
 The report is written in the meeting's language, headings included. The
 instructions say so in so many words and give the headings in two
 languages: with an Italian example alone, Qwen3.8 27B wrote an English

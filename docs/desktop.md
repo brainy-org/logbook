@@ -25,6 +25,12 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   token and the key are set; `save_settings` takes new ones and writes
   them to the keychain. A command that returns one puts it within reach
   of anything rendered in the webview.
+- **The keychain asks again for every binary signed otherwise.**
+  "Always" holds for the signature it was given to: an ad-hoc one changes
+  with each build. `scripts/desktop.sh dev` signs the debug binary with
+  the certificate too (cargo's runner, `signed-run`), and the app reads
+  each secret once per run (`Secret::get`): a read at every command is a
+  prompt at every command when the signature does not match.
 - **The report and the notes are rendered as React elements**
   (`Markdown.tsx`, react-markdown without raw HTML). A model's output in
   `dangerouslySetInnerHTML` is markup in a window that can call the
