@@ -1,7 +1,8 @@
 # The protocol
 
 One WebSocket per live session, at `ws://HOST:3300/live`; final passes
-also over HTTP, at `http://HOST:3300/finals`. Types in
+also over HTTP, at `http://HOST:3300/finals`, and reports at
+`http://HOST:3300/reports`. Types in
 `crates/engine/src/protocol.rs`.
 
 ## Client to server
@@ -102,6 +103,15 @@ then one part `audio` per channel
   `{"state":"failed","message":"…"}`; `404` if the server does not know
   the id (restarted, or the result expired an hour after it was ready):
   the client uploads again.
+
+- `POST /reports`, JSON `{"title":"…","notes":"…","transcript":"…"}`
+  (`title` and `notes` optional): the meeting's report by the server's
+  model (docs/pipeline.md, "Report"). `transcript` is the final
+  transcript as the client writes it, Markdown with the speakers' names.
+  Answers `200 {"markdown":"…"}`; `501` on a server without a model
+  (`--polish-url`); `502` with the reason when the model fails or the
+  transcript is too long. At most 4 MB; as many at once as
+  `--polish-parallel`, the others wait.
 
 An `audio` part is the channel in Opus (`crates/engine/src/codec.rs`):
 `LBO1`, the number of samples (u64 LE), the encoder's lookahead in

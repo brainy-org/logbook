@@ -1,5 +1,6 @@
 //! Where the audio comes from: a file played at the pace of speech, the
-//! microphone, or what the computer plays.
+//! microphone, or what the computer plays (`Recording`: the channels of a
+//! live meeting, the call's echo cancelled from the microphone).
 
 use std::path::Path;
 use std::process::Command;
@@ -9,7 +10,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use logbook_engine::protocol::ChannelConfig;
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::aec::{self, Gain};
+use crate::remote::Audio;
 
 pub const SAMPLE_RATE: u32 = 16_000;
 /// Audio is sent in frames of this length.
@@ -54,6 +59,87 @@ pub async fn play(
         if tx.send((0, chunk.to_vec())).is_err() {
             return;
         }
+    }
+}
+
+/// What the microphone hears of the system channel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Echo {
+    /// Nothing: headphones, or one of the two channels only.
+    None,
+    /// The call: the server drops its words from the mic's.
+    Filter,
+    /// The call: cancelled from the mic's audio first (aec.rs), then filtered.
+    Cancel,
+}
+
+/// A live meeting's audio being recorded: its channels ("mic", "system"),
+/// on one clock from `start`. Dropping `stop` ends it: `audio` then ends
+/// once the devices have stopped.
+pub struct Recording {
+    pub channels: Vec<ChannelConfig>,
+    pub audio: Audio,
+    pub start: Instant,
+    pub stop: Stop,
+    /// (channel, device) as recorded.
+    pub devices: Vec<(String, String)>,
+}
+
+/// Ends a recording when dropped.
+pub struct Stop(#[allow(dead_code)] Vec<std::sync::mpsc::Sender<()>>);
+
+impl Recording {
+    /// Each source is a channel: (what, which device, diarized). The
+    /// microphone is channel 0 and the system channel 1 when there are
+    /// both; with `Echo::Cancel` or a gain the microphone goes through
+    /// aec.rs.
+    pub fn start(
+        sources: Vec<(Source, Option<String>, bool)>,
+        echo: Echo,
+        gain: Gain,
+    ) -> Result<Self> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut stops = Vec::new();
+        let mut channels = Vec::new();
+        let mut devices = Vec::new();
+        let mic = sources
+            .iter()
+            .any(|(source, _, _)| matches!(source, Source::Microphone));
+        // Every channel's sample 0, and what latencies are measured from.
+        let start = Instant::now();
+        for (index, (source, device, diarize)) in sources.into_iter().enumerate() {
+            let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+            let name = capture(source, device, index as u8, start, tx.clone(), stop_rx)?;
+            let channel = match source {
+                Source::Microphone => "mic",
+                Source::System => "system",
+            };
+            devices.push((channel.to_string(), name));
+            stops.push(stop_tx);
+            let echo_of = match source {
+                Source::Microphone if echo != Echo::None => Some("system".into()),
+                _ => None,
+            };
+            channels.push(ChannelConfig {
+                name: channel.into(),
+                diarize,
+                echo_of,
+            });
+        }
+        // The session stops when the last sender is gone: the capture threads'.
+        drop(tx);
+        let gain = if mic { gain } else { Gain::Off };
+        let audio = match (echo == Echo::Cancel, gain) {
+            (false, Gain::Off) => rx,
+            (cancel, gain) => aec::process(rx, 0, cancel.then_some(1), gain),
+        };
+        Ok(Self {
+            channels,
+            audio,
+            start,
+            stop: Stop(stops),
+            devices,
+        })
     }
 }
 
@@ -171,7 +257,7 @@ where
             }
             let _ = tx.send((channel, out));
         },
-        move |error| eprintln!("{source:?}: {error}"),
+        move |error| tracing::warn!("{source:?}: {error}"),
         None,
     )?)
 }
@@ -201,6 +287,39 @@ fn device_name(device: &cpal::Device) -> String {
         .description()
         .map(|d| d.name().to_string())
         .unwrap_or_else(|_| "unnamed device".into())
+}
+
+/// The devices by name, the default first: what can be recorded as the
+/// microphone, and what as the system (output devices).
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct Devices {
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+}
+
+pub fn device_names() -> Result<Devices> {
+    let host = cpal::default_host();
+    let input = host.default_input_device().map(|d| device_name(&d));
+    let output = host.default_output_device().map(|d| device_name(&d));
+    let mut out = Devices::default();
+    for d in host.devices()? {
+        let name = device_name(&d);
+        if d.supports_input() && !out.inputs.contains(&name) {
+            out.inputs.push(name.clone());
+        }
+        if d.supports_output() && !out.outputs.contains(&name) {
+            out.outputs.push(name);
+        }
+    }
+    let first = |list: &mut Vec<String>, default: Option<String>| {
+        if let Some(i) = default.and_then(|d| list.iter().position(|n| *n == d)) {
+            let name = list.remove(i);
+            list.insert(0, name);
+        }
+    };
+    first(&mut out.inputs, input);
+    first(&mut out.outputs, output);
+    Ok(out)
 }
 
 /// Every device, with what it can be used for.

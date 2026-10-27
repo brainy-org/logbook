@@ -1,5 +1,6 @@
 //! logbook-server: live transcription and diarization over a WebSocket
-//! (`/live`), final passes over HTTP (`/finals`): docs/protocol.md. The
+//! (`/live`), final passes over HTTP (`/finals`), and with a language
+//! model the meeting's report (`/reports`): docs/protocol.md. The
 //! models are loaded once and stay loaded; every session shares them.
 
 use std::path::PathBuf;
@@ -24,9 +25,10 @@ use logbook_engine::parakeet::Latency;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::polish::{self, Polisher};
 use logbook_engine::protocol::{
-    ClientMessage, FinalState, ServerMessage, Started, Upload, decode_audio,
+    ClientMessage, FinalState, Report, ReportRequest, ServerMessage, Started, Upload, decode_audio,
 };
 use logbook_engine::recording::{self, Recording};
+use logbook_engine::report;
 use logbook_engine::session::{self, Input, Shared};
 use logbook_engine::{Engine, Options, batcher, polisher};
 use tracing::{info, warn};
@@ -34,6 +36,9 @@ use tracing::{info, warn};
 /// The largest upload: 14 MB an hour a channel (`codec`), so about 8 hours
 /// of a meeting with two channels.
 const MAX_UPLOAD: usize = 256 << 20;
+/// The largest report request: the transcript and the notes at their
+/// limits (engine report.rs), in UTF-8.
+const MAX_REPORT: usize = 4 << 20;
 
 #[derive(Parser)]
 #[command(version, about = "Live transcription and diarization server")]
@@ -123,6 +128,16 @@ impl From<LatencyArg> for Latency {
 struct AppState {
     shared: Shared,
     sessions: AtomicU64,
+    /// The language model's reports, with the clean-up's model.
+    reporter: Option<Reporter>,
+}
+
+struct Reporter {
+    agent: polish::Agent,
+    options: polish::Options,
+    /// Reports asked at once: each holds a blocking thread for a minute
+    /// or so, and the model's provider limits requests.
+    slots: tokio::sync::Semaphore,
 }
 
 #[tokio::main]
@@ -160,23 +175,29 @@ async fn main() -> Result<()> {
     }
     let engine = Arc::new(Engine::load(&options)?);
     let finals = Arc::new(Finals::default());
-    let polisher = match (args.polish_url, args.polish_model) {
+    let model = match (args.polish_url, args.polish_model) {
         (Some(url), Some(model)) => {
-            info!(url, model, "the final transcript is cleaned up");
-            let polisher = Polisher::new(polish::Options {
+            info!(
+                url,
+                model, "the final transcript is cleaned up and reported on"
+            );
+            Some(polish::Options {
                 url,
                 model,
                 key: args.polish_key,
                 timeout: Duration::from_secs(args.polish_timeout),
-            });
-            Some(polisher::spawn(
-                polisher,
-                finals.clone(),
-                args.polish_parallel,
-            ))
+            })
         }
         _ => None,
     };
+    let polisher = model.clone().map(|options| {
+        polisher::spawn(Polisher::new(options), finals.clone(), args.polish_parallel)
+    });
+    let reporter = model.map(|options| Reporter {
+        agent: polish::agent(&options),
+        options,
+        slots: tokio::sync::Semaphore::new(args.polish_parallel.max(1)),
+    });
     let shared = Shared {
         batcher: batcher::spawn(engine.asr.clone(), args.max_batch),
         finalizer: finalizer::spawn(engine.clone(), finals.clone(), polisher.clone()),
@@ -188,6 +209,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         shared,
         sessions: AtomicU64::new(0),
+        reporter,
     });
     let app = Router::new()
         .route("/live", get(live))
@@ -196,6 +218,10 @@ async fn main() -> Result<()> {
             post(upload).layer(DefaultBodyLimit::max(MAX_UPLOAD)),
         )
         .route("/finals/{id}", get(final_state))
+        .route(
+            "/reports",
+            post(write_report).layer(DefaultBodyLimit::max(MAX_REPORT)),
+        )
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     info!("listening on http://{}", args.listen);
@@ -257,6 +283,37 @@ async fn start_upload(shared: &Shared, mut multipart: Multipart) -> Result<Strin
         polish: upload.polish,
     });
     Ok(id)
+}
+
+/// The meeting's report by the server's model; 501 without one.
+async fn write_report(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ReportRequest>,
+) -> Response {
+    let Some(reporter) = &state.reporter else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "this server has no language model (--polish-url)",
+        )
+            .into_response();
+    };
+    let Ok(_slot) = reporter.slots.acquire().await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let state = state.clone();
+    let written = tokio::task::spawn_blocking(move || {
+        let reporter = state.reporter.as_ref().expect("checked above");
+        report::write(&reporter.agent, &reporter.options, &request)
+    })
+    .await;
+    match written {
+        Ok(Ok(markdown)) => Json(Report { markdown }).into_response(),
+        Ok(Err(error)) => {
+            warn!("report failed: {error:#}");
+            (StatusCode::BAD_GATEWAY, format!("{error:#}")).into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 async fn final_state(

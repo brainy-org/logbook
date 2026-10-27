@@ -1,7 +1,7 @@
 //! Logbook's engine: libparakeet, the per-channel pipeline, a meeting's
 //! session and the threads it shares with the others (batcher, finalizer,
-//! polisher), and the wire protocol. logbook-server drives sessions over
-//! a WebSocket, the CLI in its own process (`--server` not given); neither
+//! polisher), the wire protocol, and the meeting's report written by a
+//! language model. logbook-server drives sessions over a WebSocket, the CLI in its own process (`--server` not given); neither
 //! holds pipeline logic of its own.
 
 pub mod batcher;
@@ -18,6 +18,7 @@ pub mod polisher;
 pub mod progressive;
 pub mod protocol;
 pub mod recording;
+pub mod report;
 pub mod session;
 pub mod speakers;
 

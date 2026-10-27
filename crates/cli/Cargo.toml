@@ -7,17 +7,9 @@ publish.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
-cpal = "0.18.2"
 dirs = "7.0.0"
-futures-util = "0.3.34"
+logbook-client = { version = "0.1.0", path = "../client" }
 logbook-engine = { version = "0.1.0", path = "../engine" }
-opus = "0.4.0"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider", "http2", "multipart"] }
-rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-sonora = "0.2.0"
 tokio = { version = "1.54.1", features = ["full"] }
-tokio-tungstenite = "0.30.0"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

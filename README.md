@@ -6,9 +6,10 @@ spoken, with parakeet.cpp's models (Silero VAD, NVIDIA
 parakeet-tdt-0.6b-v3, Nemotron-3-Diarization): on your computer, or, with
 `--server`, on a `logbook-server` that holds the models for everyone.
 
-A prototype: a CLI and a server. Once the meeting ends it can be read all
-again (better speakers and phrases) and written as a page in brainy. The
-desktop app is still to come.
+A prototype: a desktop app (macOS), a CLI and a server. Once the meeting
+ends it is read all again (better speakers and phrases), written as a
+page in brainy, and a language model can write its report from the
+transcript and the notes you took, as Granola does.
 
 ## Quick start
 
@@ -54,6 +55,32 @@ testing, not for meetings that must stay on your servers: only meetings
 started with `--polish` go there.
 `play` and `bench` need ffmpeg on the PATH.
 
+## The desktop app
+
+```bash
+scripts/desktop.sh dev       # run it from this checkout (pnpm and Rust)
+scripts/desktop.sh cert      # once per Mac: a self-signed signing certificate
+scripts/desktop.sh build     # Logbook.app and a .dmg in target/release/bundle/
+```
+
+Start a meeting, write your notes while it goes (the live transcript is
+beside them), stop it: the final transcript, the report and the page in
+brainy follow, and the meeting stays in the list on the left. Click a
+speaker ("Speaker 2") to give them a name: the transcript, the brainy
+page and the voices known by name change with it, and the next meetings
+name them by themselves. In the settings: on this computer or on a
+logbook-server, the call recorded or not, brainy on or off (its token is
+kept in the keychain), and the language model for the clean-up and the
+report (Groq's Qwen, or one on this computer through Ollama; with a
+server, the server's). The app and the CLI share the data folder: the
+pending meetings and the voices.
+
+The app is signed with a self-signed certificate, not notarized (that
+needs an Apple Developer ID): macOS keeps its permissions (microphone,
+the call's audio) from one build to the next, but a Mac that did not
+build it blocks it at first open: System Settings → Privacy & Security →
+Open Anyway, or `xattr -dr com.apple.quarantine /Applications/Logbook.app`.
+
 ## Use
 
 ```bash
@@ -83,6 +110,7 @@ export BRAINY_URL=https://brainy.example.com BRAINY_TOKEN=brainy_…   # a perso
 scripts/client.sh live --system --brainy --me Marco                  # Ctrl-C at the end of the meeting
 scripts/client.sh live --system --brainy --parent "Engineering/Meetings" --title "Weekly sync"
 scripts/client.sh live --system --brainy --polish                    # cleaned up by the server's model
+scripts/client.sh live --system --brainy --report                    # and a report on the page
 scripts/client.sh play meeting.m4a --final                           # the final transcript, printed
 ```
 
@@ -110,7 +138,9 @@ given to the CLI without a server), `--polish` has the final transcript
 cleaned up there: fillers, false starts,
 punctuation. Without it the transcript stays as heard and the meeting's
 text never reaches the model; a pending meeting keeps the choice for
-`finish`.
+`finish`. `--report` has the same model write the meeting's report
+(summary, decisions, action items, in the meeting's language): on the
+brainy page under its first line, or printed after the transcript.
 
 ### Speakers by name
 
@@ -199,10 +229,10 @@ models.
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--voice` / `LOGBOOK_VOICE` | `wespeaker-resnet34-lm.gguf` in the models folder | speaker encoder of the final pass (required): links each minute's speakers to the meeting's, with no limit of eight |
 | `--voice-threshold` | 0.45 | voice similarity above which two minutes' voices are one speaker |
-| `--polish-url` / `LOGBOOK_POLISH_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model cleans the final transcript up: fillers, false starts, punctuation. The meeting's text goes there: a hosted provider reads every meeting whose client asks for it (`--polish`) |
+| `--polish-url` / `LOGBOOK_POLISH_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model cleans the final transcript up (fillers, false starts, punctuation) and writes reports (`POST /reports`). The meeting's text goes there: a hosted provider reads every meeting whose client asks for it (`--polish`, `--report`) |
 | `--polish-model` / `LOGBOOK_POLISH_MODEL` | none | its model; required with `--polish-url` |
 | `--polish-key` / `LOGBOOK_POLISH_KEY` | none | its API key, if it asks for one |
-| `--polish-parallel` | 4 | parts the model is asked to clean at once (one per meeting at most) |
+| `--polish-parallel` | 4 | parts the model is asked to clean at once (one per meeting at most), and reports written at once |
 | `--polish-timeout` | 120 | seconds a request may take; a part that takes longer stays as heard |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes

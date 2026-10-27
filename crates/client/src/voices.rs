@@ -11,7 +11,7 @@
 //!
 //! Voiceprints are biometric data: they never leave this computer, the
 //! meetings' ones are kept for the last KEEP_MEETINGS meetings only, and
-//! `logbook speakers forget` removes a person.
+//! `logbook speakers forget` (or the app's settings) removes a person.
 
 use std::path::{Path, PathBuf};
 
@@ -98,7 +98,7 @@ impl Library {
             Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
         };
         if lib.encoder != encoder() {
-            eprintln!(
+            tracing::warn!(
                 "{} holds voices of another model ({}): not used",
                 path.display(),
                 lib.encoder
@@ -254,10 +254,29 @@ pub fn meetings(data: &Path) -> Result<Vec<(String, Heard)>> {
     Ok(out)
 }
 
-/// `logbook speakers name MEETING SPEAKER NAME`: the voice of SPEAKER (its
-/// label, or its number for "Speaker N") in MEETING ("last" for the latest)
-/// saved under NAME.
-pub fn name(data: &Path, meeting: &str, speaker: &str, name: &str) -> Result<()> {
+/// A speaker saved under a name.
+#[derive(Clone, Debug, Serialize)]
+pub struct Enrolled {
+    /// The meeting it was heard in, and its label there.
+    pub meeting: String,
+    pub label: String,
+    pub name: String,
+    /// Seconds of its voice, and the person's prints now.
+    pub seconds: f64,
+    pub prints: usize,
+}
+
+impl Enrolled {
+    /// Below `GOOD_ENROLL`: the person may not be recognized every time.
+    pub fn weak(&self) -> bool {
+        self.seconds < GOOD_ENROLL
+    }
+}
+
+/// The voice of SPEAKER (its label, or its number for "Speaker N") in
+/// MEETING ("last" for the latest) saved under NAME (`logbook speakers
+/// name`, the app's rename).
+pub fn name(data: &Path, meeting: &str, speaker: &str, name: &str) -> Result<Enrolled> {
     let name = name.trim();
     if name.is_empty() {
         bail!("the name is empty");
@@ -276,31 +295,7 @@ pub fn name(data: &Path, meeting: &str, speaker: &str, name: &str) -> Result<()>
             heard.encoder
         );
     }
-    let wanted = speaker.trim();
-    let matches: Vec<&HeardSpeaker> = heard
-        .speakers
-        .iter()
-        .filter(|s| {
-            s.label.eq_ignore_ascii_case(wanted)
-                || s.label
-                    .strip_prefix("Speaker ")
-                    .and_then(|rest| rest.split(' ').next())
-                    .is_some_and(|n| n == wanted)
-        })
-        .collect();
-    let s = match matches.as_slice() {
-        [s] => *s,
-        [] => bail!(
-            "meeting {id} has no speaker {wanted}; it has: {}",
-            heard
-                .speakers
-                .iter()
-                .map(|s| s.label.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        _ => bail!("more than one speaker of meeting {id} is {wanted}"),
-    };
+    let s = heard_speaker(heard, speaker).with_context(|| format!("meeting {id}"))?;
     if s.voice.seconds < MIN_ENROLL {
         bail!(
             "{} spoke alone for {:.0} s in meeting {id}: too little to know the voice again",
@@ -323,61 +318,70 @@ pub fn name(data: &Path, meeting: &str, speaker: &str, name: &str) -> Result<()>
         .iter()
         .find(|p| p.name == name)
         .map_or(0, |p| p.prints.len());
-    eprintln!(
-        "{} of meeting {id} is now {name} ({:.0} s of voice; {prints} print(s) of {name})",
-        s.label, s.voice.seconds
-    );
-    if s.voice.seconds < GOOD_ENROLL {
-        eprintln!(
-            "less than {GOOD_ENROLL:.0} s: {name} may not be recognized every time; \
-             naming them in another meeting adds to it"
-        );
-    }
-    Ok(())
+    Ok(Enrolled {
+        meeting: id.clone(),
+        label: s.label.clone(),
+        name: name.to_string(),
+        seconds: s.voice.seconds,
+        prints,
+    })
 }
 
-/// `logbook speakers`: the people known by voice, and the last meetings'
-/// speakers that can be named.
-pub fn list(data: &Path) -> Result<()> {
-    let lib = Library::load(data)?;
-    if lib.people.is_empty() {
-        println!("no voice known by name yet");
-    } else {
-        println!("known voices:");
-        for p in &lib.people {
-            let seconds: f64 = p.prints.iter().map(|q| q.seconds).sum();
-            println!(
-                "  {:<20} {} print(s), {:.0} s",
-                p.name,
-                p.prints.len(),
-                seconds
-            );
-        }
-    }
-    let all = meetings(data)?;
-    if !all.is_empty() {
-        println!("\nlast meetings (`logbook speakers name MEETING SPEAKER NAME`):");
-        for (id, heard) in all.iter().rev() {
-            let speakers: Vec<String> = heard
+/// The one speaker of `heard` that `wanted` names: its label, any case,
+/// or the number of "Speaker N".
+fn heard_speaker<'a>(heard: &'a Heard, wanted: &str) -> Result<&'a HeardSpeaker> {
+    let wanted = wanted.trim();
+    let matches: Vec<&HeardSpeaker> = heard
+        .speakers
+        .iter()
+        .filter(|s| {
+            s.label.eq_ignore_ascii_case(wanted)
+                || s.label
+                    .strip_prefix("Speaker ")
+                    .and_then(|rest| rest.split(' ').next())
+                    .is_some_and(|n| n == wanted)
+        })
+        .collect();
+    match matches.as_slice() {
+        [s] => Ok(s),
+        [] => bail!(
+            "no speaker {wanted}; there are: {}",
+            heard
                 .speakers
                 .iter()
-                .map(|s| format!("{} ({:.0} s)", s.label, s.voice.seconds))
-                .collect();
-            println!("  {id}  {}", speakers.join(", "));
-        }
+                .map(|s| s.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => bail!("more than one speaker is {wanted}"),
     }
-    Ok(())
 }
 
-/// `logbook speakers forget NAME`.
+/// Changes a speaker's label in a kept meeting's voices, after it was
+/// renamed there: naming it again finds it by its new label.
+pub fn relabel(data: &Path, meeting: &str, from: &str, to: &str) -> Result<()> {
+    let path = heard_dir(data).join(format!("{meeting}.json"));
+    let mut heard: Heard = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for s in &mut heard.speakers {
+        if s.label == from {
+            s.label = to.to_string();
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&heard)?)
+        .with_context(|| format!("could not write {}", path.display()))
+}
+
+/// Forgets the voice of a person; an error if no one has that name.
 pub fn forget(data: &Path, name: &str) -> Result<()> {
     let mut lib = Library::load(data)?;
     if !lib.forget(name.trim()) {
         bail!("no voice is known as {name}");
     }
-    lib.save(data)?;
-    eprintln!("{name}'s voice is forgotten");
-    Ok(())
+    lib.save(data)
 }
 
 pub fn heard(started: &str, page: Option<String>, speakers: Vec<HeardSpeaker>) -> Heard {

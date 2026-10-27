@@ -165,6 +165,34 @@ deletes them when it starts again, having first taken the folder's lock
 first one's live recordings). An uploaded meeting (`POST /finals`)
 is decoded into the same files and read by the same pass.
 
+## Report
+
+Once the meeting is published, a language model can write its report
+(`crates/engine/src/report.rs`), as Granola does: a summary, the notes
+the person took during the meeting completed from what was said (nested
+under each of their points, in their order), the decisions and the
+action items with their owners. One request to the same
+OpenAI-compatible model as the clean-up, with the whole transcript: up to
+320 000 characters (about four hours), refused beyond, since a report of
+part of a meeting reads as one of all of it. The transcript is the one
+on the page, with the names the client gave the speakers: the server
+never sees the client's voices, so the client sends the Markdown
+(`POST /reports`, docs/protocol.md), not the segments. The server answers
+it only with `--polish-url`; without a server the client asks the model
+itself (`LOGBOOK_POLISH_URL`, the app's settings).
+
+The report is written in the meeting's language, headings included. The
+instructions say so in so many words and give the headings in two
+languages: with an Italian example alone, Qwen3.8 27B wrote an English
+meeting's report in Italian; with no example, an Italian meeting's
+headings in English. A German meeting still gets English headings over
+German text.
+
+On the page the report goes right under the header line, above the
+transcript (`meeting.rs`, `insert_under_header`); asked again, it
+replaces the blocks of the last one (`history::Kept::report_blocks`). A
+report that fails leaves the meeting published without it.
+
 ## Measured
 
 On the dev Mac (M3, Metal), one session: the text of a phrase arrives

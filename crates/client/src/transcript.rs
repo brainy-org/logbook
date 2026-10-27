@@ -107,6 +107,55 @@ impl Writer {
             .collect()
     }
 
+    /// Every speaker and its label, the microphone's included, in order
+    /// of first appearance: (channel, speaker, label).
+    pub fn speakers(&self) -> Vec<(String, Option<u32>, String)> {
+        self.names
+            .iter()
+            .map(|((c, s), n)| (c.clone(), *s, n.clone()))
+            .collect()
+    }
+
+    /// The label of a channel's speaker, once it has spoken.
+    pub fn label(&self, channel: &str, speaker: Option<u32>) -> Option<&str> {
+        self.names
+            .iter()
+            .find(|((c, s), _)| c == channel && *s == speaker)
+            .map(|(_, n)| n.as_str())
+    }
+
+    /// Gives the speaker labelled `from` the label `to`: the person's name,
+    /// which no other speaker of the meeting takes from then on.
+    pub fn rename(&mut self, from: &str, to: &str) -> bool {
+        let mut found = false;
+        for (_, name) in &mut self.names {
+            if name == from {
+                *name = to.to_string();
+                found = true;
+            }
+        }
+        if found && !self.known.iter().any(|k| k == to) {
+            self.known.push(to.to_string());
+        }
+        if self.previous.as_deref() == Some(from) {
+            self.previous = Some(to.to_string());
+        }
+        found
+    }
+
+    /// The whole transcript's body with the labels already given, as the
+    /// page has it: what the report is written from.
+    pub fn text(
+        &self,
+        utterances: &[Utterance],
+        voices: &[SpeakerVoice],
+        known: &Library,
+    ) -> String {
+        let mut writer = self.clone();
+        writer.previous = None;
+        writer.body(utterances, voices, known)
+    }
+
     fn name_of(&mut self, u: &Utterance, voices: &[SpeakerVoice], known: &Library) -> String {
         let key = (u.channel.clone(), u.speaker);
         if let Some((_, name)) = self.names.iter().find(|(k, _)| *k == key) {
@@ -146,7 +195,7 @@ impl Writer {
 }
 
 /// Spoken text is text: characters Markdown reads as marks are escaped.
-fn escape(text: &str) -> String {
+pub fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         if matches!(

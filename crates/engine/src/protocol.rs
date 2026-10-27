@@ -114,6 +114,25 @@ pub enum FinalState {
     },
 }
 
+/// `POST /reports`: the meeting's report written by the server's model
+/// (engine report.rs). The client sends the transcript as Markdown with
+/// the speakers' names it gave them: the server never sees its voices.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ReportRequest {
+    #[serde(default)]
+    pub title: String,
+    /// What the person wrote during the meeting; may be empty.
+    #[serde(default)]
+    pub notes: String,
+    pub transcript: String,
+}
+
+/// `POST /reports` answers with the report as Markdown.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Report {
+    pub markdown: String,
+}
+
 /// A run of words from one speaker of one channel. Times are seconds from the
 /// first sample of that channel.
 #[derive(Clone, Debug, Deserialize, Serialize)]

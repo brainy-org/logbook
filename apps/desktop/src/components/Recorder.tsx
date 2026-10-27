@@ -1,0 +1,258 @@
+// The meeting being recorded, as Granola has it: a page for your notes,
+// the live transcript beside it, and a pill at the bottom with the levels,
+// the time and the stop button. The notes go to the app as they are typed
+// (`set_notes`), and to the report when the meeting ends.
+import { useEffect, useRef, useState } from 'react';
+import { PanelRightClose, PanelRightOpen, Square } from 'lucide-react';
+import {
+  api,
+  clock,
+  liveLabel,
+  type LiveUtterance,
+  type LogLine,
+  type RecorderState,
+} from '../lib/api.js';
+import { mutedTextClass } from './form-styles.js';
+
+interface Props {
+  state: RecorderState;
+  utterances: LiveUtterance[];
+  levels: number[];
+  logs: LogLine[];
+}
+
+/** How long typing pauses before the notes are sent to the app. */
+const NOTES_DELAY_MS = 400;
+
+export function Recorder({ state, utterances, levels, logs }: Props) {
+  const [notes, setNotes] = useState(state.notes);
+  const [showTranscript, setShowTranscript] = useState(true);
+  const [now, setNow] = useState(Date.now());
+  const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const edit = (text: string) => {
+    setNotes(text);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => void api.setNotes(text), NOTES_DELAY_MS);
+  };
+  // The last keystrokes are not lost when the meeting stops.
+  const stop = async () => {
+    window.clearTimeout(timer.current);
+    await api.setNotes(notes);
+    await api.stopMeeting();
+  };
+
+  const elapsed = state.started ? (now - state.started) / 1000 : 0;
+  const recording = state.phase === 'recording';
+
+  return (
+    <div className="flex h-full">
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        <header
+          data-tauri-drag-region
+          className="flex h-11 shrink-0 items-center justify-end gap-2 px-4"
+        >
+          <button
+            type="button"
+            title={showTranscript ? 'Hide the transcript' : 'Show the transcript'}
+            onClick={() => setShowTranscript((v) => !v)}
+            className="rounded-md p-1.5 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          >
+            {showTranscript ? (
+              <PanelRightClose className="size-4" />
+            ) : (
+              <PanelRightOpen className="size-4" />
+            )}
+          </button>
+        </header>
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col overflow-y-auto px-10 pb-28">
+          <h1 className="text-3xl font-semibold tracking-tight">
+            {state.title || 'Untitled meeting'}
+          </h1>
+          <p className={`mt-1 mb-6 text-sm ${mutedTextClass}`}>
+            {state.started
+              ? new Date(state.started).toLocaleString(undefined, {
+                  weekday: 'long',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              : 'Getting ready…'}
+          </p>
+          <textarea
+            autoFocus
+            readOnly={state.phase === 'finishing'}
+            value={notes}
+            onChange={(e) => edit(e.target.value)}
+            placeholder={
+              'Write notes…\n\nA line per point is enough: the report completes each one from what was said.'
+            }
+            className="min-h-[50vh] w-full flex-1 resize-none border-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-neutral-400"
+          />
+        </div>
+
+        <Pill
+          phase={state.phase}
+          channels={state.channels}
+          levels={levels}
+          elapsed={elapsed}
+          lastLog={logs[logs.length - 1]}
+          onStop={() => void stop()}
+          canStop={recording || state.phase === 'preparing'}
+        />
+      </div>
+
+      {showTranscript && (
+        <LiveTranscript
+          utterances={utterances}
+          me={state.me}
+          phase={state.phase}
+          ready={state.ready}
+        />
+      )}
+    </div>
+  );
+}
+
+function Pill({
+  phase,
+  channels,
+  levels,
+  elapsed,
+  lastLog,
+  onStop,
+  canStop,
+}: {
+  phase: RecorderState['phase'];
+  channels: string[];
+  levels: number[];
+  elapsed: number;
+  lastLog: LogLine | undefined;
+  onStop: () => void;
+  canStop: boolean;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center px-6">
+      <div className="pointer-events-auto flex max-w-full items-center gap-4 rounded-full border border-neutral-200 bg-white/95 py-2 pr-2 pl-5 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900/95">
+        {phase === 'recording' ? (
+          <>
+            {channels.map((c, i) => (
+              <Meter key={c} label={c === 'mic' ? 'You' : 'Call'} level={levels[i] ?? 0} />
+            ))}
+            <span className="font-mono text-sm tabular-nums">{clock(elapsed)}</span>
+          </>
+        ) : (
+          <span className="max-w-md truncate text-sm text-neutral-600 dark:text-neutral-300">
+            {phase === 'preparing' ? 'Getting ready' : 'Finishing'}
+            {lastLog ? ` · ${lastLog.message}` : '…'}
+          </span>
+        )}
+        {canStop ? (
+          <button
+            type="button"
+            onClick={onStop}
+            className="flex h-9 items-center gap-2 rounded-full bg-red-700 px-4 text-sm font-medium text-white hover:bg-red-800"
+          >
+            <Square className="size-3.5 fill-current" />
+            Stop
+          </button>
+        ) : (
+          <span className="mr-3 size-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Five bars that follow a channel's level. */
+function Meter({ label, level }: { label: string; level: number }) {
+  // Speech peaks are far below full scale: a log scale shows a voice.
+  const db = 20 * Math.log10(Math.max(level, 1e-4));
+  const lit = Math.max(0, Math.min(1, (db + 50) / 44));
+  const shape = [0.45, 0.75, 1, 0.75, 0.45];
+  return (
+    <span className="flex items-center gap-1.5" title={label}>
+      <span className="flex h-5 items-center gap-[3px]">
+        {shape.map((s, i) => (
+          <span
+            key={i}
+            className="meter-bar w-[3px] rounded-full bg-accent"
+            style={{ height: `${Math.max(3, lit * s * 20)}px` }}
+          />
+        ))}
+      </span>
+      <span className="text-xs text-neutral-500">{label}</span>
+    </span>
+  );
+}
+
+function LiveTranscript({
+  utterances,
+  me,
+  phase,
+  ready,
+}: {
+  utterances: LiveUtterance[];
+  me: string;
+  phase: RecorderState['phase'];
+  ready: boolean;
+}) {
+  const end = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'end' });
+  }, [utterances.length]);
+
+  return (
+    <aside className="flex w-80 shrink-0 flex-col border-l border-neutral-200 bg-sidebar dark:border-neutral-800">
+      <div
+        data-tauri-drag-region
+        className="flex h-11 shrink-0 items-center px-4 text-xs font-medium text-neutral-500"
+      >
+        Live transcript
+      </div>
+      <div className="flex-1 space-y-3 overflow-y-auto px-4 pb-6">
+        {utterances.length === 0 && (
+          <p className="pt-8 text-center text-sm text-neutral-500">
+            {phase === 'preparing'
+              ? 'Loading…'
+              : phase === 'finishing'
+                ? 'Nothing was heard.'
+                : ready
+                  ? 'Listening…'
+                  : 'Loading the models. Recording has started: what is said now appears once they are ready.'}
+          </p>
+        )}
+        {utterances.map((u, i) => {
+          const mine = u.channel === 'mic' && u.speaker === null;
+          return (
+            <div key={i} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
+              <span className="mb-0.5 text-[11px] text-neutral-500">
+                {liveLabel(u, me)} · {clock(u.start)}
+              </span>
+              <p
+                className={`max-w-[90%] rounded-2xl px-3 py-1.5 text-sm ${
+                  mine
+                    ? 'rounded-br-sm bg-accent-fill text-white'
+                    : 'rounded-bl-sm bg-white text-neutral-800 shadow-sm dark:bg-neutral-800 dark:text-neutral-200'
+                }`}
+              >
+                {u.text}
+              </p>
+            </div>
+          );
+        })}
+        <div ref={end} />
+      </div>
+      <p
+        className={`border-t border-neutral-200 px-4 py-2 text-[11px] dark:border-neutral-800 ${mutedTextClass}`}
+      >
+        Speakers are numbered as heard live; the final transcript names them once for the whole
+        meeting.
+      </p>
+    </aside>
+  );
+}

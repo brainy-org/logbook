@@ -31,7 +31,7 @@ use sonora::{AudioProcessing, Config, StreamConfig};
 use tokio::sync::mpsc::unbounded_channel;
 
 use crate::audio::SAMPLE_RATE;
-use crate::client::Audio;
+use crate::remote::Audio;
 
 /// AEC3 works on 10 ms blocks.
 const BLOCK: usize = SAMPLE_RATE as usize / 100;

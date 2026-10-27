@@ -90,11 +90,7 @@ pub struct Polisher {
 
 impl Polisher {
     pub fn new(options: Options) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(options.timeout))
-            .http_status_as_error(false)
-            .build()
-            .into();
+        let agent = agent(&options);
         Self { options, agent }
     }
 
@@ -127,31 +123,48 @@ impl Polisher {
 
     /// The model's answer for one part: its message's text.
     fn ask(&self, context: &[&Utterance], part: &[Utterance]) -> Result<String> {
-        let url = format!(
-            "{}/chat/completions",
-            self.options.url.trim_end_matches('/')
-        );
-        let mut request = self.agent.post(&url);
-        if let Some(key) = &self.options.key {
-            request = request.header("Authorization", &format!("Bearer {key}"));
-        }
-        let mut response = request
-            .send_json(body(&self.options.model, context, part))
-            .with_context(|| format!("could not reach {url}"))?;
-        let status = response.status();
-        let text = response.body_mut().read_to_string()?;
-        if !status.is_success() {
-            bail!("{url} answered {status}: {}", text.trim());
-        }
-        let completion: Completion =
-            serde_json::from_str(&text).context("not a chat completion")?;
-        completion
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|c| c.message.content)
-            .ok_or_else(|| anyhow!("the completion has no message"))
+        complete(
+            &self.agent,
+            &self.options,
+            body(&self.options.model, context, part),
+        )
     }
+}
+
+/// The HTTP client of model requests (ureq's).
+pub type Agent = ureq::Agent;
+
+/// An agent for `options`: its timeout, statuses read as answers.
+pub fn agent(options: &Options) -> Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(options.timeout))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+/// One chat completion at `options.url`: the first choice's text.
+pub fn complete(agent: &Agent, options: &Options, body: Value) -> Result<String> {
+    let url = format!("{}/chat/completions", options.url.trim_end_matches('/'));
+    let mut request = agent.post(&url);
+    if let Some(key) = &options.key {
+        request = request.header("Authorization", &format!("Bearer {key}"));
+    }
+    let mut response = request
+        .send_json(body)
+        .with_context(|| format!("could not reach {url}"))?;
+    let status = response.status();
+    let text = response.body_mut().read_to_string()?;
+    if !status.is_success() {
+        bail!("{url} answered {status}: {}", text.trim());
+    }
+    let completion: Completion = serde_json::from_str(&text).context("not a chat completion")?;
+    completion
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|c| c.message.content)
+        .ok_or_else(|| anyhow!("the completion has no message"))
 }
 
 #[derive(Deserialize)]

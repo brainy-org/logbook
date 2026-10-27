@@ -7,7 +7,8 @@
 //! server answers; what was said in between has no live text, the final
 //! pass covers it. `upload` and `poll`: final passes over HTTP; both try
 //! again for a while when the server does not answer, then give up, and
-//! the caller keeps the meeting pending.
+//! the caller keeps the meeting pending. `report`: the meeting's report
+//! by the server's model.
 
 use std::time::Duration;
 
@@ -16,8 +17,8 @@ use futures_util::{SinkExt, StreamExt};
 use logbook_engine::codec;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::protocol::{
-    ChannelConfig, ClientMessage, FinalState, ServerMessage, SpeakerVoice, Started, Upload,
-    Utterance, encode_audio,
+    ChannelConfig, ClientMessage, FinalState, Report, ReportRequest, ServerMessage, SpeakerVoice,
+    Started, Upload, Utterance, encode_audio,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -138,7 +139,7 @@ pub async fn live(
         let lost = match connect(&url, &channels, asked).await {
             Ok(socket) => {
                 if !first {
-                    eprintln!("live: connected again");
+                    tracing::info!("live: connected again");
                 }
                 retry = RETRY_MIN;
                 let base = position.clone();
@@ -174,10 +175,10 @@ pub async fn live(
         first = false;
         out.intact = false;
         if ended {
-            eprintln!("live: {lost:#}");
+            tracing::warn!("live: {lost:#}");
             return out;
         }
-        eprintln!(
+        tracing::warn!(
             "live: {lost:#}; still recording, trying again in {} s",
             retry.as_secs()
         );
@@ -354,7 +355,7 @@ pub async fn upload(
     })
     .await??;
     let bytes: usize = encoded.iter().map(Vec::len).sum();
-    eprintln!("uploading the meeting ({:.1} MB)…", bytes as f64 / 1e6);
+    tracing::info!("uploading the meeting ({:.1} MB)…", bytes as f64 / 1e6);
     let meeting = serde_json::to_vec(&Upload { channels, polish })?;
     let url = format!("{}/finals", server.http);
     let client = http()?;
@@ -373,7 +374,7 @@ pub async fn upload(
             Ok(response) => break response,
             // The server not up yet, or the network back in a moment.
             Err(error) if (error.is_connect() || error.is_timeout()) && tries < UPLOAD_TRIES => {
-                eprintln!(
+                tracing::warn!(
                     "could not reach {url}; trying again in {} s",
                     retry.as_secs()
                 );
@@ -393,6 +394,49 @@ pub async fn upload(
     }
     let started: Started = response.json().await?;
     Ok(started.id)
+}
+
+/// Whether the server answers: a final pass it does not know is a 404.
+pub async fn check(server: &Server) -> Result<()> {
+    let url = format!("{}/finals/check", server.http);
+    let response = http()?
+        .get(&url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .with_context(|| format!("could not reach {url}"))?;
+    if response.status() != reqwest::StatusCode::NOT_FOUND {
+        bail!(
+            "{} answered {}: not a logbook-server",
+            server.http,
+            response.status()
+        );
+    }
+    Ok(())
+}
+
+/// The meeting's report, written by the server's model (`POST /reports`).
+pub async fn report(server: &Server, request: &ReportRequest) -> Result<String> {
+    let url = format!("{}/reports", server.http);
+    let response = http()?
+        .post(&url)
+        .json(request)
+        .send()
+        .await
+        .with_context(|| format!("could not reach {url}"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_IMPLEMENTED {
+        bail!("the server has no language model to write the report");
+    }
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        bail!(
+            "the server could not write the report ({status}): {}",
+            text.trim()
+        );
+    }
+    let report: Report = response.json().await?;
+    Ok(report.markdown)
 }
 
 pub enum Pass {

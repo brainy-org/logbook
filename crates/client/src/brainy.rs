@@ -8,6 +8,8 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::transcript::escape;
+
 /// brainy refuses Markdown longer than 200 000 characters in one call
 /// (`markdown` in its operations catalog); a long meeting is sent in parts.
 const PART: usize = 150_000;
@@ -47,6 +49,17 @@ struct Blocks {
 #[derive(Deserialize)]
 struct Block {
     block_id: String,
+    /// The block's own Markdown, without nested blocks.
+    #[serde(default)]
+    markdown: String,
+    /// 0 for the page's own blocks.
+    #[serde(default)]
+    depth: u32,
+}
+
+#[derive(Deserialize)]
+struct Inserted {
+    block_ids: Vec<String>,
 }
 
 impl Brainy {
@@ -59,6 +72,14 @@ impl Brainy {
             token: token.to_string(),
             http: reqwest::Client::builder().build()?,
         })
+    }
+
+    /// Whether brainy answers and the token opens it: its workspaces read.
+    pub async fn check(&self) -> Result<()> {
+        let _: serde_json::Value = self
+            .send(Method::GET, "/api/v1/workspaces", &serde_json::Value::Null)
+            .await?;
+        Ok(())
     }
 
     /// Creates the page under `parent` (a page id), or at the top of the
@@ -137,9 +158,7 @@ impl Brainy {
         Ok(())
     }
 
-    /// Rewrites the page's first block (one block of Markdown): the
-    /// header, written once the meeting is over.
-    pub async fn rewrite_first_block(&self, page: &str, markdown: &str) -> Result<()> {
+    async fn blocks(&self, page: &str) -> Result<Vec<Block>> {
         let blocks: Blocks = self
             .send(
                 Method::GET,
@@ -147,18 +166,103 @@ impl Brainy {
                 &serde_json::Value::Null,
             )
             .await?;
+        Ok(blocks.blocks)
+    }
+
+    /// The id of the page's first block: the header.
+    pub async fn first_block(&self, page: &str) -> Result<String> {
+        let blocks = self.blocks(page).await?;
         let first = blocks
-            .blocks
-            .first()
-            .context("the page has no blocks to rewrite")?;
+            .into_iter()
+            .next()
+            .context("the page has no blocks")?;
+        Ok(first.block_id)
+    }
+
+    /// Rewrites the page's first block (one block of Markdown): the
+    /// header, written once the meeting is over.
+    pub async fn rewrite_first_block(&self, page: &str, markdown: &str) -> Result<()> {
+        let first = self.first_block(page).await?;
+        self.update_block(&first, markdown).await
+    }
+
+    async fn update_block(&self, block: &str, markdown: &str) -> Result<()> {
         let _: serde_json::Value = self
             .send(
                 Method::PATCH,
-                &format!("/api/v1/blocks/{}", first.block_id),
+                &format!("/api/v1/blocks/{block}"),
                 &json!({ "content": markdown }),
             )
             .await?;
         Ok(())
+    }
+
+    /// Inserts Markdown right after a block; the new top-level blocks' ids.
+    pub async fn insert_after(&self, block: &str, markdown: &str) -> Result<Vec<String>> {
+        let mut after = block.to_string();
+        let mut ids = Vec::new();
+        for part in split(markdown, PART) {
+            if part.trim().is_empty() {
+                continue;
+            }
+            let inserted: Inserted = self
+                .send(
+                    Method::POST,
+                    "/api/v1/blocks",
+                    &json!({ "content": part, "after_block_id": after }),
+                )
+                .await?;
+            if let Some(last) = inserted.block_ids.last() {
+                after = last.clone();
+            }
+            ids.extend(inserted.block_ids);
+        }
+        Ok(ids)
+    }
+
+    /// Deletes blocks (they stay in the page's history); those already
+    /// gone are not an error.
+    pub async fn delete_blocks(&self, page: &str, ids: &[String]) -> Result<()> {
+        let alive: Vec<String> = self
+            .blocks(page)
+            .await?
+            .into_iter()
+            .map(|b| b.block_id)
+            .filter(|id| ids.contains(id))
+            .collect();
+        for chunk in alive.chunks(200) {
+            let _: serde_json::Value = self
+                .send(
+                    Method::POST,
+                    "/api/v1/blocks/delete",
+                    &json!({ "block_ids": chunk }),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Gives the speaker labelled `from` the label `to` on the meeting's
+    /// page: the heading line of each of its turns ("**from** · 00:04"),
+    /// and its name in the header's list of speakers. Returns how many
+    /// blocks changed.
+    pub async fn rename_speaker(&self, page: &str, from: &str, to: &str) -> Result<usize> {
+        let blocks = self.blocks(page).await?;
+        let mut changed = 0;
+        for (i, block) in blocks.iter().enumerate() {
+            let renamed = if i == 0 {
+                renamed_header(&block.markdown, from, to)
+            } else if block.depth == 0 {
+                renamed_turn(&block.markdown, from, to)
+            } else {
+                None
+            };
+            if let Some(markdown) = renamed {
+                self.update_block(&block.block_id, &markdown).await?;
+                changed += 1;
+            }
+        }
+        Ok(changed)
     }
 
     async fn send<T: for<'de> Deserialize<'de>>(
@@ -189,6 +293,43 @@ impl Brainy {
         }
         Ok(response.json().await?)
     }
+}
+
+/// A turn's heading line with the speaker's new label, if it is `from`'s.
+fn renamed_turn(markdown: &str, from: &str, to: &str) -> Option<String> {
+    let prefix = format!("**{}** · ", escape(from));
+    let rest = markdown.strip_prefix(&prefix)?;
+    Some(format!("**{}** · {rest}", escape(to)))
+}
+
+/// The header ("Recorded … · 12 min · Marco, Speaker 2") with `from`
+/// renamed in its list of speakers, the part after the last " · " of its
+/// first line.
+fn renamed_header(markdown: &str, from: &str, to: &str) -> Option<String> {
+    let (first, rest) = markdown.split_once('\n').unwrap_or((markdown, ""));
+    let (head, list) = first.rsplit_once(" · ")?;
+    let from = escape(from);
+    let mut found = false;
+    let names: Vec<String> = list
+        .split(", ")
+        .map(|n| {
+            if n == from {
+                found = true;
+                escape(to)
+            } else {
+                n.to_string()
+            }
+        })
+        .collect();
+    if !found {
+        return None;
+    }
+    let mut out = format!("{head} · {}", names.join(", "));
+    if !rest.is_empty() {
+        out.push('\n');
+        out.push_str(rest);
+    }
+    Some(out)
 }
 
 /// A page id: a UUID, 8-4-4-4-12 hexadecimal digits.
@@ -265,6 +406,32 @@ fn split(text: &str, max: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_speaker_is_renamed_in_its_turns_and_the_header() {
+        assert_eq!(
+            renamed_turn("**Speaker 2** · 00:04", "Speaker 2", "Luca").as_deref(),
+            Some("**Luca** · 00:04")
+        );
+        assert_eq!(
+            renamed_turn("**Speaker 22** · 00:04", "Speaker 2", "Luca"),
+            None
+        );
+        assert_eq!(renamed_turn("Speaker 2 said so", "Speaker 2", "Luca"), None);
+        assert_eq!(
+            renamed_header(
+                "Recorded 2026-10-27 09:15 · 12 min · Marco, Speaker 2, Speaker 3 (Luca?)",
+                "Speaker 3 (Luca?)",
+                "Luca"
+            )
+            .as_deref(),
+            Some("Recorded 2026-10-27 09:15 · 12 min · Marco, Speaker 2, Luca")
+        );
+        assert_eq!(
+            renamed_header("Recorded … · 1 min · Marco", "Anna", "Bo"),
+            None
+        );
+    }
 
     #[test]
     fn long_text_is_cut_between_paragraphs() {

@@ -1,0 +1,264 @@
+@import 'tailwindcss';
+/*
+ * Brainy's design tokens and base styles (apps/web/src/index.css there),
+ * copied until they are published in @brainy-org/ui: change them there and
+ * copy them back, so the two apps stay alike. Without brainy's editor parts
+ * (text colours, highlights) and its emoji font.
+ *
+ * Brainy's typefaces, self-hosted: the CSP allows fonts from 'self' only.
+ */
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+
+@custom-variant dark (&:where(.dark, .dark *));
+/* No hover (touch screens): controls that otherwise appear on hover stay visible. */
+@custom-variant touch (@media (hover: none));
+
+@theme {
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif: 'Source Serif 4 Variable', ui-serif, Georgia, serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+  /* Teal, Brainy's own colour: white text on it passes AA (5.2:1). */
+  --color-accent: #0d7a72;
+  /*
+   * The accent as a solid fill under white text (buttons, toggles, badges):
+   * the same teal in the light theme, a darker one than the accent text in
+   * the dark theme. Solid fills use `bg-accent-fill`, never `bg-accent`.
+   */
+  --color-accent-fill: #0d7a72;
+  /* The sidebar's surface: the page's white with a little of the accent (7:1 for its rows' text). */
+  --color-sidebar: #f2f6f5;
+  /*
+   * Two light greys darker than Tailwind's, so they pass WCAG on every
+   * light surface (white, the sidebar, `neutral-100`, a menu row's hover):
+   * 500, muted text, 5.6:1 on white and 5.1:1 on the sidebar (#737373 was
+   * 4.35:1 there); 400, icons, switch tracks and control borders, 3.7:1 on
+   * white and 3.4:1 on the sidebar (#a1a1a1 was 2.4 to 2.6:1). 400 is not
+   * a text colour in the light theme: text takes 500 or darker. The dark
+   * theme redefines both below.
+   */
+  --color-neutral-400: #858585;
+  --color-neutral-500: #686868;
+  /*
+   * Brainy's elevation: soft, wide and tinted with the accent's hue rather
+   * than a hard grey drop. Menus and popovers (`shadow-lg`) and dialogs and
+   * floating panels (`shadow-xl`) all take these. Tailwind writes the values
+   * into the utilities at build time, so a `.dark` override would not apply:
+   * in the dark theme the borders carry the edge, the shadow barely shows.
+   */
+  --shadow-lg: 0 1px 2px rgb(16 42 40 / 0.06), 0 8px 24px -4px rgb(16 42 40 / 0.14);
+  --shadow-xl: 0 2px 4px rgb(16 42 40 / 0.06), 0 18px 48px -8px rgb(16 42 40 / 0.22);
+}
+
+/*
+ * Dark theme. The neutral scale is redefined so every `dark:` class (and
+ * every grey without one) lands on a value that passes WCAG on these
+ * surfaces; ratios against the page (#161a1a) unless noted, and
+ * `docs/decisions/2026-10-13-dark-theme-contrast.md` has the roles.
+ *
+ *   950 page            900 sidebar, cards, fields   800 popovers, hover, callouts
+ *   700 hairlines, grid lines, hover inside popovers (1.95:1)
+ *   600 borders of controls: fields, outlined buttons (3.8:1, 3.5:1 on 900)
+ *   500 muted text, the most used grey (7.1:1, 5.4:1 on a popover)
+ *   400 secondary text (9.5:1)   300 body text (13.5:1)
+ *
+ * Every grey carries a little of the accent's hue (Brainy's dark theme,
+ * `docs/decisions/2026-10-13-brainy-identity.md`): soft rather than
+ * near-black, so the page and the sidebar read as paper, not as a void.
+ */
+.dark {
+  /* Native controls (option lists, scrollbars, date pickers) follow the theme. */
+  color-scheme: dark;
+  --color-neutral-950: #161a1a;
+  --color-neutral-900: #1e2323;
+  --color-neutral-800: #283030;
+  --color-neutral-700: #414b4b;
+  --color-neutral-600: #6c7878;
+  --color-neutral-500: #9ba7a7;
+  --color-neutral-400: #b7c0c0;
+  --color-neutral-300: #dce3e3;
+  --color-sidebar: #1e2323;
+  /*
+   * Error text is `text-red-600` everywhere; on those greys it is barely
+   * legible (about 3:1), so in the dark theme it takes red-400's value.
+   * red-600 is used only for text: a red-600 fill would turn light here.
+   */
+  --color-red-600: oklch(70.4% 0.191 22.216);
+  /* A lighter teal, so accent text stays legible on the dark greys (6.8:1, 5.2:1 on a popover). */
+  --color-accent: #2bb3a6;
+  /* White on the fill stays AA (4.6:1); the fill keeps 3.8:1 against the page. */
+  --color-accent-fill: #128379;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-white text-neutral-800 antialiased dark:bg-neutral-950 dark:text-neutral-300;
+}
+
+/*
+ * Scrollbars, with a mouse: a thin rounded thumb on no track, faint until
+ * the pointer is over the area it scrolls. The native bar (with "always
+ * show scrollbars" on macOS, or on Windows) drew a grey gutter the height
+ * of the page. Touch screens keep their overlay bars: styling them on
+ * Android turns them into a gutter. Chrome ignores the `::-webkit-`
+ * rules once `scrollbar-color` is set, so the standard properties are for
+ * Firefox only.
+ */
+:root {
+  --scrollbar-thumb: rgb(0 0 0 / 0.14);
+  --scrollbar-thumb-hover: rgb(0 0 0 / 0.32);
+}
+.dark {
+  --scrollbar-thumb: rgb(255 255 255 / 0.12);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 0.3);
+}
+@media (hover: hover) and (pointer: fine) {
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  /* The transparent border insets the thumb from the edge. */
+  ::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: padding-box;
+    background-color: transparent;
+  }
+  :hover::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+  }
+  ::-webkit-scrollbar-thumb:hover,
+  ::-webkit-scrollbar-thumb:active {
+    background-color: var(--scrollbar-thumb-hover);
+  }
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--scrollbar-thumb) transparent;
+    }
+  }
+}
+
+/* iOS enlarges text on its own when the phone turns sideways. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/*
+ * Touch screens. A phone is held further from the eye than its pixels
+ * suggest: the whole interface (text and spacing are in rem) is a step
+ * larger there. And iOS zooms into a field whose text is under 16px when
+ * it takes the focus, and stays zoomed after: fields are 16px, except the
+ * page title, which is larger anyway. Unlayered, so it wins over `text-sm`.
+ */
+@media (max-width: 767px) and (pointer: coarse) {
+  html {
+    font-size: 17px;
+  }
+}
+@media (pointer: coarse) {
+  input:not([type='checkbox'], [type='radio'], [type='range']),
+  select,
+  textarea:not([data-title-for]) {
+    font-size: 16px;
+  }
+}
+
+/*
+ * Selects draw their own chevron, inset from the edge: the native one sits
+ * flush against the border. Unlayered on purpose, so it wins over the `px-*`
+ * utilities on each select and the text never runs under the chevron; sizes
+ * are in em so it scales with the select's text.
+ */
+select:not([multiple], [size]) {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23737373' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5em center;
+  background-size: 1em;
+  padding-right: 1.9em;
+  cursor: pointer;
+}
+select:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/*
+ * The report and the notes, rendered from Markdown (components/Markdown.tsx):
+ * brainy's page rhythm, without its editor.
+ */
+.prose-report {
+  @apply text-[15px] leading-relaxed text-neutral-800 dark:text-neutral-200;
+}
+.prose-report h1,
+.prose-report h2,
+.prose-report h3 {
+  @apply mt-6 mb-2 font-semibold text-neutral-900 first:mt-0 dark:text-neutral-100;
+}
+.prose-report h1 {
+  @apply text-xl;
+}
+.prose-report h2 {
+  @apply text-lg;
+}
+.prose-report h3 {
+  @apply text-base;
+}
+.prose-report p {
+  @apply my-2;
+}
+.prose-report ul,
+.prose-report ol {
+  @apply my-2 pl-6;
+}
+.prose-report ul {
+  @apply list-disc;
+}
+.prose-report ol {
+  @apply list-decimal;
+}
+.prose-report li {
+  @apply my-1;
+}
+.prose-report li > ul,
+.prose-report li > ol {
+  @apply my-1;
+}
+/* GitHub task lists: the checkbox replaces the bullet. */
+.prose-report li:has(> input[type='checkbox']) {
+  @apply list-none -ml-5;
+}
+.prose-report input[type='checkbox'] {
+  @apply mr-2 align-middle accent-accent;
+}
+.prose-report strong {
+  @apply font-semibold text-neutral-900 dark:text-neutral-100;
+}
+.prose-report code {
+  @apply rounded bg-neutral-100 px-1 font-mono text-[0.9em] dark:bg-neutral-800;
+}
+.prose-report blockquote {
+  @apply my-3 border-l-2 border-neutral-300 pl-3 text-neutral-600 dark:border-neutral-600 dark:text-neutral-400;
+}
+.prose-report a {
+  @apply text-accent underline underline-offset-2;
+}
+.prose-report hr {
+  @apply my-6 border-neutral-200 dark:border-neutral-700;
+}
+
+/* The live meter's bars move with the voice, smoothly. */
+.meter-bar {
+  transition: height 90ms linear;
+}

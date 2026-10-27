@@ -18,38 +18,40 @@ use logbook_engine::finals::Finals;
 use logbook_engine::mirror::Mirror;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::polish::{self, Polisher};
-use logbook_engine::protocol::{ChannelConfig, FinalState};
+use logbook_engine::protocol::{ChannelConfig, FinalState, ReportRequest};
 use logbook_engine::recording::Recording;
 use logbook_engine::session::{self, Input, Shared};
-use logbook_engine::{Engine, Options, batcher, polisher};
+use logbook_engine::{Engine, Options, batcher, polisher, report};
 use tokio::sync::OnceCell;
 
-use crate::client::{self, Audio, Events, Finalized, Live};
+use crate::remote::{self, Audio, Events, Finalized, Live};
 
 /// How often a final pass running here is looked at.
 const POLL: Duration = Duration::from_millis(200);
 
-/// Where the models and the clean-up model come from.
-#[derive(clap::Args, Clone)]
-#[command(next_help_heading = "Without --server")]
+/// Where the models and the language model come from.
+#[derive(Clone, Default)]
 pub struct Config {
     /// Folder of the GGUF files, used as it is; by default the pinned
     /// ones in ~/.cache/brainy-org, fetched from the mirror when missing.
-    #[arg(long, global = true, env = "LOGBOOK_MODELS")]
-    models: Option<std::path::PathBuf>,
+    pub models: Option<std::path::PathBuf>,
     /// An OpenAI-compatible API, up to `/v1`, whose model cleans the final
-    /// transcript up with --polish. The meeting's text goes there.
-    #[arg(long, global = true, env = "LOGBOOK_POLISH_URL")]
-    polish_url: Option<String>,
-    #[arg(long, global = true, env = "LOGBOOK_POLISH_MODEL")]
-    polish_model: Option<String>,
-    #[arg(
-        long,
-        global = true,
-        env = "LOGBOOK_POLISH_KEY",
-        hide_env_values = true
-    )]
-    polish_key: Option<String>,
+    /// transcript up (polish) and writes the report. The meeting's text
+    /// goes there.
+    pub polish_url: Option<String>,
+    pub polish_model: Option<String>,
+    pub polish_key: Option<String>,
+}
+
+impl Config {
+    fn model(&self) -> Option<polish::Options> {
+        Some(polish::Options {
+            url: self.polish_url.clone()?,
+            model: self.polish_model.clone()?,
+            key: self.polish_key.clone(),
+            timeout: Duration::from_secs(polish::TIMEOUT),
+        })
+    }
 }
 
 /// The models, loaded on first use.
@@ -74,12 +76,28 @@ impl Local {
         }
     }
 
-    /// --polish needs a model here: an error now, not at the meeting's end.
-    pub fn check_polish(&self, polish: bool) -> Result<()> {
-        if polish && (self.config.polish_url.is_none() || self.config.polish_model.is_none()) {
-            bail!("--polish without --server needs LOGBOOK_POLISH_URL and LOGBOOK_POLISH_MODEL");
+    /// A clean-up or a report needs a model here: an error now, not at
+    /// the meeting's end.
+    pub fn check_model(&self, needed: bool) -> Result<()> {
+        if needed && self.config.model().is_none() {
+            bail!(
+                "the clean-up and the report without a server need a language model \
+                 (LOGBOOK_POLISH_URL and LOGBOOK_POLISH_MODEL)"
+            );
         }
         Ok(())
+    }
+
+    /// The meeting's report by the language model of `Config`.
+    pub async fn report(&self, request: ReportRequest) -> Result<String> {
+        let options = self
+            .config
+            .model()
+            .context("no language model is set for the report")?;
+        tokio::task::spawn_blocking(move || {
+            report::write(&polish::agent(&options), &options, &request)
+        })
+        .await?
     }
 
     /// The models loaded, fetched first if missing; `sessions` at once
@@ -118,7 +136,7 @@ impl Local {
         let loaded = match self.loaded(1).await {
             Ok(loaded) => loaded,
             Err(error) => {
-                eprintln!("live: {error:#}");
+                tracing::warn!("live: {error:#}");
                 out.intact = false;
                 return out;
             }
@@ -153,14 +171,14 @@ impl Local {
                 },
                 message = out_rx.recv() => {
                     let done = match message {
-                        Some(m) => client::handle(m, &mut out, final_pass.is_some(), |u| u, events),
+                        Some(m) => remote::handle(m, &mut out, final_pass.is_some(), |u| u, events),
                         None => Err(anyhow::anyhow!("the session stopped")),
                     };
                     match done {
                         Ok(false) => {}
                         Ok(true) => return out,
                         Err(error) => {
-                            eprintln!("live: {error:#}");
+                            tracing::warn!("live: {error:#}");
                             out.intact = false;
                             return out;
                         }
@@ -238,24 +256,14 @@ impl Loaded {
 
 fn start(config: Config, sessions: usize) -> Result<Loaded> {
     let (models, library) =
-        Mirror::new().locate(config.models, |message| eprintln!("{message}"))?;
-    eprintln!("loading the models…");
+        Mirror::new().locate(config.models.clone(), |message| tracing::info!("{message}"))?;
+    tracing::info!("loading the models…");
     let options = Options::defaults(&models, library, sessions.max(1));
     let engine = Arc::new(Engine::load(&options)?);
     let finals = Arc::new(Finals::default());
-    let polisher = match (config.polish_url, config.polish_model) {
-        (Some(url), Some(model)) => Some(polisher::spawn(
-            Polisher::new(polish::Options {
-                url,
-                model,
-                key: config.polish_key,
-                timeout: Duration::from_secs(polish::TIMEOUT),
-            }),
-            finals.clone(),
-            1,
-        )),
-        _ => None,
-    };
+    let polisher = config
+        .model()
+        .map(|options| polisher::spawn(Polisher::new(options), finals.clone(), 1));
     Ok(Loaded {
         batcher: batcher::spawn(engine.asr.clone(), logbook_engine::MAX_BATCH),
         finalizer: finalizer::spawn(engine.clone(), finals.clone(), polisher.clone()),

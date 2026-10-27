@@ -6,7 +6,8 @@
 //! known, the brainy page and how far it is written), one raw 16 kHz s16le
 //! file per channel on the session's clock, written as the audio is
 //! captured, `segments.jsonl` (the final segments as they come during the
-//! meeting) and `final.json` once the final pass is complete (the audio is
+//! meeting), `notes.md` (what the person wrote during it, for the report)
+//! and `final.json` once the final pass is complete (the audio is
 //! deleted then: it is no longer needed). The folder goes away once the
 //! transcript is published; until then `logbook finish` picks it up again.
 //! No brainy token is ever written.
@@ -20,7 +21,7 @@ use logbook_engine::protocol::ChannelConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::brainy::Page;
-use crate::client::Finalized;
+use crate::remote::Finalized;
 use crate::transcript::Writer;
 use logbook_engine::protocol::{SpeakerVoice, Utterance};
 
@@ -58,6 +59,13 @@ pub struct Saved {
     pub parent: Option<String>,
     pub title: Option<String>,
     pub me: String,
+    /// Have a language model write the meeting's report (engine report.rs).
+    #[serde(default)]
+    pub report: bool,
+    /// Keep the transcript, the notes and the report in the history
+    /// (history.rs) once published: the app does, the CLI does not.
+    #[serde(default)]
+    pub keep: bool,
 }
 
 pub struct Pending {
@@ -209,6 +217,17 @@ impl Pending {
             .collect()
     }
 
+    /// What the person wrote during the meeting.
+    pub fn save_notes(&self, notes: &str) -> Result<()> {
+        let path = self.dir.join("notes.md");
+        std::fs::write(&path, notes).with_context(|| format!("could not write {}", path.display()))
+    }
+
+    /// The notes, empty if none were written.
+    pub fn notes(&self) -> String {
+        std::fs::read_to_string(self.dir.join("notes.md")).unwrap_or_default()
+    }
+
     /// The transcript as a file to read while it waits to be published.
     pub fn save_transcript(&self, markdown: &str) -> Result<PathBuf> {
         let path = self.dir.join("transcript.md");
@@ -287,6 +306,8 @@ mod tests {
                 parent: None,
                 title: None,
                 me: "Me".into(),
+                report: false,
+                keep: false,
             },
             final_id: None,
             page: None,
@@ -300,6 +321,9 @@ mod tests {
         second.remove().unwrap();
         spool.write(0, &[1, -2, 3]).unwrap();
         spool.finish().unwrap();
+        assert_eq!(pending.notes(), "");
+        pending.save_notes("- budget").unwrap();
+        assert_eq!(pending.notes(), "- budget");
         pending.set_final_id(Some("abc".into())).unwrap();
 
         let dirs = Pending::list(&root).unwrap();
