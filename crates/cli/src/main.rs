@@ -14,6 +14,7 @@ mod client;
 mod local;
 mod pending;
 mod transcript;
+mod voices;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -23,7 +24,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Local};
 use clap::{Parser, Subcommand};
-use logbook_engine::protocol::{ChannelConfig, Utterance};
+use logbook_engine::protocol::{ChannelConfig, SpeakerVoice, Utterance};
 
 use crate::client::{Finalized, Live, Pass, Server};
 use crate::pending::{Meeting, Pending, Saved, Spool};
@@ -161,6 +162,11 @@ enum Command {
         #[arg(long, env = "BRAINY_TOKEN", hide_env_values = true)]
         brainy_token: Option<String>,
     },
+    /// The voices known by name, and the last meetings' speakers.
+    Speakers {
+        #[command(subcommand)]
+        action: Option<SpeakersAction>,
+    },
     /// List the audio devices live can record from.
     Devices,
     /// Stream one recording as many sessions at once; report the latency.
@@ -175,6 +181,21 @@ enum Command {
         #[arg(long)]
         no_diarize: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum SpeakersAction {
+    /// Name a speaker of a recent meeting: its voice is named on the
+    /// pages of the meetings that follow.
+    Name {
+        /// The meeting (as `logbook speakers` lists it), or "last".
+        meeting: String,
+        /// Its label on the page ("Speaker 2"), or just its number.
+        speaker: String,
+        name: String,
+    },
+    /// Forget the voice of a person.
+    Forget { name: String },
 }
 
 #[tokio::main]
@@ -272,6 +293,15 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Speakers { action } => match action {
+            None => voices::list(&data),
+            Some(SpeakersAction::Name {
+                meeting,
+                speaker,
+                name,
+            }) => voices::name(&data, &meeting, &speaker, &name),
+            Some(SpeakersAction::Forget { name }) => voices::forget(&data, &name),
+        },
         Command::Devices => {
             for line in audio::devices()? {
                 println!("{line}");
@@ -326,11 +356,17 @@ impl client::Events for Printer {
         );
     }
 
-    fn final_segments(&mut self, until: f64, utterances: Vec<Utterance>) {
+    fn final_segments(
+        &mut self,
+        until: f64,
+        utterances: Vec<Utterance>,
+        voices: Vec<SpeakerVoice>,
+    ) {
         if let Some(tx) = &self.progress {
             let _ = tx.send(Progress::Segments {
                 until: until.min(END),
                 utterances,
+                voices,
             });
         }
     }
@@ -395,6 +431,7 @@ enum Progress {
     Segments {
         until: f64,
         utterances: Vec<Utterance>,
+        voices: Vec<SpeakerVoice>,
     },
     FinalId(String),
 }
@@ -473,7 +510,9 @@ async fn write_page(
         .clone()
         .unwrap_or_else(|| transcript::Writer::new(&saved.me));
     if !new.is_empty() {
-        b.append(&page.id, &writer.body(&new)).await?;
+        let known = voices::Library::load(pending.data())?;
+        let body = writer.body(&new, &pending.meeting.voices, &known);
+        b.append(&page.id, &body).await?;
     }
     pending.meeting.writer = Some(writer);
     pending.meeting.published_until = pending.meeting.published_until.max(limit);
@@ -492,8 +531,16 @@ async fn publisher(
         let written = async {
             match progress {
                 Progress::FinalId(id) => pending.set_final_id(Some(id)),
-                Progress::Segments { until, utterances } => {
+                Progress::Segments {
+                    until,
+                    utterances,
+                    voices,
+                } => {
                     pending.add_segments(&utterances)?;
+                    if !voices.is_empty() {
+                        pending.meeting.voices = voices;
+                        pending.save()?;
+                    }
                     match &brainy {
                         Some(b) => {
                             let segments = pending.segments()?;
@@ -515,6 +562,9 @@ async fn publisher(
 /// The final transcript, complete: printed, or the rest written to the
 /// brainy page and its header line rewritten.
 async fn publish(pending: &mut Pending, brainy: &Credentials, finalized: &Finalized) -> Result<()> {
+    if !finalized.voices.is_empty() {
+        pending.meeting.voices = finalized.voices.clone();
+    }
     let saved = pending.meeting.publish.clone();
     let started_text = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
     let duration_s = finalized
@@ -523,13 +573,17 @@ async fn publish(pending: &mut Pending, brainy: &Credentials, finalized: &Finali
         .map(|u| u.end)
         .fold(0.0, f64::max);
     let Some(b) = brainy.brainy(&saved)? else {
-        let markdown = transcript::markdown(&transcript::Meeting {
+        let known = voices::Library::load(pending.data())?;
+        let (markdown, writer) = transcript::markdown(&transcript::Meeting {
             utterances: &finalized.utterances,
             warnings: &finalized.warnings,
             me: &saved.me,
             started: &started_text,
             duration_s,
+            voices: &pending.meeting.voices,
+            known: &known,
         });
+        pending.meeting.writer = Some(writer);
         println!("\n{markdown}");
         return Ok(());
     };
@@ -571,10 +625,15 @@ async fn finish(server: &Backend, pending: &mut Pending, brainy: &Credentials) -
         },
     };
     match publish(pending, brainy, &finalized).await {
-        Ok(()) => pending.remove(),
+        Ok(()) => {
+            if let Err(error) = remember_voices(pending) {
+                eprintln!("the meeting's voices were not kept to be named: {error:#}");
+            }
+            pending.remove()
+        }
         Err(error) => {
             let started_text = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
-            let markdown = transcript::markdown(&transcript::Meeting {
+            let (markdown, _) = transcript::markdown(&transcript::Meeting {
                 utterances: &finalized.utterances,
                 warnings: &finalized.warnings,
                 me: &pending.meeting.publish.me,
@@ -584,6 +643,8 @@ async fn finish(server: &Backend, pending: &mut Pending, brainy: &Credentials) -
                     .iter()
                     .map(|u| u.end)
                     .fold(0.0, f64::max),
+                voices: &pending.meeting.voices,
+                known: &voices::Library::load(pending.data()).unwrap_or_default(),
             });
             let file = pending.save_transcript(&markdown)?;
             Err(kept(
@@ -595,6 +656,32 @@ async fn finish(server: &Backend, pending: &mut Pending, brainy: &Credentials) -
             ))
         }
     }
+}
+
+/// The meeting's speakers, by their labels on the page, kept to be named
+/// with `logbook speakers name` (voices.rs).
+fn remember_voices(pending: &Pending) -> Result<()> {
+    let Some(writer) = &pending.meeting.writer else {
+        return Ok(());
+    };
+    let speakers = writer
+        .labels()
+        .into_iter()
+        .filter_map(|(channel, speaker, label)| {
+            let voice = pending
+                .meeting
+                .voices
+                .iter()
+                .find(|v| v.channel == channel && v.speaker == speaker)?;
+            Some(voices::HeardSpeaker {
+                label,
+                voice: voice.clone(),
+            })
+        })
+        .collect();
+    let page = pending.meeting.page.as_ref().map(|p| p.url.clone());
+    let heard = voices::heard(&pending.meeting.started, page, speakers);
+    voices::remember(pending.data(), &pending.id(), &heard)
 }
 
 async fn final_pass(server: &Backend, pending: &mut Pending) -> Result<Finalized> {
@@ -684,6 +771,7 @@ async fn meeting(
             page: None,
             writer: None,
             published_until: 0.0,
+            voices: Vec::new(),
         };
         let (created, writer) =
             Pending::create(data, &started.format("%Y%m%d-%H%M%S").to_string(), meeting)?;
@@ -737,9 +825,11 @@ async fn meeting(
     let mut pending = publishing.await?;
     if let Some(warnings) = live.finalized {
         let utterances = pending.segments()?;
+        let voices = pending.meeting.voices.clone();
         pending.save_final(&Finalized {
             utterances,
             warnings,
+            voices,
         })?;
     } else if let Err(error) = kept {
         eprintln!("the final pass reads only what was kept before: {error:#}");

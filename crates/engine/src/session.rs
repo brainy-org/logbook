@@ -327,9 +327,11 @@ fn live(
         {
             info!(session, segments = f.sent.len(), "final pass done");
             f.warnings.extend(polisher::warning(&f.unpolished));
+            let voices = f.pass.voices();
             let _ = out.send(ServerMessage::Final {
                 utterances: Vec::new(),
                 warnings: f.warnings.clone(),
+                voices: voices.clone(),
             });
             let _ = out.send(ServerMessage::Done);
             if let Some(id) = &f.id {
@@ -338,6 +340,7 @@ fn live(
                     FinalState::Done {
                         utterances: std::mem::take(&mut f.sent),
                         warnings: f.warnings.clone(),
+                        voices,
                     },
                 );
             }
@@ -435,5 +438,11 @@ fn send(
     out: &UnboundedSender<ServerMessage>,
 ) {
     f.sent.extend(utterances.iter().cloned());
-    let _ = out.send(ServerMessage::FinalSegments { until, utterances });
+    // Every speaker's voice as it stands: a few kB a minute, and the client
+    // names a speaker from it before the segment goes on the page.
+    let _ = out.send(ServerMessage::FinalSegments {
+        until,
+        utterances,
+        voices: f.pass.voices(),
+    });
 }

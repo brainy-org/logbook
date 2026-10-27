@@ -22,7 +22,7 @@ use anyhow::Result;
 use crate::channel::speaker_of;
 use crate::echo::EchoFilter;
 use crate::parakeet::{Model, SAMPLE_RATE, Turn, Word};
-use crate::protocol::{ChannelConfig, Utterance};
+use crate::protocol::{ChannelConfig, SpeakerVoice, Utterance};
 use crate::speakers::{self, Linker, Voice};
 
 /// Pieces of speech per call to the model, as brainy-worker.
@@ -310,6 +310,25 @@ impl Progressive {
         out.sort_by(|a, b| a.start.total_cmp(&b.start));
         self.done = until;
         Some((until, out))
+    }
+
+    /// The voices of the diarized channels' speakers so far.
+    pub fn voices(&self) -> Vec<SpeakerVoice> {
+        self.tracks
+            .iter()
+            .filter(|t| t.config.diarize)
+            .flat_map(|t| {
+                t.linker
+                    .voices()
+                    .into_iter()
+                    .map(|(speaker, embedding, seconds)| SpeakerVoice {
+                        channel: t.config.name.clone(),
+                        speaker,
+                        embedding,
+                        seconds,
+                    })
+            })
+            .collect()
     }
 
     /// Where the channel has been transcribed up to: its audio before

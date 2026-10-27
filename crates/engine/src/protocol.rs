@@ -52,6 +52,10 @@ pub enum ServerMessage {
     FinalSegments {
         until: f64,
         utterances: Vec<Utterance>,
+        /// The voice of every speaker of the diarized channels so far: what
+        /// the client puts a name on (cli voices.rs).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        voices: Vec<SpeakerVoice>,
     },
     /// The live transcript is complete; the rest of the final pass runs.
     Finalizing {
@@ -66,6 +70,9 @@ pub enum ServerMessage {
     Final {
         utterances: Vec<Utterance>,
         warnings: Vec<String>,
+        /// As in `FinalSegments`, at the meeting's end.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        voices: Vec<SpeakerVoice>,
     },
     Done,
     Error {
@@ -99,6 +106,8 @@ pub enum FinalState {
     Done {
         utterances: Vec<Utterance>,
         warnings: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        voices: Vec<SpeakerVoice>,
     },
     Failed {
         message: String,
@@ -117,6 +126,19 @@ pub struct Utterance {
     pub end: f64,
     pub text: String,
     pub words: Vec<Word>,
+}
+
+/// A meeting speaker's voice: the mean of its embeddings (WeSpeaker
+/// ResNet34-LM, L2-normalized) over the audio where it spoke alone. A
+/// voiceprint: the server does not keep it past the meeting.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SpeakerVoice {
+    pub channel: String,
+    /// As in `Utterance::speaker`.
+    pub speaker: u32,
+    pub embedding: Vec<f32>,
+    /// Seconds of audio behind it: a short voice is a noisy one.
+    pub seconds: f64,
 }
 
 pub fn encode_audio(channel: u8, samples: &[i16]) -> Vec<u8> {

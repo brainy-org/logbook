@@ -16,8 +16,8 @@ use futures_util::{SinkExt, StreamExt};
 use logbook_engine::codec;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::protocol::{
-    ChannelConfig, ClientMessage, FinalState, ServerMessage, Started, Upload, Utterance,
-    encode_audio,
+    ChannelConfig, ClientMessage, FinalState, ServerMessage, SpeakerVoice, Started, Upload,
+    Utterance, encode_audio,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -77,6 +77,9 @@ impl Server {
 pub struct Finalized {
     pub utterances: Vec<Utterance>,
     pub warnings: Vec<String>,
+    /// The speakers' voices at the end (voices.rs).
+    #[serde(default)]
+    pub voices: Vec<SpeakerVoice>,
 }
 
 pub struct Live {
@@ -94,8 +97,15 @@ pub struct Live {
 pub trait Events {
     fn utterance(&mut self, u: Utterance);
     /// Final segments starting before `until`, during the meeting and at
-    /// its end (`until` infinite with the last ones).
-    fn final_segments(&mut self, _until: f64, _utterances: Vec<Utterance>) {}
+    /// its end (`until` infinite with the last ones), and every speaker's
+    /// voice so far.
+    fn final_segments(
+        &mut self,
+        _until: f64,
+        _utterances: Vec<Utterance>,
+        _voices: Vec<SpeakerVoice>,
+    ) {
+    }
     /// The meeting has ended; the rest of the final pass runs as `id`.
     fn finalizing(&mut self, _audio_s: f64, _id: &str) {}
 }
@@ -262,8 +272,12 @@ pub fn handle(
 ) -> Result<bool> {
     match message {
         ServerMessage::Utterance(u) => events.utterance(shift(u)),
-        ServerMessage::FinalSegments { until, utterances } if final_pass => {
-            events.final_segments(until, utterances);
+        ServerMessage::FinalSegments {
+            until,
+            utterances,
+            voices,
+        } if final_pass => {
+            events.final_segments(until, utterances, voices);
         }
         ServerMessage::FinalSegments { .. } => {}
         ServerMessage::Finalizing { audio_s, id } => {
@@ -273,8 +287,9 @@ pub fn handle(
         ServerMessage::Final {
             utterances,
             warnings,
+            voices,
         } => {
-            events.final_segments(f64::INFINITY, utterances);
+            events.final_segments(f64::INFINITY, utterances, voices);
             out.finalized = Some(warnings);
         }
         ServerMessage::Done => return Ok(true),
@@ -408,10 +423,12 @@ pub async fn poll(server: &Server, id: &str) -> Result<Pass> {
             Ok(Some(FinalState::Done {
                 utterances,
                 warnings,
+                voices,
             })) => {
                 return Ok(Pass::Done(Finalized {
                     utterances,
                     warnings,
+                    voices,
                 }));
             }
             Ok(Some(FinalState::Failed { message })) => return Ok(Pass::Failed(message)),

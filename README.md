@@ -112,6 +112,26 @@ punctuation. Without it the transcript stays as heard and the meeting's
 text never reaches the model; a pending meeting keeps the choice for
 `finish`.
 
+### Speakers by name
+
+On the page the call's voices are "Speaker 1", "Speaker 2"… until you name
+them. After a meeting:
+
+```bash
+scripts/client.sh speakers                                # known voices, the last meetings' speakers
+scripts/client.sh speakers name last 2 "Luca Bianchi"     # Speaker 2 of the last meeting is Luca Bianchi
+scripts/client.sh speakers forget "Luca Bianchi"
+```
+
+From the next meeting on, a voice close to Luca's, and to no one else's,
+is written "Luca Bianchi". A doubtful one is written "Speaker 3 (Luca
+Bianchi?)". A speaker needs about 10 s of voice heard alone to be named.
+30 s or more makes recognition more reliable, and naming the same person
+again from another meeting (another microphone, a call) adds to their
+voice. The voices are kept only on your computer: `voices.json` and, for
+the last 20 meetings, `voices/` in the data folder. Ask before you name
+someone: a voiceprint is personal data.
+
 ### When the network or the server fails
 
 A meeting with `--final` is also kept on your computer, in

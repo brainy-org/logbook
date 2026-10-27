@@ -7,7 +7,7 @@
 use anyhow::Result;
 
 use crate::progressive::{self, Progressive, RangeModels};
-use crate::protocol::{ChannelConfig, Utterance};
+use crate::protocol::{ChannelConfig, SpeakerVoice, Utterance};
 
 /// Pieces the VAD cuts a channel into, to find where ranges may end.
 const PIECE: f64 = 30.0;
@@ -26,6 +26,8 @@ pub struct Final {
     pub utterances: Vec<Utterance>,
     /// What was left out, said as observed.
     pub warnings: Vec<String>,
+    /// The diarized channels' speakers' voices.
+    pub voices: Vec<SpeakerVoice>,
 }
 
 pub fn run(models: &RangeModels, threshold: f32, channels: Vec<Recorded>) -> Result<Final> {
@@ -58,5 +60,6 @@ pub fn run(models: &RangeModels, threshold: f32, channels: Vec<Recorded>) -> Res
     Ok(Final {
         utterances,
         warnings: Vec::new(),
+        voices: pass.voices(),
     })
 }

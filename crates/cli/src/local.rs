@@ -208,10 +208,12 @@ impl Local {
                 Some(FinalState::Done {
                     utterances,
                     warnings,
+                    voices,
                 }) => {
                     return Ok(Finalized {
                         utterances,
                         warnings,
+                        voices,
                     });
                 }
                 Some(FinalState::Failed { message }) => bail!("{message}"),

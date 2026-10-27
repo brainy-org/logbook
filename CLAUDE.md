@@ -32,7 +32,9 @@ crates/cli/      logbook: play (a file at the pace of speech), live (microphone 
                  the session on a server with reconnection (client.rs), or in this
                  process without --server (local.rs), the meeting kept until
                  published (pending.rs), the final transcript as Markdown, a part
-                 at a time (transcript.rs), into brainy as it comes (brainy.rs)
+                 at a time (transcript.rs), into brainy as it comes (brainy.rs),
+                 speakers named from voices known on this computer (voices.rs,
+                 `logbook speakers`)
 scripts/         server.sh (builds and runs the server), client.sh
 docs/            pipeline.md, protocol.md, decisions/
 ```
@@ -103,6 +105,12 @@ scripts/client.sh play FILE           # or: live [--system], devices, bench FILE
 - **Times that go out as JSON are never infinite**: serde_json writes
   infinity as `null`, which does not read back as a number. "To the end"
   is `f64::MAX` (`until`, `published_until`).
+- **Voiceprints stay on the client.** The server sends a meeting's
+  speakers' voices (`SpeakerVoice`) and keeps them only as long as that
+  meeting's result. The library of named voices lives only in the CLI's
+  data folder (`voices.rs`). A library on the server would hold
+  biometric data of people who never used logbook
+  (`docs/decisions/2026-10-27-speakers-named-by-voice.md`).
 - **logbook-server holds no brainy credentials.** It returns the final
   transcript; the CLI writes the page with the person's own token
   (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).

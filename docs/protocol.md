@@ -48,7 +48,7 @@ also over HTTP, at `http://HOST:3300/finals`. Types in
   for words no turn covers. Utterances of one channel arrive in order;
   channels interleave freely, and a channel with `echo_of` lags behind
   the one it is filtered against.
-- `{"type":"final_segments","until":118.4,"utterances":[...]}` with a
+- `{"type":"final_segments","until":118.4,"utterances":[...],"voices":[...]}` with a
   final pass, during the meeting, about a minute or so behind it: every
   channel's final segments that start before `until`, by start time, in
   the shape of `utterance` without the `type`. Never sent again, never
@@ -58,12 +58,18 @@ also over HTTP, at `http://HOST:3300/finals`. Types in
   that cleans the transcript up (`--polish-url`), when `start` said
   `"polish": true`, `text` is the cleaned
   text and `words` stay as heard: the two may differ, and a segment of
-  fillers alone may be missing.
+  fillers alone may be missing. `voices` (absent when there is none): every
+  speaker of the diarized channels so far, as
+  `{"channel","speaker","embedding":[256 floats, L2-normalized],"seconds"}`,
+  the mean of its WeSpeaker embeddings over `seconds` of audio where it
+  spoke alone. The client names speakers from them
+  (`docs/decisions/2026-10-27-speakers-named-by-voice.md`); they are
+  voiceprints, not kept past the meeting's result.
 - `{"type":"finalizing","audio_s":1834.2,"id":"9f3c…"}` with a final
   pass: the live transcript is complete; the final pass finishes the last
   minute or so (seconds). The whole result is also at `GET /finals/{id}`
   for an hour after it is ready.
-- `{"type":"final","utterances":[],"warnings":[...]}` with a final pass:
+- `{"type":"final","utterances":[],"warnings":[...],"voices":[...]}` with a final pass:
   it is complete (`utterances`: any segment not sent as `final_segments`;
   the server sends them all there); `warnings` says what was left out
   ("120–181 s of system was not transcribed again: ...").

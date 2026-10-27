@@ -132,6 +132,7 @@ fn run_whole(
                     id: id.clone(),
                     utterances: result.utterances,
                     warnings: result.warnings,
+                    voices: result.voices,
                 };
                 match polisher.send(job) {
                     Ok(()) => return,
@@ -139,6 +140,7 @@ fn run_whole(
                         if let PolishJob::Whole {
                             utterances,
                             warnings,
+                            voices,
                             ..
                         } = job
                         {
@@ -147,6 +149,7 @@ fn run_whole(
                                 FinalState::Done {
                                     utterances,
                                     warnings,
+                                    voices,
                                 },
                             );
                         }
@@ -157,6 +160,7 @@ fn run_whole(
             FinalState::Done {
                 utterances: result.utterances,
                 warnings: result.warnings,
+                voices: result.voices,
             }
         }
         Err(error) => {

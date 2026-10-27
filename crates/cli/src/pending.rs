@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::brainy::Page;
 use crate::client::Finalized;
 use crate::transcript::Writer;
-use logbook_engine::protocol::Utterance;
+use logbook_engine::protocol::{SpeakerVoice, Utterance};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Meeting {
@@ -45,6 +45,9 @@ pub struct Meeting {
     /// Segments starting before this are on the page.
     #[serde(default)]
     pub published_until: f64,
+    /// The speakers' voices as last sent: their names come from them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voices: Vec<SpeakerVoice>,
 }
 
 /// How to publish the transcript, as asked when the meeting started.
@@ -214,6 +217,22 @@ impl Pending {
         Ok(path)
     }
 
+    /// The folder's name: the meeting's id (`20261024-174012`).
+    pub fn id(&self) -> String {
+        self.dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// The data folder the meeting is pending in.
+    pub fn data(&self) -> &Path {
+        self.dir
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("."))
+    }
+
     pub fn remove(&self) -> Result<()> {
         std::fs::remove_dir_all(&self.dir)
             .with_context(|| format!("could not remove {}", self.dir.display()))
@@ -273,6 +292,7 @@ mod tests {
             page: None,
             writer: None,
             published_until: 0.0,
+            voices: Vec::new(),
         };
         let (mut pending, mut spool) = Pending::create(&root, "m", meeting.clone()).unwrap();
         let (second, _) = Pending::create(&root, "m", meeting).unwrap();
@@ -291,6 +311,7 @@ mod tests {
         let finalized = Finalized {
             utterances: Vec::new(),
             warnings: vec!["w".into()],
+            voices: Vec::new(),
         };
         opened.save_final(&finalized).unwrap();
         assert_eq!(opened.final_result().unwrap().unwrap().warnings, ["w"]);

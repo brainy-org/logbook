@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::polish::{Polished, Polisher};
-use crate::protocol::{FinalState, Utterance};
+use crate::protocol::{FinalState, SpeakerVoice, Utterance};
 use tracing::{info, warn};
 
 use crate::finals::Finals;
@@ -31,6 +31,7 @@ pub enum PolishJob {
         id: String,
         utterances: Vec<Utterance>,
         warnings: Vec<String>,
+        voices: Vec<SpeakerVoice>,
     },
 }
 
@@ -69,6 +70,7 @@ fn work(rx: &Mutex<Receiver<PolishJob>>, polisher: &Polisher, finals: &Finals) {
                 id,
                 utterances,
                 mut warnings,
+                voices,
             } => {
                 let polished = timed(polisher, "upload", &[], utterances);
                 warnings.extend(warning(&polished.errors));
@@ -77,6 +79,7 @@ fn work(rx: &Mutex<Receiver<PolishJob>>, polisher: &Polisher, finals: &Finals) {
                     FinalState::Done {
                         utterances: polished.utterances,
                         warnings,
+                        voices,
                     },
                 );
             }

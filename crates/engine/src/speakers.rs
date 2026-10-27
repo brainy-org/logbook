@@ -113,6 +113,8 @@ pub struct Linker {
     /// Per speaker, the sum of its matched embeddings weighted by seconds:
     /// its direction is the speaker's voice.
     centroids: Vec<Vec<f32>>,
+    /// Per speaker, the seconds of audio behind its centroid.
+    seconds: Vec<f64>,
 }
 
 /// The least audio of a voice that may found a new speaker: shorter
@@ -133,6 +135,7 @@ impl Linker {
             threshold,
             share: SHARE,
             centroids: Vec::new(),
+            seconds: Vec::new(),
         }
     }
 
@@ -145,6 +148,26 @@ impl Linker {
     /// The meeting's speakers found so far.
     pub fn speakers(&self) -> usize {
         self.centroids.len()
+    }
+
+    /// Each speaker's voice so far, L2-normalized, and the seconds of audio
+    /// behind it: what the client matches against the voices it knows by
+    /// name (cli voices.rs).
+    pub fn voices(&self) -> Vec<(u32, Vec<f32>, f64)> {
+        self.centroids
+            .iter()
+            .zip(&self.seconds)
+            .enumerate()
+            .map(|(i, (c, &s))| {
+                let n = c
+                    .iter()
+                    .map(|x| x * x)
+                    .sum::<f32>()
+                    .sqrt()
+                    .max(f32::MIN_POSITIVE);
+                (i as u32, c.iter().map(|x| x / n).collect(), s)
+            })
+            .collect()
     }
 
     /// The meeting speaker of the range's slots that can be told: a slot
@@ -188,11 +211,13 @@ impl Linker {
                     for (a, b) in self.centroids[i].iter_mut().zip(&v.embedding) {
                         *a += b * v.seconds as f32;
                     }
+                    self.seconds[i] += v.seconds;
                     i
                 }
                 None => {
                     self.centroids
                         .push(v.embedding.iter().map(|x| x * v.seconds as f32).collect());
+                    self.seconds.push(v.seconds);
                     taken.push(false);
                     self.centroids.len() - 1
                 }
@@ -244,6 +269,12 @@ mod tests {
         let m = l.link(&[voice(1, &[0.9, 0.1, 0.0], 12.0)]);
         assert_eq!(m[&1], 0);
         assert_eq!(l.speakers(), 3);
+        // Each speaker's voice: unit length, with all the audio behind it.
+        let v = l.voices();
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0].2, 32.0);
+        let n: f32 = v[0].1.iter().map(|x| x * x).sum();
+        assert!((n - 1.0).abs() < 1e-5);
     }
 
     #[test]
