@@ -67,6 +67,10 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   the GPU driver's `vulkan-1.dll`, `win-cpu-x64` otherwise) and needs the
   Visual C++ Redistributable x64, which the installer does not bring: the
   error opening it says so.
+- **On Windows the app ends with `parakeet::exit`** (`RunEvent::Exit`,
+  `lib.rs`), never `process::exit`: that runs libparakeet's static
+  teardown, which after a meeting crashes in the GPU driver (0xc0000409)
+  (`docs/decisions/2026-10-27-windows-exit-without-teardown.md`).
 
 ## Not yet
 
@@ -76,8 +80,11 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   headings as `list_blocks` returns them (`**Speaker 2** · 00:04`), read
   from brainy's code, not seen.
 - Windows: the installer is built (`scripts/desktop.sh windows`), never
-  run on a Windows machine yet: the call's audio (WASAPI loopback), the
-  window's frame (`titleBarStyle` is macOS's) and the Vulkan build are
-  untried.
+  run; the window's frame (`titleBarStyle` is macOS's) is untried. The
+  app and the CLI, built on Windows and run over Remote Desktop (`pnpm
+  tauri dev`), record, transcribe on the Vulkan build and finish a
+  meeting, the microphone once its buffer was raised
+  (`docs/decisions/2026-10-27-windows-audio-buffer.md`). Building there
+  needs Visual Studio's C++ Build Tools and CMake (Opus).
 - Linux: not built.
 - A meeting started from the calendar, or when a call starts.

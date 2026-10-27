@@ -197,6 +197,31 @@ impl Parakeet {
     }
 }
 
+/// Ends the process without running libparakeet's static destructors on
+/// Windows. There `ExitProcess` stops the other threads, then unloads each
+/// DLL: ggml's global Vulkan backend tears down in the GPU driver, and
+/// Intel's (igvk64.dll) throws after a meeting has run, which ends as a
+/// fast fail (0xc0000409) when the desktop app is closed. The OS frees
+/// what the backend held anyway. Elsewhere, `std::process::exit`
+/// (docs/decisions/2026-10-27-windows-exit-without-teardown.md).
+pub fn exit(code: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+            fn TerminateProcess(process: *mut std::ffi::c_void, code: u32) -> i32;
+        }
+        // SAFETY: the pseudo handle of this process; TerminateProcess on it
+        // does not return.
+        unsafe { TerminateProcess(GetCurrentProcess(), code as u32) };
+    }
+    std::process::exit(code)
+}
+
 fn borrowed(s: *const c_char) -> String {
     if s.is_null() {
         return String::new();

@@ -492,6 +492,13 @@ pub fn run() {
             list_voices,
             forget_voice,
         ])
-        .run(tauri::generate_context!())
-        .expect("the app could not start");
+        .build(tauri::generate_context!())
+        .expect("the app could not start")
+        .run(|_, event| {
+            // Tauri would call `process::exit`, which on Windows runs
+            // libparakeet's teardown in the GPU driver (`parakeet::exit`).
+            if let tauri::RunEvent::Exit = event {
+                logbook_engine::parakeet::exit(0);
+            }
+        });
 }
