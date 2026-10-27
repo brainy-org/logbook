@@ -8,7 +8,7 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 |---|---|
 | `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's) |
 | `src-tauri/src/recorder.rs` | the meeting being recorded, one at a time: `meeting::meeting` run with the settings' channels, events to the pages (`meeting-state`, `utterance`, `levels`, `meeting-done`, `meeting-failed`) |
-| `src-tauri/src/settings.rs` | `settings.json` in the app's config folder; the brainy token and the model's key in the keychain (service `logbook`); the backend, one `Local` kept while its model settings stay the same (the models load once) |
+| `src-tauri/src/settings.rs` | `settings.json` in the app's config folder; the server's and brainy's tokens and the model's key in the keychain (service `logbook`); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views |
 | `src/components/Recorder.tsx` | notes, live transcript, the meter and stop |

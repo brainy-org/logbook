@@ -38,10 +38,11 @@ impl Backend {
     /// Here, the models loaded before any audio is taken (on Linux the
     /// process may start again to find the CUDA libraries), for
     /// `sessions` at once; a clean-up or a report refused without a model.
+    /// On a server, a token it refuses.
     pub async fn prepare(&self, model: bool, sessions: usize) -> Result<()> {
         self.check(model)?;
         match self {
-            Backend::Server(_) => Ok(()),
+            Backend::Server(server) => remote::check_token(server).await,
             Backend::Local(local) => local.load(sessions).await,
         }
     }

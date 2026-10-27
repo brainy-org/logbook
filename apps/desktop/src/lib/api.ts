@@ -22,7 +22,7 @@ export interface Settings {
 
 export interface SettingsView {
   settings: Settings;
-  secrets: { brainyToken: boolean; modelKey: boolean };
+  secrets: { brainyToken: boolean; modelKey: boolean; serverToken: boolean };
   data: string;
 }
 
@@ -109,10 +109,14 @@ export interface PendingMeeting {
 export const api = {
   getSettings: () => invoke<SettingsView>('get_settings'),
   /** A secret left undefined stays as it is; an empty one is removed. */
-  saveSettings: (settings: Settings, brainyToken?: string, modelKey?: string) =>
-    invoke<SettingsView>('save_settings', { settings, brainyToken, modelKey }),
+  saveSettings: (
+    settings: Settings,
+    brainyToken?: string,
+    modelKey?: string,
+    serverToken?: string,
+  ) => invoke<SettingsView>('save_settings', { settings, brainyToken, modelKey, serverToken }),
   listDevices: () => invoke<Devices>('list_devices'),
-  checkServer: (url: string) => invoke<void>('check_server', { url }),
+  checkServer: (url: string, token?: string) => invoke<void>('check_server', { url, token }),
   checkBrainy: () => invoke<void>('check_brainy'),
   startMeeting: (title: string) => invoke<RecorderState>('start_meeting', { title }),
   stopMeeting: () => invoke<void>('stop_meeting'),

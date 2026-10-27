@@ -26,7 +26,9 @@ crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet
                  examples/diarize.rs: diarization strategies scored with
                  scripts/der.py                                    → docs/pipeline.md
 crates/server/   logbook-server: the engine's sessions over WebSocket /live, final
-                 passes over HTTP /finals, reports /reports (axum) → docs/protocol.md
+                 passes over HTTP /finals, reports /reports (axum), each behind a
+                 person's token made on the admin page at / (auth.rs)
+                                                                   → docs/protocol.md
 crates/client/   the client, a library the CLI and the app share: the audio (audio.rs,
                  the call's echo cancelled and the mic's level raised: aec.rs), the
                  session on a server with reconnection (remote.rs) or in this process
@@ -122,6 +124,10 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
   data folder (client `voices.rs`). A library on the server would hold
   biometric data of people who never used logbook
   (`docs/decisions/2026-10-27-speakers-named-by-voice.md`).
+- **Every route of a meeting is behind a person's token**: it goes in
+  the `meetings` router of the server's `main.rs`, under
+  `auth::require_token`. One added beside it answers anyone who reaches
+  the server, and nothing fails to say so (docs/protocol.md, "Tokens").
 - **logbook-server holds no brainy credentials.** It returns the final
   transcript and the report; the client writes the page with the person's
   own token (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).

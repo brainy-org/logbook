@@ -22,7 +22,9 @@ use logbook_engine::protocol::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
+use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 /// Audio for the session: a channel index and 16 kHz mono samples. The
@@ -41,9 +43,12 @@ const POLL_FAILURES: u32 = 10;
 const UPLOAD_TRIES: u32 = 6;
 
 /// The server: `http://host:3300`; `ws://host:3300/live` is taken too.
+/// With a person's token, sent on every request (made on the server's
+/// admin page).
 #[derive(Clone)]
 pub struct Server {
     http: String,
+    token: Option<String>,
 }
 
 impl Server {
@@ -57,7 +62,21 @@ impl Server {
         } else {
             address.to_string()
         };
-        Self { http }
+        Self { http, token: None }
+    }
+
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.token = token
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        self
+    }
+
+    fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
     }
 
     fn live(&self) -> String {
@@ -136,7 +155,7 @@ pub async fn live(
     let mut retry = RETRY_MIN;
     loop {
         let asked = final_pass.filter(|_| first);
-        let lost = match connect(&url, &channels, asked).await {
+        let lost = match connect(server, &url, &channels, asked).await {
             Ok(socket) => {
                 if !first {
                     tracing::info!("live: connected again");
@@ -193,13 +212,28 @@ pub async fn live(
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn connect(
+    server: &Server,
     url: &str,
     channels: &[ChannelConfig],
     final_pass: Option<bool>,
 ) -> Result<Socket> {
-    let (mut socket, _) = connect_async(url)
-        .await
-        .with_context(|| format!("could not connect to {url}"))?;
+    let mut request = url.into_client_request()?;
+    if let Some(token) = &server.token {
+        request
+            .headers_mut()
+            .insert(AUTHORIZATION, format!("Bearer {token}").parse()?);
+    }
+    let (mut socket, _) = match connect_async(request).await {
+        Ok(connected) => connected,
+        Err(tungstenite::Error::Http(response))
+            if response.status() == tungstenite::http::StatusCode::UNAUTHORIZED =>
+        {
+            bail!(refused(server));
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context(format!("could not connect to {url}")));
+        }
+    };
     let start = serde_json::to_string(&ClientMessage::Start {
         channels: channels.to_vec(),
         final_pass: final_pass.is_some(),
@@ -370,7 +404,12 @@ pub async fn upload(
         for data in &encoded {
             form = form.part("audio", reqwest::multipart::Part::bytes(data.clone()));
         }
-        match client.post(&url).multipart(form).send().await {
+        match server
+            .authorized(client.post(&url))
+            .multipart(form)
+            .send()
+            .await
+        {
             Ok(response) => break response,
             // The server not up yet, or the network back in a moment.
             Err(error) if (error.is_connect() || error.is_timeout()) && tries < UPLOAD_TRIES => {
@@ -396,15 +435,19 @@ pub async fn upload(
     Ok(started.id)
 }
 
-/// Whether the server answers: a final pass it does not know is a 404.
+/// Whether the server answers and takes the token: a final pass it does
+/// not know is a 404, a token it does not know a 401.
 pub async fn check(server: &Server) -> Result<()> {
     let url = format!("{}/finals/check", server.http);
-    let response = http()?
-        .get(&url)
+    let response = server
+        .authorized(http()?.get(&url))
         .timeout(Duration::from_secs(5))
         .send()
         .await
         .with_context(|| format!("could not reach {url}"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        bail!(refused(server));
+    }
     if response.status() != reqwest::StatusCode::NOT_FOUND {
         bail!(
             "{} answered {}: not a logbook-server",
@@ -415,11 +458,28 @@ pub async fn check(server: &Server) -> Result<()> {
     Ok(())
 }
 
+/// A token the server refuses, before a meeting starts; a server not
+/// reached yet is no error (the live session tries again until it is).
+pub async fn check_token(server: &Server) -> Result<()> {
+    let url = format!("{}/finals/check", server.http);
+    let answer = server
+        .authorized(http()?.get(&url))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
+    if let Ok(response) = answer
+        && response.status() == reqwest::StatusCode::UNAUTHORIZED
+    {
+        bail!(refused(server));
+    }
+    Ok(())
+}
+
 /// The meeting's report, written by the server's model (`POST /reports`).
 pub async fn report(server: &Server, request: &ReportRequest) -> Result<String> {
     let url = format!("{}/reports", server.http);
-    let response = http()?
-        .post(&url)
+    let response = server
+        .authorized(http()?.post(&url))
         .json(request)
         .send()
         .await
@@ -454,7 +514,7 @@ pub async fn poll(server: &Server, id: &str) -> Result<Pass> {
     let mut failures = 0;
     loop {
         let answer = async {
-            let response = client.get(&url).send().await?;
+            let response = server.authorized(client.get(&url)).send().await?;
             if response.status() == reqwest::StatusCode::NOT_FOUND {
                 return Ok(None);
             }
@@ -485,6 +545,14 @@ pub async fn poll(server: &Server, id: &str) -> Result<Pass> {
             }
         }
         tokio::time::sleep(POLL).await;
+    }
+}
+
+/// What a 401 means to the person.
+fn refused(server: &Server) -> String {
+    match server.token {
+        Some(_) => format!("{} refused the token", server.http),
+        None => format!("{} needs a token (made on its admin page)", server.http),
     }
 }
 

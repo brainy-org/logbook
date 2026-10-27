@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>logbook-server</title>
+<style>
+  /*
+   * Brainy's look, as the desktop app has it (apps/desktop/src/index.css
+   * and form-styles.ts, copied from brainy): its teal, its greys, Geist,
+   * and its dark theme's values. Change them there and copy them here.
+   */
+  @font-face {
+    font-family: 'Geist Variable';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url(/assets/geist.woff2) format('woff2-variations');
+  }
+  :root {
+    color-scheme: light;
+    --page: #ffffff;
+    --surface: #f2f6f5;
+    --text: #262626;
+    --strong: #171717;
+    --muted: #525252;
+    --hairline: #e5e5e5;
+    --control: #d4d4d4;
+    --field: #ffffff;
+    --hover: #f5f5f5;
+    --accent: #0d7a72;
+    --accent-fill: #0d7a72;
+    --accent-soft: rgb(13 122 114 / 0.08);
+    --ring: rgb(13 122 114 / 0.2);
+    --danger: oklch(57.7% 0.245 27.325);
+    --danger-soft: oklch(97.1% 0.013 17.38);
+    --shadow: 0 1px 2px rgb(16 42 40 / 0.06), 0 8px 24px -4px rgb(16 42 40 / 0.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #161a1a;
+      --surface: #1e2323;
+      --text: #dce3e3;
+      --strong: #f0f4f4;
+      --muted: #b7c0c0;
+      --hairline: #414b4b;
+      --control: #6c7878;
+      --field: #1e2323;
+      --hover: #283030;
+      --accent: #2bb3a6;
+      --accent-fill: #128379;
+      --accent-soft: rgb(43 179 166 / 0.1);
+      --ring: rgb(43 179 166 / 0.25);
+      --danger: oklch(70.4% 0.191 22.216);
+      --danger-soft: rgb(69 10 10 / 0.4);
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--page); color: var(--text);
+    font: 14px/1.5 'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 52px; padding: 0 20px; border-bottom: 1px solid var(--hairline); background: var(--surface);
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--strong); }
+  .brand .mark {
+    display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px;
+    background: var(--accent-fill); color: #fff;
+  }
+  .brand .sub { font-weight: 400; color: var(--muted); }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 16px 96px; }
+  h1 { margin: 0 0 4px; font-size: 24px; font-weight: 600; letter-spacing: -0.02em; color: var(--strong); }
+  .lead { margin: 0 0 28px; color: var(--muted); }
+  .field {
+    height: 32px; min-width: 0; padding: 0 10px; border: 1px solid var(--control); border-radius: 6px;
+    background: var(--field); color: var(--text); font: inherit; outline: none;
+    transition: box-shadow 0.15s;
+  }
+  .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+  .field::placeholder { color: var(--muted); opacity: 0.7; }
+  button { font: inherit; cursor: pointer; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .primary {
+    height: 32px; padding: 0 12px; border: 0; border-radius: 6px;
+    background: var(--accent-fill); color: #fff; font-weight: 500; white-space: nowrap;
+  }
+  .primary:hover { opacity: 0.9; }
+  .primary:disabled { opacity: 0.6; cursor: default; }
+  .secondary {
+    height: 28px; padding: 0 10px; border: 1px solid var(--control); border-radius: 6px;
+    background: var(--field); color: var(--text); font-size: 12px; font-weight: 500;
+  }
+  .secondary:hover { background: var(--hover); }
+  .quiet-danger {
+    height: 28px; padding: 0 10px; border: 0; border-radius: 6px; background: none;
+    color: var(--muted); font-weight: 500;
+  }
+  .quiet-danger:hover { background: var(--danger-soft); color: var(--danger); }
+  .danger {
+    height: 28px; padding: 0 10px; border: 0; border-radius: 6px;
+    background: #b91c1c; color: #fff; font-weight: 500;
+  }
+  .danger:hover { background: #991b1b; }
+  td.actions .confirm { margin-right: 4px; color: var(--muted); font-size: 13px; }
+  td.actions { white-space: nowrap; }
+  .quiet { border: 0; background: none; color: var(--muted); padding: 4px 8px; border-radius: 6px; }
+  .quiet:hover { background: var(--hover); color: var(--text); }
+  .row { display: flex; gap: 8px; }
+  .row .field { flex: 1; }
+  .error { margin: 0 0 16px; color: var(--danger); }
+
+  /* Signing in: a card in the middle of the page, as brainy's. */
+  .card {
+    max-width: 420px; margin: 8vh auto 0; padding: 28px; border: 1px solid var(--hairline);
+    border-radius: 12px; background: var(--page); box-shadow: var(--shadow);
+  }
+  .card h1 { font-size: 20px; }
+  .card form { display: grid; gap: 12px; margin-bottom: 20px; }
+  .card .field { width: 100%; }
+  .hint {
+    padding: 12px 14px; border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 13px;
+  }
+  .hint p { margin: 0 0 8px; }
+  .hint p:last-child { margin: 0; }
+  .hint code { color: var(--text); overflow-wrap: anywhere; }
+  .hint .path { display: block; margin: 2px 0; }
+
+  /* The token just made. */
+  .made {
+    margin-bottom: 24px; padding: 14px 16px; border: 1px solid var(--accent);
+    border-radius: 8px; background: var(--accent-soft);
+  }
+  .made strong { color: var(--strong); }
+  .made code {
+    display: block; margin: 10px 0; padding: 8px 10px; border: 1px solid var(--hairline);
+    border-radius: 6px; background: var(--field); word-break: break-all; user-select: all;
+  }
+  .made .actions { display: flex; gap: 8px; }
+
+  table { width: 100%; margin-top: 24px; border-collapse: collapse; }
+  th, td { padding: 10px 8px; border-bottom: 1px solid var(--hairline); text-align: left; }
+  th { color: var(--muted); font-size: 12px; font-weight: 500; }
+  td.name { color: var(--strong); font-weight: 500; }
+  td.when { color: var(--muted); white-space: nowrap; }
+  td.actions { text-align: right; }
+  .empty { padding: 32px 0; color: var(--muted); text-align: center; }
+  @media (max-width: 560px) { .made-col { display: none; } }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="mark" aria-hidden="true">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 3v18M7 8v8M17 8v8M2 11v2M22 11v2"/></svg>
+    </span>
+    logbook <span class="sub">server</span>
+  </div>
+  <button class="quiet" id="leave" hidden>Sign out</button>
+</header>
+
+<main>
+  <section id="login" class="card">
+    <h1>Sign in</h1>
+    <p class="lead">With the server's admin token, to make and revoke the tokens of the people who use it.</p>
+    <p class="error" id="login-error" hidden></p>
+    <form id="login-form">
+      <input class="field" id="admin" type="password" placeholder="lbk_admin_…" autocomplete="off" aria-label="Admin token" required>
+      <button class="primary">Sign in</button>
+    </form>
+    <div class="hint">
+      <p><strong>Where is it?</strong> The server made it at its first start, in <code>admin.token</code> in its data folder, and says where in its log when it starts:</p>
+      <p>On macOS <code class="path">~/Library/Application Support/logbook-server/admin.token</code>on Linux <code class="path">~/.local/share/logbook-server/admin.token</code>or in the folder given as <code>--data</code>.</p>
+      <p>A server started with <code>--admin-token</code> (<code>LOGBOOK_ADMIN_TOKEN</code>) takes that one instead.</p>
+    </div>
+  </section>
+
+  <section id="tokens" hidden>
+    <h1>Tokens</h1>
+    <p class="lead">One per person: the logbook app (Settings → Your token) or the CLI (<code>LOGBOOK_SERVER_TOKEN</code>) sends it to this server. A token is shown once, when it is made; revoked, it stops working at once.</p>
+    <p class="error" id="error" hidden></p>
+    <div class="made" id="made" hidden>
+      <div><strong id="made-name"></strong>'s token. Copy it now: it will not be shown again.</div>
+      <code id="made-token"></code>
+      <div class="actions">
+        <button class="secondary" id="copy">Copy</button>
+        <button class="secondary" id="dismiss">Done</button>
+      </div>
+    </div>
+    <form id="create" class="row">
+      <input class="field" id="name" placeholder="Name of the person" maxlength="100" aria-label="Name" required>
+      <button class="primary">Make a token</button>
+    </form>
+    <table>
+      <thead><tr><th>Name</th><th class="made-col">Made</th><th>Last used</th><th></th></tr></thead>
+      <tbody id="list"></tbody>
+    </table>
+  </section>
+</main>
+<script>
+  // The admin token stays in this tab only. Every name is set as text,
+  // never as markup.
+  const $ = (id) => document.getElementById(id);
+  const KEY = 'logbook-admin';
+  let admin = null;
+  try { admin = sessionStorage.getItem(KEY); } catch {}
+
+  function error(id, message) {
+    $(id).textContent = message || '';
+    $(id).hidden = !message;
+  }
+
+  async function call(method, path, body) {
+    const response = await fetch(path, {
+      method,
+      headers: { Authorization: 'Bearer ' + admin, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (response.status === 401) {
+      signOut();
+      throw new Error('The server refused that admin token.');
+    }
+    if (!response.ok) throw new Error((await response.text()) || response.statusText);
+    return response.status === 204 ? null : response.json();
+  }
+
+  function when(seconds) {
+    if (!seconds) return 'Never';
+    return new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
+  async function refresh() {
+    const users = await call('GET', '/admin/api/tokens');
+    const list = $('list');
+    list.replaceChildren();
+    if (users.length === 0) {
+      const cell = list.insertRow().insertCell();
+      cell.colSpan = 4;
+      cell.className = 'empty';
+      cell.textContent = 'No tokens yet: make one for each person who uses this server.';
+    }
+    for (const user of users) {
+      const row = list.insertRow();
+      const name = row.insertCell();
+      name.className = 'name';
+      name.textContent = user.name;
+      const made = row.insertCell();
+      made.className = 'when made-col';
+      made.textContent = when(user.created);
+      const used = row.insertCell();
+      used.className = 'when';
+      used.textContent = when(user.last_used);
+      const actions = row.insertCell();
+      actions.className = 'actions';
+      // Revoking asks again in the row itself, not in a browser dialog.
+      const button = (text, className, onclick) => {
+        const b = document.createElement('button');
+        b.className = className;
+        b.textContent = text;
+        b.onclick = onclick;
+        return b;
+      };
+      const ask = () => actions.replaceChildren(
+        Object.assign(document.createElement('span'), {
+          className: 'confirm',
+          textContent: 'Their app stops reaching this server.',
+        }),
+        button('Cancel', 'quiet', idle),
+        button('Revoke', 'danger', async () => {
+          try {
+            await call('DELETE', '/admin/api/tokens/' + encodeURIComponent(user.id));
+            await refresh();
+          } catch (e) { error('error', e.message); idle(); }
+        }),
+      );
+      const idle = () => actions.replaceChildren(button('Revoke', 'quiet-danger', ask));
+      idle();
+    }
+  }
+
+  function show(signedIn) {
+    $('login').hidden = signedIn;
+    $('tokens').hidden = !signedIn;
+    $('leave').hidden = !signedIn;
+  }
+
+  function signOut() {
+    admin = null;
+    try { sessionStorage.removeItem(KEY); } catch {}
+    $('made').hidden = true;
+    $('made-token').textContent = '';
+    show(false);
+  }
+
+  async function start() {
+    try {
+      await refresh();
+      show(true);
+      error('login-error', '');
+      error('error', '');
+    } catch (e) { error('login-error', e.message); }
+  }
+
+  $('login-form').onsubmit = (event) => {
+    event.preventDefault();
+    admin = $('admin').value.trim();
+    $('admin').value = '';
+    try { sessionStorage.setItem(KEY, admin); } catch {}
+    start();
+  };
+  $('create').onsubmit = async (event) => {
+    event.preventDefault();
+    try {
+      const made = await call('POST', '/admin/api/tokens', { name: $('name').value });
+      $('name').value = '';
+      $('made-name').textContent = made.name;
+      $('made-token').textContent = made.token;
+      $('made').hidden = false;
+      error('error', '');
+      await refresh();
+    } catch (e) { error('error', e.message); }
+  };
+  $('copy').onclick = async () => {
+    // Without HTTPS (a server on another computer) there is no clipboard
+    // API: the token is selected, for Cmd-C.
+    try {
+      await navigator.clipboard.writeText($('made-token').textContent);
+    } catch {
+      getSelection().selectAllChildren($('made-token'));
+      return;
+    }
+    $('copy').textContent = 'Copied';
+    setTimeout(() => ($('copy').textContent = 'Copy'), 1500);
+  };
+  $('dismiss').onclick = () => { $('made').hidden = true; $('made-token').textContent = ''; };
+  $('leave').onclick = signOut;
+
+  show(false);
+  if (admin) start();
+</script>
+</body>
+</html>

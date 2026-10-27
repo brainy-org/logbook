@@ -29,6 +29,14 @@ struct Cli {
     /// is transcribed here, with the models fetched on first use.
     #[arg(long, global = true, env = "LOGBOOK_SERVER")]
     server: Option<String>,
+    /// Your token on that server, made on its admin page (its address in a browser).
+    #[arg(
+        long,
+        global = true,
+        env = "LOGBOOK_SERVER_TOKEN",
+        hide_env_values = true
+    )]
+    server_token: Option<String>,
     #[command(flatten)]
     local: LocalArgs,
     /// Where meetings wait until their transcript is published; by default
@@ -245,7 +253,7 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     let backend = match &cli.server {
-        Some(address) => Backend::Server(Server::new(address)),
+        Some(address) => Backend::Server(Server::new(address).with_token(cli.server_token)),
         None => Backend::Local(Arc::new(local::Local::new(local::Config {
             models: cli.local.models,
             polish_url: cli.local.polish_url,

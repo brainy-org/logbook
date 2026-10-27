@@ -23,8 +23,20 @@ or with a server:
 ```bash
 scripts/server.sh                          # terminal 1: wait for "listening on http://127.0.0.1:3300"
 export LOGBOOK_SERVER=http://127.0.0.1:3300
+export LOGBOOK_SERVER_TOKEN=lbk_…          # yours, from the server's admin page
 scripts/client.sh live --system            # terminal 2
 ```
+
+The server lets in only the people it has a token for. Open
+`http://127.0.0.1:3300`, sign in with the admin token (the one made
+at the server's first start, in `admin.token` in its data folder:
+`~/Library/Application Support/logbook-server` on macOS,
+`~/.local/share/logbook-server` on Linux; or `LOGBOOK_ADMIN_TOKEN`), and
+make one per person: it is shown once. Revoked there, it stops working
+at once. The server keeps only the tokens' hashes. Across a network,
+put HTTPS in front of it (a proxy): the tokens travel with every
+request. `--no-auth` drops them, for a server only its own computer
+reaches.
 
 Without `--server` (`LOGBOOK_SERVER`) the CLI loads the models itself
 (about 1 GB of files) and runs the same pipeline as the server, in its
@@ -69,7 +81,7 @@ brainy follow, and the meeting stays in the list on the left. Click a
 speaker ("Speaker 2") to give them a name: the transcript, the brainy
 page and the voices known by name change with it, and the next meetings
 name them by themselves. In the settings: on this computer or on a
-logbook-server, the call recorded or not, brainy on or off (its token is
+logbook-server (with your token on it), the call recorded or not, brainy on or off (its token is
 kept in the keychain), and the language model for the clean-up and the
 report (Groq's Qwen, or one on this computer through Ollama; with a
 server, the server's). The app and the CLI share the data folder: the
@@ -226,6 +238,9 @@ models.
 | `--min-pause` | 0.5 | seconds of silence that close a phrase |
 | `--context` | 3 | seconds of audio before a phrase transcribed with it, so that a short phrase keeps its language; 0 for none |
 | `--max-batch` | 16 | phrases per transcription call |
+| `--data` / `LOGBOOK_DATA` | `logbook-server` in the user's data folder | the people's tokens (their hashes, `tokens.json`) and `admin.token` |
+| `--admin-token` / `LOGBOOK_ADMIN_TOKEN` | the one in `admin.token`, made at first start | the admin page's (`/`), where the people's tokens are made and revoked |
+| `--no-auth` / `LOGBOOK_NO_AUTH` | off | anyone who reaches the server may use it, without a token |
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--voice` / `LOGBOOK_VOICE` | `wespeaker-resnet34-lm.gguf` in the models folder | speaker encoder of the final pass (required): links each minute's speakers to the meeting's, with no limit of eight |
 | `--voice-threshold` | 0.45 | voice similarity above which two minutes' voices are one speaker |
@@ -240,7 +255,8 @@ the first GPU.
 
 ## Licences
 
-Code: parakeet.cpp and ggml MIT; the CUDA build of libparakeet carries
+Code: parakeet.cpp and ggml MIT; the server's admin page carries the
+Geist typeface, SIL OFL 1.1 (`crates/server/src/assets/geist-OFL.txt`); the CUDA build of libparakeet carries
 NVIDIA's cudart and cuBLAS under their redistributable EULA. Weights:
 parakeet-tdt-0.6b-v3 CC-BY-4.0 (attribution: NVIDIA),
 Nemotron-3-Diarization OpenMDW-1.1, Silero VAD MIT, WeSpeaker ResNet34-LM

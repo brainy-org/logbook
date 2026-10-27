@@ -83,7 +83,11 @@ fn save_settings(
     settings: Settings,
     brainy_token: Option<String>,
     model_key: Option<String>,
+    server_token: Option<String>,
 ) -> Answer<SettingsView> {
+    if let Some(token) = server_token {
+        Secret::ServerToken.set(&token).map_err(text)?;
+    }
     if let Some(token) = brainy_token {
         Secret::BrainyToken.set(&token).map_err(text)?;
     }
@@ -103,10 +107,12 @@ async fn list_devices() -> Answer<audio::Devices> {
         .map_err(text)
 }
 
-/// Whether logbook-server answers at `url`.
+/// Whether logbook-server answers at `url` and takes the token: `token`
+/// as typed and not saved yet, else the one in the keychain.
 #[tauri::command]
-async fn check_server(url: String) -> Answer<()> {
-    remote::check(&remote::Server::new(url.trim()))
+async fn check_server(url: String, token: Option<String>) -> Answer<()> {
+    let token = token.or_else(|| Secret::ServerToken.get());
+    remote::check(&remote::Server::new(url.trim()).with_token(token))
         .await
         .map_err(text)
 }

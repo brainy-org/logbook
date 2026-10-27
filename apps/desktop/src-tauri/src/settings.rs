@@ -146,7 +146,7 @@ impl Settings {
 
     pub fn server(&self) -> Option<Server> {
         (self.transcription == Transcription::Server && !self.server_url.trim().is_empty())
-            .then(|| Server::new(self.server_url.trim()))
+            .then(|| Server::new(self.server_url.trim()).with_token(Secret::ServerToken.get()))
     }
 
     pub fn credentials(&self) -> Credentials {
@@ -211,6 +211,7 @@ impl Settings {
 pub struct Secrets {
     pub brainy_token: bool,
     pub model_key: bool,
+    pub server_token: bool,
 }
 
 impl Secrets {
@@ -218,6 +219,7 @@ impl Secrets {
         Self {
             brainy_token: Secret::BrainyToken.get().is_some(),
             model_key: Secret::ModelKey.get().is_some(),
+            server_token: Secret::ServerToken.get().is_some(),
         }
     }
 }
@@ -230,6 +232,8 @@ impl Secrets {
 pub enum Secret {
     BrainyToken,
     ModelKey,
+    /// The person's token on logbook-server.
+    ServerToken,
 }
 
 /// What the keychain answered this run, by secret: None when unset or
@@ -241,6 +245,7 @@ impl Secret {
         let name = match self {
             Secret::BrainyToken => "brainy-token",
             Secret::ModelKey => "model-key",
+            Secret::ServerToken => "server-token",
         };
         keyring::Entry::new("logbook", name)
     }

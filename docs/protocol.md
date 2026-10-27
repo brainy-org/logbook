@@ -3,7 +3,8 @@
 One WebSocket per live session, at `ws://HOST:3300/live`; final passes
 also over HTTP, at `http://HOST:3300/finals`, and reports at
 `http://HOST:3300/reports`. Types in
-`crates/engine/src/protocol.rs`.
+`crates/engine/src/protocol.rs`. Every one of them needs a person's
+token ("Tokens", below).
 
 ## Client to server
 
@@ -119,7 +120,33 @@ samples (u16 LE), then 20 ms packets at 32 kbit/s, each a u16 LE length
 and its bytes. The decoder drops the lookahead and cuts at the number of
 samples, so that sample i is the meeting's sample i.
 
+## Tokens
+
+`/live`, `/finals`, `/finals/{id}` and `/reports` need
+`Authorization: Bearer <token>`, the token of a person (`lbk_` and 64
+hex digits), on the WebSocket's upgrade request as on every other; `401`
+without one the server knows. The client sends it from `--server-token`
+(`LOGBOOK_SERVER_TOKEN`) or the app's settings (the keychain). The
+server logs whose token opened each session, upload and report.
+`--no-auth` lets anyone in, for a server only its own computer reaches.
+
+They are made and revoked on the admin page, `GET /` (its typeface at `/assets/geist.woff2`, brainy's look), which asks
+for the admin token (`--admin-token`, or the one made at first start
+in `admin.token` in the data folder, `--data`) and calls:
+
+- `GET /admin/api/tokens`: `[{"id","name","created","last_used"}]`
+  (seconds since the epoch; `last_used` noted at most once a minute).
+- `POST /admin/api/tokens`, `{"name":"Luca"}`: `201
+  {"id","name","token"}`, the only time the token is seen.
+- `DELETE /admin/api/tokens/{id}`: `204`; refused at once from then on.
+
+The server keeps only each token's SHA-256, in `tokens.json` (mode 600)
+in the data folder (`crates/server/src/auth.rs`).
+
 ## Not yet
 
-Authentication (an id is the only key to a transcript; `/live` has
-none), TLS: the prototype trusts its network.
+TLS: tokens, audio and transcripts cross the network in clear unless a
+proxy in front of the server (Caddy, nginx, the cluster's ingress)
+serves HTTPS. A final pass's result is not tied to the token that asked
+for it: any token with its id (128 random bits, known only to that
+client) reads it. No limits per person.

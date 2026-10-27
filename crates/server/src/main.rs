@@ -2,6 +2,10 @@
 //! (`/live`), final passes over HTTP (`/finals`), and with a language
 //! model the meeting's report (`/reports`): docs/protocol.md. The
 //! models are loaded once and stay loaded; every session shares them.
+//! Each of those routes needs a person's token, made on the admin page
+//! (`/`, auth.rs).
+
+mod auth;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,10 +14,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Extension, Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use clap::{Parser, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
@@ -86,6 +90,19 @@ struct Args {
     /// temporary directory.
     #[arg(long, env = "LOGBOOK_RECORDINGS")]
     recordings: Option<PathBuf>,
+    /// Where the server keeps the people's tokens (their hashes) and its
+    /// admin token; by default `logbook-server` in the user's data folder.
+    #[arg(long, env = "LOGBOOK_DATA")]
+    data: Option<PathBuf>,
+    /// The token of the admin page (`/`), where the people's tokens
+    /// are made and revoked. None: the one in the data folder's
+    /// `admin.token`, made at first start.
+    #[arg(long, env = "LOGBOOK_ADMIN_TOKEN", hide_env_values = true)]
+    admin_token: Option<String>,
+    /// Let anyone who reaches the server use it, without a token: for a
+    /// server only this computer reaches (tests, `logbook bench`).
+    #[arg(long, env = "LOGBOOK_NO_AUTH")]
+    no_auth: bool,
     /// An OpenAI-compatible API, up to `/v1`, whose model cleans the final
     /// transcript up (fillers, false starts, punctuation):
     /// `http://localhost:11434/v1` for Ollama. The text goes there: a
@@ -173,6 +190,18 @@ async fn main() -> Result<()> {
     if cleared > 0 {
         info!(cleared, "deleted the recordings of a server that died");
     }
+    let data = match args.data {
+        Some(data) => data,
+        None => dirs::data_dir()
+            .context("no data folder for this user: --data")?
+            .join("logbook-server"),
+    };
+    let auth = Arc::new(auth::Auth::open(&data, args.admin_token, !args.no_auth)?);
+    if args.no_auth {
+        warn!("--no-auth: anyone who reaches the server can use it");
+    } else {
+        info!(tokens = auth.count(), "a token is needed for every meeting");
+    }
     let engine = Arc::new(Engine::load(&options)?);
     let finals = Arc::new(Finals::default());
     let model = match (args.polish_url, args.polish_model) {
@@ -211,7 +240,9 @@ async fn main() -> Result<()> {
         sessions: AtomicU64::new(0),
         reporter,
     });
-    let app = Router::new()
+    // Every route of a meeting is in `meetings`, behind a person's token:
+    // one added outside it is open to anyone who reaches the server.
+    let meetings = Router::new()
         .route("/live", get(live))
         .route(
             "/finals",
@@ -222,16 +253,47 @@ async fn main() -> Result<()> {
             "/reports",
             post(write_report).layer(DefaultBodyLimit::max(MAX_REPORT)),
         )
+        .route_layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            auth::require_token,
+        ))
         .with_state(state);
+    let admin = Router::new()
+        .route("/admin/api/tokens", get(auth::list).post(auth::create))
+        .route("/admin/api/tokens/{id}", delete(auth::revoke))
+        .route_layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            auth::require_admin,
+        ))
+        .route("/", get(auth::page))
+        .route("/assets/geist.woff2", get(auth::font))
+        .with_state(auth.clone());
+    let app = meetings.merge(admin);
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     info!("listening on http://{}", args.listen);
+    match &auth.admin_file {
+        Some(file) => info!(
+            "tokens are made at http://{}/ with the admin token in {}",
+            args.listen,
+            file.display()
+        ),
+        None => info!(
+            "tokens are made at http://{}/ with the admin token (--admin-token)",
+            args.listen
+        ),
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
 
 /// A final pass over a meeting the client recorded itself: a `meeting`
 /// part (the channels), then one `audio` part per channel (`codec`).
-async fn upload(State(state): State<Arc<AppState>>, multipart: Multipart) -> Response {
+async fn upload(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<auth::Caller>,
+    multipart: Multipart,
+) -> Response {
+    info!(caller = caller.0, "upload");
     match start_upload(&state.shared, multipart).await {
         Ok(id) => (StatusCode::ACCEPTED, Json(Started { id })).into_response(),
         Err(error) => {
@@ -288,8 +350,10 @@ async fn start_upload(shared: &Shared, mut multipart: Multipart) -> Result<Strin
 /// The meeting's report by the server's model; 501 without one.
 async fn write_report(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<auth::Caller>,
     Json(request): Json<ReportRequest>,
 ) -> Response {
+    info!(caller = caller.0, "report");
     let Some(reporter) = &state.reporter else {
         return (
             StatusCode::NOT_IMPLEMENTED,
@@ -328,11 +392,15 @@ async fn final_state(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-async fn live(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
-    ws.on_upgrade(move |socket| handle(socket, state))
+async fn live(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<auth::Caller>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle(socket, state, caller))
 }
 
-async fn handle(socket: WebSocket, state: Arc<AppState>) {
+async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
     let (mut sink, mut stream) = socket.split();
     let (configs, final_pass, polish) = loop {
         match stream.next().await {
@@ -364,6 +432,7 @@ async fn handle(socket: WebSocket, state: Arc<AppState>) {
         "{millis}-{}",
         state.sessions.fetch_add(1, Ordering::Relaxed)
     );
+    info!(session, caller = caller.0, "live session");
     std::thread::spawn(move || {
         session::run(
             &thread_state.shared,

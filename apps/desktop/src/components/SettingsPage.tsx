@@ -1,7 +1,7 @@
 // The settings: where meetings are transcribed, what is recorded, whether
 // they go to brainy, and the language model that cleans them up and
-// writes the report; then the voices known by name. Secrets (brainy's
-// token, the model's key) are written to the keychain and never read
+// writes the report; then the voices known by name. Secrets (the
+// server's and brainy's tokens, the model's key) are written to the keychain and never read
 // back: the page only knows whether they are set.
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, Laptop, Server, Trash2 } from 'lucide-react';
@@ -34,6 +34,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
   const [voices, setVoices] = useState<Voice[]>([]);
   const [token, setToken] = useState<string | undefined>(undefined);
   const [key, setKey] = useState<string | undefined>(undefined);
+  const [serverToken, setServerToken] = useState<string | undefined>(undefined);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [serverCheck, setServerCheck] = useState<Check>({ state: 'idle' });
@@ -60,11 +61,12 @@ export function SettingsPage({ recording }: { recording: boolean }) {
   const save = async () => {
     setError(null);
     try {
-      const v = await api.saveSettings(s, token, key);
+      const v = await api.saveSettings(s, token, key, serverToken);
       setView(v);
       setS(v.settings);
       setToken(undefined);
       setKey(undefined);
+      setServerToken(undefined);
       setSaved(true);
       return true;
     } catch (e) {
@@ -115,21 +117,43 @@ export function SettingsPage({ recording }: { recording: boolean }) {
               />
             </div>
             {!local && (
-              <Field label="Server address">
-                <div className="flex gap-2">
+              <>
+                <Field label="Server address">
+                  <div className="flex gap-2">
+                    <input
+                      value={s.serverUrl}
+                      onChange={(e) => update((n) => (n.serverUrl = e.target.value))}
+                      placeholder="http://127.0.0.1:3300"
+                      className={`${fieldClass} flex-1`}
+                    />
+                    <CheckButton
+                      check={serverCheck}
+                      onClick={() =>
+                        void run(setServerCheck, () =>
+                          api.checkServer(s.serverUrl, serverToken || undefined),
+                        )
+                      }
+                    />
+                  </div>
+                  <CheckResult check={serverCheck} ok="The server answers and takes the token." />
+                </Field>
+                <Field
+                  label="Your token"
+                  help={`Made for you on the server's admin page (${s.serverUrl.replace(/\/+$/, '') || 'http://…'}). Kept in the keychain.${view.secrets.serverToken ? ' One is set: type a new one to replace it.' : ''}`}
+                >
                   <input
-                    value={s.serverUrl}
-                    onChange={(e) => update((n) => (n.serverUrl = e.target.value))}
-                    placeholder="http://127.0.0.1:3300"
-                    className={`${fieldClass} flex-1`}
+                    type="password"
+                    value={serverToken ?? ''}
+                    onChange={(e) => {
+                      setServerToken(e.target.value);
+                      setSaved(false);
+                      setServerCheck({ state: 'idle' });
+                    }}
+                    placeholder={view.secrets.serverToken ? '••••••••' : 'lbk_…'}
+                    className={`${fieldClass} w-full`}
                   />
-                  <CheckButton
-                    check={serverCheck}
-                    onClick={() => void run(setServerCheck, () => api.checkServer(s.serverUrl))}
-                  />
-                </div>
-                <CheckResult check={serverCheck} ok="The server answers." />
-              </Field>
+                </Field>
+              </>
             )}
           </Section>
 
