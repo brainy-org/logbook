@@ -44,8 +44,13 @@ export function ModelsProgress({ status }: { status: ModelsStatus | null }) {
         />
       </div>
       {status.state === 'fetching' && (
-        <p className={`mt-1.5 text-xs ${mutedTextClass}`}>
-          {size(status.done)} of {size(status.total)} · only the first time
+        // The words stay put and the numbers keep their width: only the
+        // digits change as the bytes arrive.
+        <p className={`mt-1.5 flex justify-between gap-3 text-xs ${mutedTextClass}`}>
+          <span>Only the first time</span>
+          <span className="tabular-nums">
+            {size(status.done)} of {size(status.total)}
+          </span>
         </p>
       )}
     </div>
