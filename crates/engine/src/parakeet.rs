@@ -127,8 +127,18 @@ impl Parakeet {
         };
         let target = path.map(Path::to_path_buf).unwrap_or_else(|| name.into());
         // SAFETY: loading a library runs its initializers; libparakeet's are ggml's.
-        let library = unsafe { Library::new(&target) }
-            .with_context(|| format!("could not open {}", target.display()))?;
+        let library = unsafe { Library::new(&target) }.with_context(|| {
+            // Windows' builds need the Visual C++ runtime (msvcp140.dll,
+            // vcomp140.dll), which a fresh Windows lacks; the loader says
+            // only that a module was not found.
+            let hint = if cfg!(windows) {
+                " (is the Microsoft Visual C++ Redistributable x64 installed? \
+                 https://aka.ms/vs/17/release/vc_redist.x64.exe)"
+            } else {
+                ""
+            };
+            format!("could not open {}{hint}", target.display())
+        })?;
         macro_rules! symbol {
             ($name:literal) => {
                 // SAFETY: the types above are the ones of parakeet_capi.h.

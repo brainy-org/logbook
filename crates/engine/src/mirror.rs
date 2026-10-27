@@ -59,10 +59,10 @@ pub const MODELS: [(&str, &str, u64, &str); 4] = [
 /// 741158ae; under the cache folder.
 pub const MODELS_DIR: &str = "parakeet-741158ae";
 
-/// The `libparakeet` bundle (v0.6.1, `ABI` in parakeet.rs): a tar.gz per
-/// build, with the library, its header and, for CUDA, cudart and cuBLAS:
-/// build, sha256, size in bytes.
-const LIBPARAKEET: [(&str, &str, u64); 5] = [
+/// The `libparakeet` bundle (v0.6.1, `ABI` in parakeet.rs): an archive per
+/// build (a zip on Windows, a tar.gz elsewhere), with the library, its
+/// header and, for CUDA, cudart and cuBLAS: build, sha256, size in bytes.
+const LIBPARAKEET: [(&str, &str, u64); 7] = [
     (
         "linux-cpu-x64",
         "5a2b439e83d1b6ab66c55bcfc48751ee48e53727d5b3ea33a6bc0e8626f1397c",
@@ -88,16 +88,30 @@ const LIBPARAKEET: [(&str, &str, u64); 5] = [
         "4575814a5abb2d8d78b657750a3418cf2178765aa8f2f4ebfd692bf78fda9e7d",
         1461523,
     ),
+    (
+        "win-cpu-x64",
+        "95b41515efeab246094d1793a1c0a12d727bc1cc01e4c28fe37a16a994b26774",
+        1169291,
+    ),
+    (
+        "win-vulkan-x64",
+        "7ff5e20ecba4a2c78acec2917ee8ded9b416b52ba4e87e02bab43c02c2311722",
+        18369578,
+    ),
 ];
 
 /// `~/.cache/brainy-org`, where brainy-org's tools keep what they fetch.
+/// Windows has no HOME: the profile folder.
 pub fn cache_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .context("HOME is not set")?;
     Ok(PathBuf::from(home).join(".cache/brainy-org"))
 }
 
 /// This machine's libparakeet build and the library's file name: Metal on
-/// Apple silicon, CUDA on Linux with NVIDIA's driver loaded, CPU otherwise.
+/// Apple silicon, CUDA on Linux with NVIDIA's driver loaded, Vulkan on
+/// Windows with a GPU driver that brings it, CPU otherwise.
 pub fn build() -> Result<(&'static str, &'static str)> {
     // The kernel module's own file: there with the driver, whatever is
     // installed beside it. And its device: a container sees the host's
@@ -107,12 +121,20 @@ pub fn build() -> Result<(&'static str, &'static str)> {
     let cuda = || {
         Path::new("/proc/driver/nvidia/version").is_file() && Path::new("/dev/nvidiactl").exists()
     };
+    // The Vulkan build imports vulkan-1.dll, which the GPU's driver installs
+    // in System32: without it the library does not load at all.
+    let vulkan = || {
+        std::env::var_os("SystemRoot")
+            .is_some_and(|root| Path::new(&root).join("System32/vulkan-1.dll").is_file())
+    };
     Ok(match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => ("macos-metal-arm64", "libparakeet.dylib"),
         ("macos", "x86_64") => ("macos-cpu-x64", "libparakeet.dylib"),
         ("linux", "x86_64") if cuda() => ("linux-cuda-x64", "libparakeet.so"),
         ("linux", "x86_64") => ("linux-cpu-x64", "libparakeet.so"),
         ("linux", "aarch64") => ("linux-cpu-arm64", "libparakeet.so"),
+        ("windows", "x86_64") if vulkan() => ("win-vulkan-x64", "parakeet.dll"),
+        ("windows", "x86_64") => ("win-cpu-x64", "parakeet.dll"),
         (os, arch) => bail!("no libparakeet build for {os} {arch}"),
     })
 }
@@ -232,7 +254,11 @@ impl Mirror {
         let partial = cache.join(format!(".libparakeet-{build}.partial"));
         let _ = fs::remove_dir_all(&partial);
         fs::create_dir_all(&partial)?;
-        let archive = partial.join("lib.tar.gz");
+        let archive = partial.join(if build.starts_with("win-") {
+            "lib.zip"
+        } else {
+            "lib.tar.gz"
+        });
         self.blob("libparakeet", sha256, &archive)?;
         unpack(&archive, &partial)?;
         fs::remove_file(&archive)?;
@@ -404,6 +430,9 @@ fn library_dir(cache: &Path, sha256: &str) -> Result<(PathBuf, PathBuf)> {
 /// The archive into `dir`, without its top folder (`tar --strip-components=1`).
 /// Paths that would leave `dir` are refused.
 fn unpack(archive: &Path, dir: &Path) -> Result<()> {
+    if archive.extension().is_some_and(|e| e == "zip") {
+        return unzip(archive, dir);
+    }
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(File::open(archive)?));
     for entry in tar.entries()? {
         let mut entry = entry?;
@@ -423,6 +452,30 @@ fn unpack(archive: &Path, dir: &Path) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
         entry.unpack(&target)?;
+    }
+    Ok(())
+}
+
+/// A zip as `unpack` does a tar.gz.
+fn unzip(archive: &Path, dir: &Path) -> Result<()> {
+    let mut zip = zip::ZipArchive::new(File::open(archive)?)?;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let Some(path) = entry.enclosed_name() else {
+            bail!("the archive has an unsafe path: {}", entry.name()?);
+        };
+        let inner: PathBuf = path.components().skip(1).collect();
+        if inner.as_os_str().is_empty() {
+            continue;
+        }
+        let target = dir.join(&inner);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        std::io::copy(&mut entry, &mut File::create(&target)?)?;
     }
     Ok(())
 }
@@ -486,6 +539,29 @@ mod tests {
         fs::create_dir_all(&out).unwrap();
         unpack(&archive, &out).unwrap();
         assert_eq!(fs::read(out.join("libparakeet.so")).unwrap(), b"abc");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_zip_loses_its_top_folder_too() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("logbook-unzip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("a.zip");
+        {
+            let mut zip = zip::ZipWriter::new(File::create(&archive).unwrap());
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.add_directory("parakeet-x/", options).unwrap();
+            zip.start_file("parakeet-x/parakeet.dll", options).unwrap();
+            zip.write_all(b"abc").unwrap();
+            zip.finish().unwrap();
+        }
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+        unpack(&archive, &out).unwrap();
+        assert_eq!(fs::read(out.join("parakeet.dll")).unwrap(), b"abc");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

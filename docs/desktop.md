@@ -60,6 +60,14 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   build's proc macros on macOS 27 (the decision record, "Found on the
   way").
 
+- **Windows is cross-built from a Mac** (`scripts/desktop.sh windows`:
+  cargo-xwin, LLVM, makensis), into an NSIS installer, not signed:
+  SmartScreen warns at first open (More info → Run anyway). libparakeet
+  comes from the mirror as on macOS (`win-vulkan-x64` when System32 has
+  the GPU driver's `vulkan-1.dll`, `win-cpu-x64` otherwise) and needs the
+  Visual C++ Redistributable x64, which the installer does not bring: the
+  error opening it says so.
+
 ## Not yet
 
 - Run on a real meeting through the app (the CLI's flow is the same, and
@@ -67,5 +75,9 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 - The rename on a real brainy page: `rename_speaker` matches the turn
   headings as `list_blocks` returns them (`**Speaker 2** · 00:04`), read
   from brainy's code, not seen.
-- Windows and Linux: built for macOS only (`targets`: app, dmg).
+- Windows: the installer is built (`scripts/desktop.sh windows`), never
+  run on a Windows machine yet: the call's audio (WASAPI loopback), the
+  window's frame (`titleBarStyle` is macOS's) and the Vulkan build are
+  untried.
+- Linux: not built.
 - A meeting started from the calendar, or when a call starts.

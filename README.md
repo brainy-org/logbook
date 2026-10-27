@@ -6,7 +6,7 @@ spoken, with parakeet.cpp's models (Silero VAD, NVIDIA
 parakeet-tdt-0.6b-v3, Nemotron-3-Diarization): on your computer, or, with
 `--server`, on a `logbook-server` that holds the models for everyone.
 
-A prototype: a desktop app (macOS), a CLI and a server. Once the meeting
+A prototype: a desktop app (macOS; Windows built, not tried), a CLI and a server. Once the meeting
 ends it is read all again (better speakers and phrases), written as a
 page in brainy, and a language model can write its report from the
 transcript and the notes you took, as Granola does.
@@ -73,6 +73,7 @@ started with `--polish` go there.
 scripts/desktop.sh dev       # run it from this checkout (pnpm and Rust)
 scripts/desktop.sh cert      # once per Mac: a self-signed signing certificate
 scripts/desktop.sh build     # Logbook.app and a .dmg in target/release/bundle/
+scripts/desktop.sh windows   # the Windows installer (x64), built on this Mac
 ```
 
 Start a meeting, write your notes while it goes (the live transcript is
@@ -92,6 +93,14 @@ needs an Apple Developer ID): macOS keeps its permissions (microphone,
 the call's audio) from one build to the next, but a Mac that did not
 build it blocks it at first open: System Settings → Privacy & Security →
 Open Anyway, or `xattr -dr com.apple.quarantine /Applications/Logbook.app`.
+
+On Windows (not tried yet): `Logbook_<version>_x64-setup.exe`, in
+`target/x86_64-pc-windows-msvc/release/bundle/nsis/`. It needs
+`brew install llvm nsis` and `cargo install --locked cargo-xwin` on the
+Mac that builds it. It is not signed: SmartScreen warns at first open
+(More info → Run anyway). Transcribing on the computer itself needs the
+[Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe);
+with a logbook-server it does not.
 
 ## Use
 

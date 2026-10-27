@@ -326,6 +326,8 @@ impl Store {
         let tmp = self.path.with_extension("json.tmp");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
+        // Windows: the profile folder is the user's alone already.
+        #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = options
             .open(&tmp)

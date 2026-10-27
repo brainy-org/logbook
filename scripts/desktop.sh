@@ -6,6 +6,9 @@
 #                              certificate in the login keychain
 #   scripts/desktop.sh build   Logbook.app and a .dmg, signed with it, in
 #                              target/release/bundle/
+#   scripts/desktop.sh windows the Windows installer (x64, NSIS), cross-built
+#                              from this Mac, in target/x86_64-pc-windows-msvc/
+#                              release/bundle/nsis/; not signed
 #
 # Signed, not notarized: notarization needs an Apple Developer ID. The
 # certificate is what keeps macOS's permissions (microphone, the call's
@@ -101,8 +104,25 @@ build)
   echo "signed by \"$identity\": $bundle"
   ls "$root/target/release/bundle/dmg/"*.dmg
   ;;
+windows)
+  # cargo-xwin fetches Microsoft's CRT and SDK on first use (accepting
+  # their licence) and links with LLVM's clang-cl and lld-link; makensis
+  # writes the installer. Homebrew's llvm is keg-only: on the PATH here.
+  for tool in cargo-xwin makensis; do
+    if ! command -v "$tool" >/dev/null; then
+      echo "no $tool: brew install llvm nsis && cargo install --locked cargo-xwin" >&2
+      exit 1
+    fi
+  done
+  rustup target add x86_64-pc-windows-msvc >/dev/null
+  install
+  cd "$app"
+  PATH="$(brew --prefix llvm)/bin:$PATH" pnpm tauri build \
+    --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+  ls "$root/target/x86_64-pc-windows-msvc/release/bundle/nsis/"*.exe
+  ;;
 *)
-  echo "usage: scripts/desktop.sh dev | cert | build" >&2
+  echo "usage: scripts/desktop.sh dev | cert | build | windows" >&2
   exit 2
   ;;
 esac
