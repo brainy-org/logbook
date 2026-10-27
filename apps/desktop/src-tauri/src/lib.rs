@@ -11,11 +11,11 @@ mod recorder;
 mod settings;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use logbook_client::meeting::{self, Backend, Renamed};
 use logbook_client::pending::Pending;
-use logbook_client::{audio, history, remote, voices};
+use logbook_client::{audio, history, local, remote, voices};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -28,6 +28,10 @@ struct App {
     config: PathBuf,
     recorder: Recorder,
     backends: Mutex<Backends>,
+    /// How the models of the local backend get ready (`models`); none
+    /// with a server.
+    models: Arc<Mutex<Option<local::Status>>>,
+    handle: AppHandle,
     logs: Logs,
 }
 
@@ -40,12 +44,18 @@ impl App {
     /// settings name: a meeting started later does not wait for them.
     fn preload(&self) {
         let backend = self.backends.lock().unwrap().get(&self.settings());
-        if let Backend::Local(local) = backend {
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = local.load(1).await {
-                    tracing::warn!("the models could not be loaded: {error:#}");
-                }
-            });
+        match backend {
+            Backend::Local(local) => {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = local.load(1).await {
+                        tracing::warn!("the models could not be loaded: {error:#}");
+                    }
+                });
+            }
+            Backend::Server(_) => {
+                *self.models.lock().unwrap() = None;
+                let _ = self.handle.emit("models", None::<local::Status>);
+            }
         }
     }
 }
@@ -97,6 +107,17 @@ fn save_settings(
     settings.save(&app.config).map_err(text)?;
     app.preload();
     Ok(get_settings(app))
+}
+
+#[tauri::command]
+fn models_state(app: State<App>) -> Option<local::Status> {
+    app.models.lock().unwrap().clone()
+}
+
+/// The models fetched and loaded again, after they failed to.
+#[tauri::command]
+fn load_models(app: State<App>) {
+    app.preload();
 }
 
 #[tauri::command]
@@ -425,11 +446,23 @@ pub fn run() {
                 .join("logbook");
             let config = tauri_app.path().app_config_dir()?;
             Secret::open(&config);
+            let handle = tauri_app.handle().clone();
+            let models = Arc::new(Mutex::new(None));
+            let on_status: local::OnStatus = {
+                let models = models.clone();
+                let handle = handle.clone();
+                Arc::new(move |status: local::Status| {
+                    *models.lock().unwrap() = Some(status.clone());
+                    let _ = handle.emit("models", Some(status));
+                })
+            };
             tauri_app.manage(App {
                 data,
                 config,
                 recorder: Recorder::default(),
-                backends: Mutex::new(Backends::new()),
+                backends: Mutex::new(Backends::new(on_status)),
+                models,
+                handle,
                 logs: logs.clone(),
             });
             tauri_app.state::<App>().preload();
@@ -438,6 +471,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            models_state,
+            load_models,
             list_devices,
             check_server,
             check_brainy,

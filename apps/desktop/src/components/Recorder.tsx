@@ -10,21 +10,24 @@ import {
   liveLabel,
   type LiveUtterance,
   type LogLine,
+  type ModelsStatus,
   type RecorderState,
 } from '../lib/api.js';
 import { mutedTextClass } from './form-styles.js';
+import { ModelsProgress } from './ModelsProgress.js';
 
 interface Props {
   state: RecorderState;
   utterances: LiveUtterance[];
   levels: number[];
   logs: LogLine[];
+  models: ModelsStatus | null;
 }
 
 /** How long typing pauses before the notes are sent to the app. */
 const NOTES_DELAY_MS = 400;
 
-export function Recorder({ state, utterances, levels, logs }: Props) {
+export function Recorder({ state, utterances, levels, logs, models }: Props) {
   const [notes, setNotes] = useState(state.notes);
   const [showTranscript, setShowTranscript] = useState(true);
   const [now, setNow] = useState(Date.now());
@@ -112,6 +115,7 @@ export function Recorder({ state, utterances, levels, logs }: Props) {
           me={state.me}
           phase={state.phase}
           ready={state.ready}
+          models={models}
         />
       )}
     </div>
@@ -195,11 +199,13 @@ function LiveTranscript({
   me,
   phase,
   ready,
+  models,
 }: {
   utterances: LiveUtterance[];
   me: string;
   phase: RecorderState['phase'];
   ready: boolean;
+  models: ModelsStatus | null;
 }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -215,6 +221,11 @@ function LiveTranscript({
         Live transcript
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto px-4 pb-6">
+        {!ready && phase !== 'finishing' && (
+          <div className="pt-4">
+            <ModelsProgress status={models} />
+          </div>
+        )}
         {utterances.length === 0 && (
           <p className="pt-8 text-center text-sm text-neutral-500">
             {phase === 'preparing'
@@ -223,7 +234,7 @@ function LiveTranscript({
                 ? 'Nothing was heard.'
                 : ready
                   ? 'Listening…'
-                  : 'Loading the models. Recording has started: what is said now appears once they are ready.'}
+                  : 'Recording has started: what is said now appears once the transcription is ready.'}
           </p>
         )}
         {utterances.map((u, i) => {

@@ -25,28 +25,33 @@ pub const REGISTRY: &str = "ghcr.io";
 /// Bundles are repositories under this one: `brainy-org/models/parakeet`.
 const REPOSITORY: &str = "brainy-org/models";
 
-/// Model files: name, sha256, bundle. The `parakeet` bundle is the one
-/// brainy-worker loads; `parakeet-voice` the speaker encoder, logbook's
-/// alone. `MODELS_DIR` names the folder they go in.
-pub const MODELS: [(&str, &str, &str); 4] = [
+/// Model files: name, sha256, size in bytes, bundle. The `parakeet` bundle
+/// is the one brainy-worker loads; `parakeet-voice` the speaker encoder,
+/// logbook's alone. `MODELS_DIR` names the folder they go in. The sizes are
+/// the mirror's (`models.lock.json`): what a download's progress counts to.
+pub const MODELS: [(&str, &str, u64, &str); 4] = [
     (
         "tdt-0.6b-v3-q8_0.gguf",
         "4d69a4a6683f4f2d952bad794c1357ca6eb628027695b4699c5a9ad4cd07d757",
+        940663680,
         "parakeet",
     ),
     (
         "silero-vad-f16.gguf",
         "8160489282352accc0e95925c2f6bf3d76fb8f7bccdce5c7e46808cb15e8443c",
+        1264928,
         "parakeet",
     ),
     (
         "nemotron-3-diarization-q8_0.gguf",
         "76c5bb1fb20d82706142ad32769b7ab496d2458489473a000fd7074c52ceec22",
+        108674624,
         "parakeet",
     ),
     (
         "wespeaker-resnet34-lm.gguf",
         "72040372494eafec299836bc1977cfc13c603cb486674ed59b0f4c03758d29da",
+        26527360,
         "parakeet-voice",
     ),
 ];
@@ -55,27 +60,33 @@ pub const MODELS: [(&str, &str, &str); 4] = [
 pub const MODELS_DIR: &str = "parakeet-741158ae";
 
 /// The `libparakeet` bundle (v0.6.1, `ABI` in parakeet.rs): a tar.gz per
-/// build, with the library, its header and, for CUDA, cudart and cuBLAS.
-const LIBPARAKEET: [(&str, &str); 5] = [
+/// build, with the library, its header and, for CUDA, cudart and cuBLAS:
+/// build, sha256, size in bytes.
+const LIBPARAKEET: [(&str, &str, u64); 5] = [
     (
         "linux-cpu-x64",
         "5a2b439e83d1b6ab66c55bcfc48751ee48e53727d5b3ea33a6bc0e8626f1397c",
+        1490872,
     ),
     (
         "linux-cpu-arm64",
         "d9e56bab07f87b6c05593a039f7cfe5b6033995da80f21721f167bfb41698c42",
+        1318743,
     ),
     (
         "linux-cuda-x64",
         "f717526c49d56cd4691390ca4c8e521a27eec698a93f3897bf3817ceb744378a",
+        564111941,
     ),
     (
         "macos-metal-arm64",
         "1847118600359355c899619e263275d83b59f81dcc34fcca6ba4e6b9aac67db0",
+        1346646,
     ),
     (
         "macos-cpu-x64",
         "4575814a5abb2d8d78b657750a3418cf2178765aa8f2f4ebfd692bf78fda9e7d",
+        1461523,
     ),
 ];
 
@@ -106,10 +117,25 @@ pub fn build() -> Result<(&'static str, &'static str)> {
     })
 }
 
+/// What `locate` fetches, all files together: `done` bytes of `total`.
+#[derive(Clone, Debug, Default)]
+pub struct Fetching {
+    pub done: u64,
+    pub total: u64,
+}
+
+/// How many bytes arrive between two `Fetching` reports.
+const REPORT_EVERY: u64 = 1 << 20;
+
+/// Hears each `Fetching` report.
+type Progress = Box<dyn Fn(&Fetching) + Send + Sync>;
+
 pub struct Mirror {
     agent: ureq::Agent,
     /// Bearer tokens by repository.
     tokens: Mutex<HashMap<String, String>>,
+    progress: Option<Progress>,
+    fetching: Mutex<Fetching>,
 }
 
 impl Default for Mirror {
@@ -129,7 +155,17 @@ impl Mirror {
         Self {
             agent,
             tokens: Mutex::new(HashMap::new()),
+            progress: None,
+            fetching: Mutex::new(Fetching::default()),
         }
+    }
+
+    /// `f` hears how far `locate`'s fetching has come, all files together:
+    /// at its start, every `REPORT_EVERY` bytes and at each file's end.
+    /// Nothing when nothing is missing.
+    pub fn with_progress(mut self, f: impl Fn(&Fetching) + Send + Sync + 'static) -> Self {
+        self.progress = Some(Box::new(f));
+        self
     }
 
     /// The models folder (the one given, used as it is, or the pinned one
@@ -143,29 +179,35 @@ impl Mirror {
         models: Option<PathBuf>,
         say: impl Fn(&str),
     ) -> Result<(PathBuf, PathBuf)> {
-        let models = match models {
-            Some(dir) => dir,
-            None => {
-                let dir = cache_dir()?.join(MODELS_DIR);
-                self.models(&dir, &say)?;
-                dir
-            }
-        };
-        let library = self.library(&cache_dir()?, &say)?;
+        let cache = cache_dir()?;
+        let fetched = models.is_none();
+        let models = models.unwrap_or_else(|| cache.join(MODELS_DIR));
+        let (_, _, sha256, size) = pinned_library()?;
+        let mut total = 0;
+        if fetched {
+            total += missing(&models).map(|(_, _, size, _)| size).sum::<u64>();
+        }
+        if !library_dir(&cache, sha256)?.0.is_file() {
+            total += size;
+        }
+        *self.fetching.lock().unwrap() = Fetching { done: 0, total };
+        if total > 0 {
+            self.report();
+        }
+        if fetched {
+            self.models(&models, &say)?;
+        }
+        let library = self.library(&cache, &say)?;
         #[cfg(target_os = "linux")]
         beside_its_libraries(&library)?;
         Ok((models, library))
     }
 
     /// The model files missing from `dir`, fetched. `say` hears what is
-    /// being fetched. A file there is taken as complete: one is only ever
-    /// renamed into place once its sha256 matched.
-    pub fn models(&self, dir: &Path, say: impl Fn(&str)) -> Result<()> {
-        for (file, sha256, bundle) in MODELS {
+    /// being fetched.
+    fn models(&self, dir: &Path, say: impl Fn(&str)) -> Result<()> {
+        for (file, sha256, _, bundle) in missing(dir) {
             let path = dir.join(file);
-            if path.is_file() {
-                continue;
-            }
             say(&format!(
                 "fetching {file} from {REGISTRY}/{REPOSITORY}/{bundle}…"
             ));
@@ -177,15 +219,9 @@ impl Mirror {
 
     /// libparakeet for this machine under `cache`, fetched if missing; its
     /// path. Each build and release has a folder of its own.
-    pub fn library(&self, cache: &Path, say: impl Fn(&str)) -> Result<PathBuf> {
-        let (build, file) = build()?;
-        let sha256 = LIBPARAKEET
-            .iter()
-            .find(|(b, _)| *b == build)
-            .map(|(_, s)| *s)
-            .ok_or_else(|| anyhow!("no libparakeet pinned for {build}"))?;
-        let dir = cache.join(format!("libparakeet-{build}-{}", &sha256[..12]));
-        let path = dir.join(file);
+    fn library(&self, cache: &Path, say: impl Fn(&str)) -> Result<PathBuf> {
+        let (build, file, sha256, _) = pinned_library()?;
+        let (path, dir) = library_dir(cache, sha256)?;
         if path.is_file() {
             return Ok(path);
         }
@@ -208,6 +244,12 @@ impl Mirror {
         Ok(path)
     }
 
+    fn report(&self) {
+        if let Some(f) = &self.progress {
+            f(&self.fetching.lock().unwrap().clone());
+        }
+    }
+
     /// The blob `sha256` of `bundle` into `path`: written beside it, hashed
     /// as it arrives, renamed into place once it matches.
     fn blob(&self, bundle: &str, sha256: &str, path: &Path) -> Result<()> {
@@ -219,8 +261,10 @@ impl Mirror {
         let mut out = File::create(&partial)
             .with_context(|| format!("could not write {}", partial.display()))?;
         let mut hasher = Sha256::new();
+        let start = self.fetching.lock().unwrap().done;
         let mut reader = response.body_mut().as_reader();
         let mut buf = vec![0u8; 1 << 20];
+        let (mut read, mut reported) = (0, 0);
         let copied = (|| -> Result<()> {
             loop {
                 let n = reader.read(&mut buf)?;
@@ -229,9 +273,17 @@ impl Mirror {
                 }
                 hasher.update(&buf[..n]);
                 out.write_all(&buf[..n])?;
+                read += n as u64;
+                if read - reported >= REPORT_EVERY {
+                    reported = read;
+                    self.fetching.lock().unwrap().done = start + read;
+                    self.report();
+                }
             }
         })();
         drop(out);
+        // A failed file's bytes do not count: a retry starts it again.
+        self.fetching.lock().unwrap().done = start;
         if let Err(error) = copied {
             let _ = fs::remove_file(&partial);
             return Err(error.context(format!("fetching {repository}@sha256:{sha256}")));
@@ -242,6 +294,8 @@ impl Mirror {
             bail!("{repository}: the blob is sha256:{got}, not sha256:{sha256}");
         }
         fs::rename(&partial, path)?;
+        self.fetching.lock().unwrap().done = start + read;
+        self.report();
         Ok(())
     }
 
@@ -318,6 +372,33 @@ impl Mirror {
             .map(str::to_string)
             .ok_or_else(|| anyhow!("{REGISTRY}: no token in the answer"))
     }
+}
+
+/// The model files not in `dir`. A file there is taken as complete: one is
+/// only ever renamed into place once its sha256 matched.
+fn missing(dir: &Path) -> impl Iterator<Item = (&'static str, &'static str, u64, &'static str)> {
+    MODELS
+        .into_iter()
+        .filter(move |(file, ..)| !dir.join(file).is_file())
+}
+
+/// This machine's libparakeet build: its name, the library's file name,
+/// the archive's sha256 and size.
+fn pinned_library() -> Result<(&'static str, &'static str, &'static str, u64)> {
+    let (build, file) = build()?;
+    let (_, sha256, size) = LIBPARAKEET
+        .iter()
+        .find(|(b, ..)| *b == build)
+        .ok_or_else(|| anyhow!("no libparakeet pinned for {build}"))?;
+    Ok((build, file, sha256, *size))
+}
+
+/// The library's path under `cache` and its folder: one per build and
+/// release.
+fn library_dir(cache: &Path, sha256: &str) -> Result<(PathBuf, PathBuf)> {
+    let (build, file) = build()?;
+    let dir = cache.join(format!("libparakeet-{build}-{}", &sha256[..12]));
+    Ok((dir.join(file), dir))
 }
 
 /// The archive into `dir`, without its top folder (`tar --strip-components=1`).

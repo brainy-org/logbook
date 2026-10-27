@@ -10,6 +10,7 @@ import {
   type LiveUtterance,
   type LogLine,
   type MeetingSummary,
+  type ModelsStatus,
   type PendingMeeting,
   type RecorderState,
 } from './lib/api.js';
@@ -30,6 +31,7 @@ export function App() {
   const [utterances, setUtterances] = useState<LiveUtterance[]>([]);
   const [levels, setLevels] = useState<number[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [models, setModels] = useState<ModelsStatus | null>(null);
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [pending, setPending] = useState<PendingMeeting[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
@@ -43,7 +45,9 @@ export function App() {
     refresh();
     api.meetingState().then(setRecorder);
     api.getLogs().then(setLogs);
+    api.modelsState().then(setModels);
     return subscribe(
+      events.models(setModels),
       events.state((s) => {
         setRecorder(s);
         if (s?.phase === 'preparing') {
@@ -83,13 +87,22 @@ export function App() {
       />
     );
   } else if (recorder) {
-    main = <Recorder state={recorder} utterances={utterances} levels={levels} logs={logs} />;
+    main = (
+      <Recorder
+        state={recorder}
+        utterances={utterances}
+        levels={levels}
+        logs={logs}
+        models={models}
+      />
+    );
   } else {
     main = (
       <Home
         pending={pending}
         failure={failure}
         logs={logs}
+        models={models}
         onStarted={setRecorder}
         onOpenSettings={() => setView({ kind: 'settings' })}
         onFinishPending={() => api.finishPending()}

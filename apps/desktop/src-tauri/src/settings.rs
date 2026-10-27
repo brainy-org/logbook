@@ -338,14 +338,19 @@ impl Store {
 }
 
 /// The backend the settings name: the same `Local` while its model
-/// settings stay the same, so the models are loaded once.
+/// settings stay the same, so the models are loaded once. `on_status`
+/// hears how its models get ready.
 pub struct Backends {
     local: Option<(String, Backend)>,
+    on_status: local::OnStatus,
 }
 
 impl Backends {
-    pub fn new() -> Self {
-        Self { local: None }
+    pub fn new(on_status: local::OnStatus) -> Self {
+        Self {
+            local: None,
+            on_status,
+        }
     }
 
     pub fn get(&mut self, settings: &Settings) -> Backend {
@@ -362,7 +367,8 @@ impl Backends {
         match &self.local {
             Some((k, backend)) if *k == key => backend.clone(),
             _ => {
-                let backend = Backend::Local(std::sync::Arc::new(local::Local::new(config)));
+                let local = local::Local::new(config).with_status(self.on_status.clone());
+                let backend = Backend::Local(std::sync::Arc::new(local));
                 self.local = Some((key, backend.clone()));
                 backend
             }

@@ -6,16 +6,19 @@ import { AudioLines, Cloud, FileText, Laptop, Mic, NotebookPen, Server } from 'l
 import {
   api,
   type LogLine,
+  type ModelsStatus,
   type PendingMeeting,
   type RecorderState,
   type SettingsView,
 } from '../lib/api.js';
 import { mutedTextClass, primaryButtonClass, secondaryButtonSmClass } from './form-styles.js';
+import { ModelsProgress } from './ModelsProgress.js';
 
 interface Props {
   pending: PendingMeeting[];
   failure: string | null;
   logs: LogLine[];
+  models: ModelsStatus | null;
   onStarted: (state: RecorderState) => void;
   onOpenSettings: () => void;
   onFinishPending: () => void;
@@ -25,6 +28,7 @@ export function Home({
   pending,
   failure,
   logs,
+  models,
   onStarted,
   onOpenSettings,
   onFinishPending,
@@ -83,6 +87,11 @@ export function Home({
             </span>
           </button>
         </form>
+        {local && (
+          <div className="mt-6">
+            <ModelsProgress status={models} />
+          </div>
+        )}
         {(error || failure) && (
           <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950/40">
             {error || failure}
@@ -147,7 +156,7 @@ export function Home({
             </button>
           </div>
         )}
-        {lastWarning && !failure && (
+        {lastWarning && !failure && models?.state !== 'failed' && (
           <p className={`mt-6 text-xs ${mutedTextClass}`}>Last message: {lastWarning.message}</p>
         )}
       </div>

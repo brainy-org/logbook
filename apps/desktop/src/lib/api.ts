@@ -44,6 +44,13 @@ export interface RecorderState {
   notes: string;
 }
 
+/** How the models of a local backend get ready; null with a server. */
+export type ModelsStatus =
+  | { state: 'fetching'; done: number; total: number }
+  | { state: 'loading' }
+  | { state: 'ready' }
+  | { state: 'failed'; error: string };
+
 export interface LiveUtterance {
   channel: string;
   speaker: number | null;
@@ -119,6 +126,9 @@ export const api = {
     modelKey?: string,
     serverToken?: string,
   ) => invoke<SettingsView>('save_settings', { settings, brainyToken, modelKey, serverToken }),
+  modelsState: () => invoke<ModelsStatus | null>('models_state'),
+  /** Fetches and loads the models again, after they failed to. */
+  loadModels: () => invoke<void>('load_models'),
   listDevices: () => invoke<Devices>('list_devices'),
   checkServer: (url: string, token?: string) => invoke<void>('check_server', { url, token }),
   checkBrainy: () => invoke<void>('check_brainy'),
@@ -146,6 +156,8 @@ export const events = {
     listen<RecorderState | null>('meeting-state', (e) => f(e.payload)),
   utterance: (f: (u: LiveUtterance) => void) =>
     listen<LiveUtterance>('utterance', (e) => f(e.payload)),
+  models: (f: (s: ModelsStatus | null) => void) =>
+    listen<ModelsStatus | null>('models', (e) => f(e.payload)),
   levels: (f: (l: number[]) => void) => listen<number[]>('levels', (e) => f(e.payload)),
   log: (f: (l: LogLine) => void) => listen<LogLine>('log', (e) => f(e.payload)),
   done: (f: (o: Outcome | null) => void) =>
@@ -168,6 +180,12 @@ export function clock(seconds: number): string {
   const m = Math.floor((s / 60) % 60);
   const pad = (n: number) => String(n).padStart(2, '0');
   return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
+}
+
+/** "680 MB", "1.2 GB". */
+export function size(bytes: number): string {
+  const mb = bytes / 1e6;
+  return mb < 1000 ? `${Math.round(mb)} MB` : `${(mb / 1000).toFixed(1)} GB`;
 }
 
 /** "42 min", "1 h 5 min". */

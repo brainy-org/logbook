@@ -6,12 +6,13 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 
 | File | What it does |
 |---|---|
-| `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's) |
+| `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's); how the local models get ready (`models`: fetched with their bytes, all files together, loaded, ready, failed; `models_state`, `load_models` to try again) |
 | `src-tauri/src/recorder.rs` | the meeting being recorded, one at a time: `meeting::meeting` run with the settings' channels, events to the pages (`meeting-state`, `utterance`, `levels`, `meeting-done`, `meeting-failed`) |
 | `src-tauri/src/settings.rs` | `settings.json` in the app's config folder; the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views |
 | `src/components/Recorder.tsx` | notes, live transcript, the meter and stop |
+| `src/components/ModelsProgress.tsx` | the models' download and loading as a bar, on the home page and in the live transcript until they are ready |
 | `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
 | `src/components/SettingsPage.tsx` | the settings, the voices known by name |
 
@@ -49,7 +50,12 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   ready records at once, its audio waiting in the channel to the session
   (about 64 KB a second) until they are (`State::ready`). Loading them
   before opening the microphone, as the CLI does, loses what is said
-  meanwhile.
+  meanwhile. On a first start they are fetched first (about 1 GB): the
+  mirror reports the bytes of all the missing files together, counted
+  against the sizes pinned beside their sha256 (`Mirror::with_progress`,
+  one report a MiB), and `Local` turns them into a `Status` the pages
+  show as one bar. **The pages name no model and no file**: the person
+  sees the transcription getting ready, not what it is made of.
 - **`minimumSystemVersion` stays at 11.0**: 14 or more breaks the
   build's proc macros on macOS 27 (the decision record, "Found on the
   way").

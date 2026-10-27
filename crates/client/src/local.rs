@@ -15,13 +15,14 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use logbook_engine::finalizer::{self, FinalJob};
 use logbook_engine::finals::Finals;
-use logbook_engine::mirror::Mirror;
+use logbook_engine::mirror::{Fetching, Mirror};
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::polish::{self, Polisher};
 use logbook_engine::protocol::{ChannelConfig, FinalState, ReportRequest};
 use logbook_engine::recording::Recording;
 use logbook_engine::session::{self, Input, Shared};
 use logbook_engine::{Engine, Options, batcher, polisher, report};
+use serde::Serialize;
 use tokio::sync::OnceCell;
 
 use crate::remote::{self, Audio, Events, Finalized, Live};
@@ -54,10 +55,31 @@ impl Config {
     }
 }
 
+/// Where the models are, as they get ready: for a page that shows it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Status {
+    /// Fetched from the mirror: `done` bytes of `total`, all files together.
+    Fetching {
+        done: u64,
+        total: u64,
+    },
+    /// On disk, being loaded.
+    Loading,
+    Ready,
+    Failed {
+        error: String,
+    },
+}
+
+/// Hears each `Status`, from the thread that loads the models.
+pub type OnStatus = Arc<dyn Fn(Status) + Send + Sync>;
+
 /// The models, loaded on first use.
 pub struct Local {
     config: Config,
     loaded: OnceCell<Arc<Loaded>>,
+    on_status: Option<OnStatus>,
 }
 
 struct Loaded {
@@ -73,7 +95,14 @@ impl Local {
         Self {
             config,
             loaded: OnceCell::new(),
+            on_status: None,
         }
+    }
+
+    /// `f` hears how the models get ready: fetched, loaded, or not.
+    pub fn with_status(mut self, f: OnStatus) -> Self {
+        self.on_status = Some(f);
+        self
     }
 
     /// A clean-up or a report needs a model here: an error now, not at
@@ -108,14 +137,25 @@ impl Local {
 
     async fn loaded(&self, sessions: usize) -> Result<Arc<Loaded>> {
         let config = self.config.clone();
-        self.loaded
+        let on_status = self.on_status.clone();
+        let loaded = self
+            .loaded
             .get_or_try_init(|| async move {
-                tokio::task::spawn_blocking(move || start(config, sessions))
+                tokio::task::spawn_blocking(move || start(config, sessions, on_status))
                     .await?
                     .map(Arc::new)
             })
             .await
-            .cloned()
+            .cloned();
+        if let Some(f) = &self.on_status {
+            f(match &loaded {
+                Ok(_) => Status::Ready,
+                Err(error) => Status::Failed {
+                    error: format!("{error:#}"),
+                },
+            });
+        }
+        loaded
     }
 
     /// A live session in this process; `dir` is where its final pass
@@ -254,10 +294,22 @@ impl Loaded {
     }
 }
 
-fn start(config: Config, sessions: usize) -> Result<Loaded> {
+fn start(config: Config, sessions: usize, on_status: Option<OnStatus>) -> Result<Loaded> {
+    let mut mirror = Mirror::new();
+    if let Some(f) = on_status.clone() {
+        mirror = mirror.with_progress(move |p: &Fetching| {
+            f(Status::Fetching {
+                done: p.done,
+                total: p.total,
+            })
+        });
+    }
     let (models, library) =
-        Mirror::new().locate(config.models.clone(), |message| tracing::info!("{message}"))?;
+        mirror.locate(config.models.clone(), |message| tracing::info!("{message}"))?;
     tracing::info!("loading the models…");
+    if let Some(f) = &on_status {
+        f(Status::Loading);
+    }
     let options = Options::defaults(&models, library, sessions.max(1));
     let engine = Arc::new(Engine::load(&options)?);
     let finals = Arc::new(Finals::default());
