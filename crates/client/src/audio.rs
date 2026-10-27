@@ -182,7 +182,18 @@ pub fn capture(
                 device.default_output_config()?
             };
             let format = supported.sample_format();
-            let config: cpal::StreamConfig = supported.into();
+            #[allow(unused_mut)]
+            let mut config: cpal::StreamConfig = supported.into();
+            // WASAPI's default buffer is one 10 ms period: a device whose
+            // audio arrives in bursts (Remote Desktop's microphone, from the
+            // network) overflows it, and Windows drops over half the frames
+            // as a discontinuity. 100 ms of room; the callbacks keep coming
+            // every period, so it adds no latency
+            // (docs/decisions/2026-10-27-windows-audio-buffer.md).
+            #[cfg(windows)]
+            {
+                config.buffer_size = cpal::BufferSize::Fixed(config.sample_rate / 10);
+            }
             let stream = match format {
                 cpal::SampleFormat::F32 => {
                     record::<f32>(&device, config, channel, &timeline, tx.clone(), source)?
