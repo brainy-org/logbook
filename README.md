@@ -253,6 +253,26 @@ models.
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes
 the first GPU.
 
+### Docker
+
+```bash
+docker compose up --build                                        # CPU
+docker compose -f compose.yaml -f compose.gpu.yaml up --build    # NVIDIA GPU
+docker compose exec server cat /data/admin.token                 # the admin page's token
+```
+
+One image (`Dockerfile`) for the CPU and the GPU: it holds the server
+only. At its first start the server fetches libparakeet and the models
+into the `cache` volume, as `scripts/server.sh` does into
+`~/.cache/brainy-org`, and keeps the tokens in the `data` volume
+(`/data`). Given the GPU (`--gpus all`, or `compose.gpu.yaml`) it takes
+libparakeet's CUDA build, which carries its own CUDA libraries: the host
+needs only NVIDIA's driver and container toolkit, and the image is
+linux/amd64 there. Settings go in as the variables of the table above
+(`.env` beside `compose.yaml`); the server listens on 0.0.0.0:3300 in
+the container, published on 127.0.0.1 by compose. Across a network, put
+HTTPS in front of it.
+
 ## Licences
 
 Code: parakeet.cpp and ggml MIT; the server's admin page carries the

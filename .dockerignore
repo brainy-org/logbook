@@ -1,0 +1,7 @@
+# What the image's build reads: the workspace's manifests and sources.
+target
+**/node_modules
+apps/desktop/dist
+vendor
+.env
+.git

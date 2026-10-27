@@ -44,6 +44,7 @@ apps/desktop/    the desktop app: pages (React, brainy's look) and src-tauri/
                  (recorder, settings and their secrets, logs)           → docs/desktop.md
 scripts/         server.sh (builds and runs the server), client.sh, desktop.sh (the app:
                  dev, cert, build)
+Dockerfile       the server's image, CPU and GPU alike (compose.yaml, compose.gpu.yaml)
 docs/            pipeline.md, protocol.md, desktop.md, decisions/
 ```
 

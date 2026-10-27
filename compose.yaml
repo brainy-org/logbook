@@ -1,0 +1,35 @@
+# logbook-server on this machine, on the CPU (compose.gpu.yaml for an
+# NVIDIA GPU):
+#
+#   docker compose up --build
+#
+# The first start fetches libparakeet and the models (about 1 GB) into the
+# `cache` volume, then loads them: "listening on" in the log. The admin
+# page is http://127.0.0.1:3300, its token in the `data` volume:
+#
+#   docker compose exec server cat /data/admin.token
+#
+# Or set LOGBOOK_ADMIN_TOKEN in .env. The language model for the clean-up
+# and the reports: LOGBOOK_POLISH_URL, LOGBOOK_POLISH_MODEL and
+# LOGBOOK_POLISH_KEY in .env (README.md, "Docker").
+
+services:
+  server:
+    build: .
+    image: logbook-server:dev
+    init: true
+    ports:
+      - "127.0.0.1:3300:3300"
+    environment:
+      LOGBOOK_ADMIN_TOKEN: ${LOGBOOK_ADMIN_TOKEN:-}
+      LOGBOOK_POLISH_URL: ${LOGBOOK_POLISH_URL:-}
+      LOGBOOK_POLISH_MODEL: ${LOGBOOK_POLISH_MODEL:-}
+      LOGBOOK_POLISH_KEY: ${LOGBOOK_POLISH_KEY:-}
+    volumes:
+      - cache:/home/logbook/.cache/brainy-org
+      - data:/data
+    restart: unless-stopped
+
+volumes:
+  cache:
+  data:

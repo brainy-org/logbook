@@ -89,8 +89,13 @@ pub fn cache_dir() -> Result<PathBuf> {
 /// Apple silicon, CUDA on Linux with NVIDIA's driver loaded, CPU otherwise.
 pub fn build() -> Result<(&'static str, &'static str)> {
     // The kernel module's own file: there with the driver, whatever is
-    // installed beside it.
-    let cuda = || Path::new("/proc/driver/nvidia/version").is_file();
+    // installed beside it. And its device: a container sees the host's
+    // /proc/driver/nvidia whether or not it was given the GPU, and only
+    // one given it (`--gpus`) has /dev/nvidiactl; without, the CUDA build
+    // would fail to load for want of libcuda.
+    let cuda = || {
+        Path::new("/proc/driver/nvidia/version").is_file() && Path::new("/dev/nvidiactl").exists()
+    };
     Ok(match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => ("macos-metal-arm64", "libparakeet.dylib"),
         ("macos", "x86_64") => ("macos-cpu-x64", "libparakeet.dylib"),
