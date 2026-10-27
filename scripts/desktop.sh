@@ -92,7 +92,9 @@ build)
     exit 1
   fi
   cd "$app"
-  APPLE_SIGNING_IDENTITY="$identity" pnpm tauri build
+  # CI=true: the bundler skips the AppleScript that opens the .dmg in
+  # Finder to lay out its window. The .dmg keeps Finder's default layout.
+  CI=true APPLE_SIGNING_IDENTITY="$identity" pnpm tauri build
   bundle="$root/target/release/bundle/macos/Logbook.app"
   codesign --verify --deep --strict "$bundle"
   codesign -d --entitlements - --xml "$bundle" 2>/dev/null | grep -q disable-library-validation
