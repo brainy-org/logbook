@@ -313,6 +313,15 @@ function Notes({ meeting, onSaved }: { meeting: MeetingView; onSaved: (notes: st
   );
 }
 
+/** Seconds of silence inside a turn after which its next phrase shows its time. */
+const PAUSE_S = 30;
+
+/**
+ * The turns, each under its speaker and start. A phrase after a long pause
+ * shows its own time, so a quiet minute is not hidden inside one turn; any
+ * phrase shows its time beside it on hover. The brainy page keeps one time
+ * per turn: renaming speakers there reads its turn headings as they are.
+ */
 function Transcript({ meeting }: { meeting: MeetingView }) {
   if (meeting.turns.length === 0) {
     return <p className={`text-sm ${mutedTextClass}`}>Nothing was said.</p>;
@@ -325,11 +334,21 @@ function Transcript({ meeting }: { meeting: MeetingView }) {
             <span className="font-semibold">{t.label}</span>{' '}
             <span className="font-mono text-xs text-neutral-500">{clock(t.start)}</span>
           </p>
-          {t.texts.map((text, j) => (
-            <p key={j} className="mt-1 text-[15px] leading-relaxed">
-              {text}
-            </p>
-          ))}
+          {t.phrases.map((p, j) => {
+            const previous = t.phrases[j - 1];
+            const pause = previous !== undefined && p.start - previous.end > PAUSE_S;
+            return (
+              <div key={j} className={`group relative ${pause ? 'mt-4' : 'mt-1'}`}>
+                {pause && <p className="font-mono text-xs text-neutral-500">{clock(p.start)}</p>}
+                <p className="text-[15px] leading-relaxed">
+                  <span className="absolute top-0.5 -left-10 hidden w-9 text-right font-mono text-xs leading-6 text-neutral-500 group-hover:block">
+                    {clock(p.start)}
+                  </span>
+                  {p.text}
+                </p>
+              </div>
+            );
+          })}
         </div>
       ))}
     </div>

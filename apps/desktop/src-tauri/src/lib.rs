@@ -1,7 +1,7 @@
 //! Logbook's desktop app: meetings recorded, transcribed and written up,
 //! as Granola does, on crates/client (the CLI's engine). The pages
 //! (React, `../src`) call the commands here; the meeting being recorded is
-//! `recorder.rs`, the settings and the keychain `settings.rs`, the
+//! `recorder.rs`, the settings and their secrets `settings.rs`, the
 //! library's messages `logs.rs`. The data folder is the CLI's (`logbook`
 //! in the user's data folder): the two share the pending meetings and the
 //! voices known by name.
@@ -75,7 +75,7 @@ fn get_settings(app: State<App>) -> SettingsView {
     }
 }
 
-/// Saves the settings; a secret given replaces the one in the keychain
+/// Saves the settings; a secret given replaces the one kept
 /// (empty removes it), one not given stays.
 #[tauri::command]
 fn save_settings(
@@ -108,7 +108,7 @@ async fn list_devices() -> Answer<audio::Devices> {
 }
 
 /// Whether logbook-server answers at `url` and takes the token: `token`
-/// as typed and not saved yet, else the one in the keychain.
+/// as typed and not saved yet, else the one kept.
 #[tauri::command]
 async fn check_server(url: String, token: Option<String>) -> Answer<()> {
     let token = token.or_else(|| Secret::ServerToken.get());
@@ -210,7 +210,16 @@ struct Speaker {
 struct Turn {
     label: String,
     start: f64,
-    texts: Vec<String>,
+    phrases: Vec<Phrase>,
+}
+
+/// A segment of a turn, with its times: the page shows one where a long
+/// pause falls inside a turn.
+#[derive(Serialize)]
+struct Phrase {
+    start: f64,
+    end: f64,
+    text: String,
 }
 
 fn view(kept: history::Kept) -> MeetingView {
@@ -221,12 +230,17 @@ fn view(kept: history::Kept) -> MeetingView {
             .label(&u.channel, u.speaker)
             .unwrap_or("Unknown speaker")
             .to_string();
+        let phrase = Phrase {
+            start: u.start,
+            end: u.end,
+            text: u.text.clone(),
+        };
         match turns.last_mut() {
-            Some(t) if t.label == label => t.texts.push(u.text.clone()),
+            Some(t) if t.label == label => t.phrases.push(phrase),
             _ => turns.push(Turn {
                 label,
                 start: u.start,
-                texts: vec![u.text.clone()],
+                phrases: vec![phrase],
             }),
         }
     }
@@ -410,6 +424,7 @@ pub fn run() {
                 .ok_or("no data folder for this user")?
                 .join("logbook");
             let config = tauri_app.path().app_config_dir()?;
+            Secret::open(&config);
             tauri_app.manage(App {
                 data,
                 config,

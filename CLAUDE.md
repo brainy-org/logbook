@@ -41,7 +41,7 @@ crates/cli/      logbook: play (a file at the pace of speech), live (microphone 
                  with --system, the call), finish (pending meetings), speakers,
                  devices, bench: options and printing only
 apps/desktop/    the desktop app: pages (React, brainy's look) and src-tauri/
-                 (recorder, settings and keychain, logs)           → docs/desktop.md
+                 (recorder, settings and their secrets, logs)           → docs/desktop.md
 scripts/         server.sh (builds and runs the server), client.sh, desktop.sh (the app:
                  dev, cert, build)
 docs/            pipeline.md, protocol.md, desktop.md, decisions/

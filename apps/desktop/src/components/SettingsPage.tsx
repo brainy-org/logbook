@@ -1,8 +1,9 @@
 // The settings: where meetings are transcribed, what is recorded, whether
 // they go to brainy, and the language model that cleans them up and
 // writes the report; then the voices known by name. Secrets (the
-// server's and brainy's tokens, the model's key) are written to the keychain and never read
-// back: the page only knows whether they are set.
+// server's and brainy's tokens, the model's key) are kept on this
+// computer (secrets.json, this user only) and never read back: the page
+// only knows whether they are set.
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, Laptop, Server, Trash2 } from 'lucide-react';
 import { ask } from '@tauri-apps/plugin-dialog';
@@ -139,7 +140,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 </Field>
                 <Field
                   label="Your token"
-                  help={`Made for you on the server's admin page (${s.serverUrl.replace(/\/+$/, '') || 'http://…'}). Kept in the keychain.${view.secrets.serverToken ? ' One is set: type a new one to replace it.' : ''}`}
+                  help={`Made for you on the server's admin page (${s.serverUrl.replace(/\/+$/, '') || 'http://…'}). Kept on this computer, readable by you only.${view.secrets.serverToken ? ' One is set: type a new one to replace it.' : ''}`}
                 >
                   <input
                     type="password"
@@ -228,7 +229,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 </Field>
                 <Field
                   label="Personal token"
-                  help={`brainy: Settings → Connections, with write access. Kept in the keychain.${view.secrets.brainyToken ? ' One is set: type a new one to replace it.' : ''}`}
+                  help={`brainy: Settings → Connections, with write access. Kept on this computer, readable by you only.${view.secrets.brainyToken ? ' One is set: type a new one to replace it.' : ''}`}
                 >
                   <input
                     type="password"
@@ -323,7 +324,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 </Field>
                 <Field
                   label="API key"
-                  help={`Kept in the keychain; none for a model on this computer.${view.secrets.modelKey ? ' One is set: type a new one to replace it.' : ''}`}
+                  help={`Kept on this computer, readable by you only; none for a model on this computer.${view.secrets.modelKey ? ' One is set: type a new one to replace it.' : ''}`}
                 >
                   <input
                     type="password"

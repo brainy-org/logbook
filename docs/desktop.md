@@ -8,11 +8,11 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 |---|---|
 | `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's) |
 | `src-tauri/src/recorder.rs` | the meeting being recorded, one at a time: `meeting::meeting` run with the settings' channels, events to the pages (`meeting-state`, `utterance`, `levels`, `meeting-done`, `meeting-failed`) |
-| `src-tauri/src/settings.rs` | `settings.json` in the app's config folder; the server's and brainy's tokens and the model's key in the keychain (service `logbook`); the backend, one `Local` kept while its model settings stay the same (the models load once) |
+| `src-tauri/src/settings.rs` | `settings.json` in the app's config folder; the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views |
 | `src/components/Recorder.tsx` | notes, live transcript, the meter and stop |
-| `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript, renaming speakers |
+| `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
 | `src/components/SettingsPage.tsx` | the settings, the voices known by name |
 
 ## Traps
@@ -23,14 +23,18 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   same meeting left pending.
 - **Secrets never go to the pages.** `get_settings` says whether the
   token and the key are set; `save_settings` takes new ones and writes
-  them to the keychain. A command that returns one puts it within reach
+  them to `secrets.json` (mode 600, beside `settings.json`). A command that returns one puts it within reach
   of anything rendered in the webview.
-- **The keychain asks again for every binary signed otherwise.**
-  "Always" holds for the signature it was given to: an ad-hoc one changes
-  with each build. `scripts/desktop.sh dev` signs the debug binary with
-  the certificate too (cargo's runner, `signed-run`), and the app reads
-  each secret once per run (`Secret::get`): a read at every command is a
-  prompt at every command when the signature does not match.
+- **Secrets are not in the keychain.** Without an Apple Team ID a
+  keychain item's partition list names the reader by its cdhash, which
+  every build changes: macOS asked again after each build, "Always" or
+  not. `Secret` keeps them in `secrets.json` and moves there, once, any
+  the keychain still holds from an earlier version. Back to the keychain
+  only with a Developer ID (decision record, "Found on the way").
+- **The certificate keeps the privacy permissions** (microphone, the
+  call's audio): macOS ties them to the designated requirement, the same
+  for every build signed with it. `scripts/desktop.sh dev` signs the
+  debug binary with it too (cargo's runner, `signed-run`).
 - **The report and the notes are rendered as React elements**
   (`Markdown.tsx`, react-markdown without raw HTML). A model's output in
   `dangerouslySetInnerHTML` is markup in a window that can call the

@@ -78,7 +78,11 @@ export interface MeetingView {
   reportError: string | null;
   warnings: string[];
   speakers: { label: string; nameable: boolean }[];
-  turns: { label: string; start: number; texts: string[] }[];
+  turns: {
+    label: string;
+    start: number;
+    phrases: { start: number; end: number; text: string }[];
+  }[];
 }
 
 export interface Outcome {

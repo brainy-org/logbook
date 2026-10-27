@@ -27,14 +27,15 @@ otherwise.
   signature that changes with every build, and asks again after each
   update. A self-signed certificate gives a designated requirement on the
   certificate's hash (`certificate leaf = H"…"`), the same for every
-  build signed with it: the permissions stay. `scripts/desktop.sh cert`
+  build signed with it: the microphone's and the call's permissions
+  stay (not the keychain's: "Found on the way"). `scripts/desktop.sh cert`
   makes one (ten years) in the login keychain, `build` signs with it.
   A Mac that did not build the app still blocks it at first open.
 - **The report where the transcript is made.** With a server, the
   server's model writes it (`POST /reports`), as it cleans the transcript
   up: one model and one key, held by whoever runs the server; the app
   then holds no key. Without one, the app asks the model in its settings
-  (its key in the keychain). The person chose this over the app always
+  (its key in the app's `secrets.json`). The person chose this over the app always
   asking its own model.
 - **The meetings are kept.** Granola's list of past meetings is half of
   its use: the report read again, a speaker named after the meeting. The
@@ -66,6 +67,16 @@ otherwise.
   the 14.6 the call's audio needs; that check is at run time (cpal). A
   release folder built with the bad target keeps its broken dylibs:
   `cargo clean --release`.
+
+- **The keychain asks again after every build**, even signed with the
+  certificate and answered "Always": the item's ACL keeps the designated
+  requirement (`certificate leaf = H"…"`, stable), but its partition list
+  (macOS 10.12 and later) names an app without an Apple Team ID by its
+  cdhash, and each build adds a new one (`security dump-keychain -a`
+  showed five on the `logbook` item after five builds). The app keeps its
+  secrets in `secrets.json` in its config folder, mode 600, as the CLI
+  reads its keys from files and the environment; a Developer ID (a Team
+  ID, `teamid:` in the partition list) would let them go back.
 
 ## Rejected
 

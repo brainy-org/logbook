@@ -1,8 +1,9 @@
 //! What the app remembers: where meetings are transcribed, what is
 //! recorded, where they go and which language model reads them, in
-//! `settings.json` in the app's config folder. The brainy token and the
-//! language model's key are not there: they are in the system's keychain
-//! (`Secret`), and never go back to the pages.
+//! `settings.json` in the app's config folder. The tokens and the
+//! language model's key are not there: they are in `secrets.json`, beside
+//! it and readable by this user only (`Secret`), and never go back to the
+//! pages.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -224,10 +225,15 @@ impl Secrets {
     }
 }
 
-/// A secret in the system's keychain, under the service "logbook", read
-/// from there once per run: macOS may ask the person at every read (a
-/// build signed otherwise than when they chose "Always"), and the
-/// settings are read at every command.
+/// A secret: in `secrets.json` in the app's config folder, readable by
+/// this user only, never in `settings.json` nor sent to the pages.
+///
+/// Not the keychain: macOS ties a keychain item to the binary that may
+/// read it by its cdhash when the app has no Apple Team ID (a self-signed
+/// certificate has none), so it asked again after every build, "Always"
+/// or not (docs/decisions/2026-10-27-desktop-app.md). A secret the
+/// keychain still holds from an earlier version is moved here at its
+/// first read, the last time macOS asks.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Secret {
     BrainyToken,
@@ -236,51 +242,98 @@ pub enum Secret {
     ServerToken,
 }
 
-/// What the keychain answered this run, by secret: None when unset or
-/// refused (refused, it is not asked again until the app starts again).
-static READ: Mutex<Option<HashMap<Secret, Option<String>>>> = Mutex::new(None);
+struct Store {
+    path: PathBuf,
+    values: HashMap<String, String>,
+    /// Secrets looked for in the keychain this run (found or not).
+    migrated: Vec<Secret>,
+}
+
+static STORE: Mutex<Option<Store>> = Mutex::new(None);
 
 impl Secret {
-    fn entry(self) -> keyring::Result<keyring::Entry> {
-        let name = match self {
+    /// Where the secrets are kept: called once, at the app's start.
+    pub fn open(dir: &Path) {
+        let path = dir.join("secrets.json");
+        let values = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        *STORE.lock().unwrap() = Some(Store {
+            path,
+            values,
+            migrated: Vec::new(),
+        });
+    }
+
+    fn name(self) -> &'static str {
+        match self {
             Secret::BrainyToken => "brainy-token",
             Secret::ModelKey => "model-key",
             Secret::ServerToken => "server-token",
-        };
-        keyring::Entry::new("logbook", name)
+        }
     }
 
     pub fn get(self) -> Option<String> {
-        let mut read = READ.lock().unwrap();
-        read.get_or_insert_default()
-            .entry(self)
-            .or_insert_with(|| {
-                self.entry()
-                    .and_then(|e| e.get_password())
-                    .ok()
-                    .filter(|s| !s.is_empty())
-            })
-            .clone()
+        let mut guard = STORE.lock().unwrap();
+        let store = guard.as_mut()?;
+        if let Some(value) = store.values.get(self.name()) {
+            return Some(value.clone());
+        }
+        if store.migrated.contains(&self) {
+            return None;
+        }
+        store.migrated.push(self);
+        let entry = keyring::Entry::new("logbook", self.name()).ok()?;
+        let value = entry.get_password().ok().filter(|v| !v.is_empty())?;
+        store.values.insert(self.name().into(), value.clone());
+        match store.save() {
+            Ok(()) => {
+                let _ = entry.delete_credential();
+            }
+            Err(error) => tracing::warn!("could not keep a secret: {error:#}"),
+        }
+        Some(value)
     }
 
     /// Sets it, or removes it when `value` is empty.
     pub fn set(self, value: &str) -> Result<()> {
-        let entry = self.entry()?;
+        let mut guard = STORE.lock().unwrap();
+        let store = guard.as_mut().context("the secrets are not open")?;
         let value = value.trim();
         if value.is_empty() {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(error) => return Err(error.into()),
-            }
+            store.values.remove(self.name());
         } else {
-            entry.set_password(value)?;
+            store.values.insert(self.name().into(), value.to_string());
         }
-        let set = Some(value.to_string()).filter(|v| !v.is_empty());
-        READ.lock()
-            .unwrap()
-            .get_or_insert_default()
-            .insert(self, set);
-        Ok(())
+        // Set here, it no longer comes from the keychain.
+        if !store.migrated.contains(&self) {
+            store.migrated.push(self);
+            if let Ok(entry) = keyring::Entry::new("logbook", self.name()) {
+                let _ = entry.delete_credential();
+            }
+        }
+        store.save()
+    }
+}
+
+impl Store {
+    fn save(&self) -> Result<()> {
+        use std::io::Write;
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = self.path.with_extension("json.tmp");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options
+            .open(&tmp)
+            .with_context(|| format!("could not write {}", tmp.display()))?;
+        file.write_all(&serde_json::to_vec_pretty(&self.values)?)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, &self.path)
+            .with_context(|| format!("could not write {}", self.path.display()))
     }
 }
 

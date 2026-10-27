@@ -230,7 +230,7 @@ function LiveTranscript({
           const mine = u.channel === 'mic' && u.speaker === null;
           return (
             <div key={i} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
-              <span className="mb-0.5 text-[11px] text-neutral-500">
+              <span className="mb-0.5 text-xs text-neutral-500">
                 {liveLabel(u, me)} · {clock(u.start)}
               </span>
               <p
@@ -248,7 +248,7 @@ function LiveTranscript({
         <div ref={end} />
       </div>
       <p
-        className={`border-t border-neutral-200 px-4 py-2 text-[11px] dark:border-neutral-800 ${mutedTextClass}`}
+        className={`border-t border-neutral-200 px-4 py-3 text-sm dark:border-neutral-800 ${mutedTextClass}`}
       >
         Speakers are numbered as heard live; the final transcript names them once for the whole
         meeting.

@@ -126,7 +126,7 @@ samples, so that sample i is the meeting's sample i.
 `Authorization: Bearer <token>`, the token of a person (`lbk_` and 64
 hex digits), on the WebSocket's upgrade request as on every other; `401`
 without one the server knows. The client sends it from `--server-token`
-(`LOGBOOK_SERVER_TOKEN`) or the app's settings (the keychain). The
+(`LOGBOOK_SERVER_TOKEN`) or the app's settings (kept in its `secrets.json`). The
 server logs whose token opened each session, upload and report.
 `--no-auth` lets anyone in, for a server only its own computer reaches.
 

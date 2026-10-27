@@ -9,8 +9,8 @@
 #
 # Signed, not notarized: notarization needs an Apple Developer ID. The
 # certificate is what keeps macOS's permissions (microphone, the call's
-# audio, the keychain) from one build to the next: they are tied to the
-# signature, and an ad-hoc one changes with every build
+# audio) from one build to the next: they are tied to the signature, and
+# an ad-hoc one changes with every build
 # (docs/decisions/2026-10-27-desktop-app.md). A Mac that did not build the
 # app blocks it at first open: System Settings → Privacy & Security →
 # Open Anyway, or `xattr -dr com.apple.quarantine /Applications/Logbook.app`.
@@ -36,8 +36,7 @@ case "${1:-}" in
 dev)
   install
   # Each build of `tauri dev` is a new binary: signed ad hoc, macOS asks
-  # again for the keychain's secrets ("Always" holds for one build) and
-  # the microphone. With the certificate, cargo runs it through
+  # again for the microphone and the call's audio. With the certificate, cargo runs it through
   # `signed-run`, which signs it first; without it, it runs as it is.
   if has_identity; then
     triple=$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')

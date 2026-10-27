@@ -82,7 +82,7 @@ speaker ("Speaker 2") to give them a name: the transcript, the brainy
 page and the voices known by name change with it, and the next meetings
 name them by themselves. In the settings: on this computer or on a
 logbook-server (with your token on it), the call recorded or not, brainy on or off (its token is
-kept in the keychain), and the language model for the clean-up and the
+kept on this computer, readable by you only), and the language model for the clean-up and the
 report (Groq's Qwen, or one on this computer through Ollama; with a
 server, the server's). The app and the CLI share the data folder: the
 pending meetings and the voices.
