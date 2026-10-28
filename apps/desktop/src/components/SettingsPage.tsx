@@ -173,40 +173,27 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 onChange={(v) => update((n) => (n.audio.micDevice = v))}
               />
             </Field>
+            <Field
+              label="Output to record"
+              help="The call, in a meeting on a call (chosen on the home page). macOS asks once for permission."
+            >
+              <DeviceSelect
+                value={s.audio.systemDevice}
+                options={devices.outputs}
+                onChange={(v) => update((n) => (n.audio.systemDevice = v))}
+              />
+            </Field>
             <Toggle
-              checked={s.audio.system}
-              onChange={(v) => update((n) => (n.audio.system = v))}
-              label="Record the call"
-              help="What the computer plays (Meet, Zoom, Teams) as a second channel, whose speakers are told apart. macOS asks once for permission."
+              checked={s.audio.headphones}
+              onChange={(v) => update((n) => (n.audio.headphones = v))}
+              label="I use headphones"
+              help="On a call, without them the call's echo is cancelled from the microphone; with them nothing is."
             />
-            {s.audio.system && (
-              <>
-                <Field label="Output to record">
-                  <DeviceSelect
-                    value={s.audio.systemDevice}
-                    options={devices.outputs}
-                    onChange={(v) => update((n) => (n.audio.systemDevice = v))}
-                  />
-                </Field>
-                <Toggle
-                  checked={s.audio.headphones}
-                  onChange={(v) => update((n) => (n.audio.headphones = v))}
-                  label="I use headphones"
-                  help="Without them the call's echo is cancelled from the microphone; with them nothing is."
-                />
-              </>
-            )}
             <Toggle
               checked={s.audio.micGainAuto}
               onChange={(v) => update((n) => (n.audio.micGainAuto = v))}
               label="Raise a quiet microphone"
               help="For a quiet microphone or voices far from it."
-            />
-            <Toggle
-              checked={s.audio.diarizeMic}
-              onChange={(v) => update((n) => (n.audio.diarizeMic = v))}
-              label="Several people around this computer"
-              help="Tell apart the voices the microphone hears (a meeting room)."
             />
           </Section>
 

@@ -76,13 +76,15 @@ scripts/desktop.sh build     # Logbook.app and a .dmg in target/release/bundle/
 scripts/desktop.sh windows   # the Windows installer (x64), built on this Mac
 ```
 
-Start a meeting, write your notes while it goes (the live transcript is
+Say what the meeting is (a call, people in the room, or a room on a
+call: the app records the call and tells apart the voices around the
+computer accordingly, and remembers the choice), start it, write your notes while it goes (the live transcript is
 beside them), stop it: the final transcript, the report and the page in
 brainy follow, and the meeting stays in the list on the left. Click a
 speaker ("Speaker 2") to give them a name: the transcript, the brainy
 page and the voices known by name change with it, and the next meetings
 name them by themselves. In the settings: on this computer or on a
-logbook-server (with your token on it), the call recorded or not, brainy on or off (its token is
+logbook-server (with your token on it), the microphone and the output to record, brainy on or off (its token is
 kept on this computer, readable by you only), and the language model for the clean-up and the
 report (Groq's Qwen, or one on this computer through Ollama; with a
 server, the server's). The app and the CLI share the data folder: the

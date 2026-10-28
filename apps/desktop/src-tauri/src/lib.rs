@@ -21,7 +21,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::logs::Logs;
 use crate::recorder::Recorder;
-use crate::settings::{Backends, Secret, Secrets, Settings};
+use crate::settings::{Backends, Mode, Secret, Secrets, Settings};
 
 struct App {
     data: PathBuf,
@@ -156,8 +156,13 @@ fn start_meeting(
     app: State<App>,
     handle: AppHandle,
     title: Option<String>,
+    mode: Mode,
 ) -> Answer<recorder::State> {
-    let settings = app.settings();
+    let mut settings = app.settings();
+    if settings.audio.mode != mode {
+        settings.audio.mode = mode;
+        settings.save(&app.config).map_err(text)?;
+    }
     let backend = app.backends.lock().unwrap().get(&settings);
     let title = title
         .map(|t| t.trim().to_string())

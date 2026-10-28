@@ -8,9 +8,10 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 |---|---|
 | `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's); how the local models get ready (`models`: fetched with their bytes, all files together, loaded, ready, failed; `models_state`, `load_models` to try again) |
 | `src-tauri/src/recorder.rs` | the meeting being recorded, one at a time: `meeting::meeting` run with the settings' channels, events to the pages (`meeting-state`, `utterance`, `levels`, `meeting-done`, `meeting-failed`) |
-| `src-tauri/src/settings.rs` | `settings.json` in the app's config folder; the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
+| `src-tauri/src/settings.rs` | `settings.json` in the app's config folder (the meeting's `Mode`, chosen on the home page and saved by `start_meeting`, decides the channels: the call, the microphone diarized); the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views |
+| `src/components/Home.tsx` | before a meeting: its title and mode (Call, In the room, Room + call) with what each records, what will happen to it, the pending meetings |
 | `src/components/Recorder.tsx` | notes, live transcript, the meter and stop |
 | `src/components/ModelsProgress.tsx` | the models' download and loading as a bar, on the home page and in the live transcript until they are ready |
 | `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |

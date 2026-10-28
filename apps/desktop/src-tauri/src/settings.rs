@@ -41,8 +41,9 @@ pub enum Transcription {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AudioSettings {
-    /// Record the call (what the computer plays) as a second channel.
-    pub system: bool,
+    /// What the meetings are: chosen on the home page at each start, kept
+    /// for the next.
+    pub mode: Mode,
     /// By name; None for the system's default.
     pub mic_device: Option<String>,
     pub system_device: Option<String>,
@@ -50,8 +51,33 @@ pub struct AudioSettings {
     pub headphones: bool,
     /// Raise a quiet microphone's level (AGC2).
     pub mic_gain_auto: bool,
-    /// Tell apart the people in the room on the microphone.
-    pub diarize_mic: bool,
+}
+
+/// A meeting's kind, which decides its channels: the call (what the
+/// computer plays) as a second channel, and the people in the room told
+/// apart on the microphone. The microphone is diarized only when others
+/// are in the room: with one voice it may split it in two, and it costs
+/// the diarization contexts every session shares.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Mode {
+    /// Alone at the computer, on a call.
+    #[default]
+    Call,
+    /// Several people around the computer, no call.
+    Room,
+    /// Several people around the computer, on a call.
+    RoomCall,
+}
+
+impl Mode {
+    pub fn call(self) -> bool {
+        self != Mode::Room
+    }
+
+    pub fn room(self) -> bool {
+        self != Mode::Call
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -93,12 +119,11 @@ impl Default for Settings {
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
-            system: true,
+            mode: Mode::Call,
             mic_device: None,
             system_device: None,
             headphones: false,
             mic_gain_auto: false,
-            diarize_mic: false,
         }
     }
 }
@@ -181,16 +206,16 @@ impl Settings {
         let mut sources = vec![(
             Source::Microphone,
             self.audio.mic_device.clone(),
-            self.audio.diarize_mic,
+            self.audio.mode.room(),
         )];
-        if self.audio.system {
+        if self.audio.mode.call() {
             sources.push((Source::System, self.audio.system_device.clone(), true));
         }
         sources
     }
 
     pub fn echo(&self) -> Echo {
-        if self.audio.system && !self.audio.headphones {
+        if self.audio.mode.call() && !self.audio.headphones {
             Echo::Cancel
         } else {
             Echo::None

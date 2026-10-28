@@ -4,17 +4,19 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export type Transcription = 'local' | 'server';
 
+/** Alone on a call, several people in the room, or both. */
+export type Mode = 'call' | 'room' | 'roomCall';
+
 export interface Settings {
   transcription: Transcription;
   serverUrl: string;
   me: string;
   audio: {
-    system: boolean;
+    mode: Mode;
     micDevice: string | null;
     systemDevice: string | null;
     headphones: boolean;
     micGainAuto: boolean;
-    diarizeMic: boolean;
   };
   brainy: { enabled: boolean; url: string; parent: string };
   model: { polish: boolean; report: boolean; url: string; name: string };
@@ -132,7 +134,9 @@ export const api = {
   listDevices: () => invoke<Devices>('list_devices'),
   checkServer: (url: string, token?: string) => invoke<void>('check_server', { url, token }),
   checkBrainy: () => invoke<void>('check_brainy'),
-  startMeeting: (title: string) => invoke<RecorderState>('start_meeting', { title }),
+  /** `mode` is kept in the settings for the next meeting. */
+  startMeeting: (title: string, mode: Mode) =>
+    invoke<RecorderState>('start_meeting', { title, mode }),
   stopMeeting: () => invoke<void>('stop_meeting'),
   setNotes: (notes: string) => invoke<void>('set_notes', { notes }),
   meetingState: () => invoke<RecorderState | null>('meeting_state'),
