@@ -237,10 +237,13 @@ function LiveTranscript({
                   : 'Recording has started: what is said now appears once the transcription is ready.'}
           </p>
         )}
-        {utterances.map((u, i) => {
+        {utterances.map((u) => {
           const mine = u.channel === 'mic' && u.speaker === null;
           return (
-            <div key={i} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
+            <div
+              key={`${u.channel}:${u.start}`}
+              className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}
+            >
               <span className="mb-0.5 text-xs text-neutral-500">
                 {liveLabel(u, me)} · {clock(u.start)}
               </span>

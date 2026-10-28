@@ -24,6 +24,12 @@ export type View = { kind: 'home' } | { kind: 'meeting'; id: string } | { kind: 
 
 /** Log lines kept in the page. */
 const LOG_LINES = 200;
+/**
+ * Phrases the live transcript keeps: the latest. A meeting of hours has
+ * tens of thousands, and the page slows down holding them all; the whole
+ * transcript is the final one, on the meeting's page.
+ */
+const LIVE_PHRASES = 300;
 
 export function App() {
   const [view, setView] = useState<View>({ kind: 'home' });
@@ -55,7 +61,7 @@ export function App() {
           setFailure(null);
         }
       }),
-      events.utterance((u) => setUtterances((all) => [...all, u])),
+      events.utterance((u) => setUtterances((all) => [...all.slice(-(LIVE_PHRASES - 1)), u])),
       events.levels(setLevels),
       events.log((l) => setLogs((all) => [...all.slice(-(LOG_LINES - 1)), l])),
       events.done((outcome) => {
