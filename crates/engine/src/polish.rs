@@ -143,9 +143,23 @@ pub fn agent(options: &Options) -> Agent {
         .into()
 }
 
-/// One chat completion at `options.url`: the first choice's text.
-pub fn complete(agent: &Agent, options: &Options, body: Value) -> Result<String> {
+/// Tokens a model may write for one answer, its reasoning included. Left
+/// to the provider, Groq stops gpt-oss at 2048: on a 30-minute meeting's
+/// report it reasoned until then half the time and wrote nothing.
+pub const MAX_ANSWER_TOKENS: u32 = 8192;
+
+/// One chat completion at `options.url`: the first choice's text. The
+/// answer's limit (`MAX_ANSWER_TOKENS`) is added to `body`.
+pub fn complete(agent: &Agent, options: &Options, mut body: Value) -> Result<String> {
     let url = format!("{}/chat/completions", options.url.trim_end_matches('/'));
+    // OpenAI's reasoning models refuse `max_tokens`; Mistral refuses any
+    // field it does not know, `max_completion_tokens` among them.
+    let limit = if url.contains("api.mistral.ai") {
+        "max_tokens"
+    } else {
+        "max_completion_tokens"
+    };
+    body[limit] = MAX_ANSWER_TOKENS.into();
     let mut request = agent.post(&url);
     if let Some(key) = &options.key {
         request = request.header("Authorization", &format!("Bearer {key}"));
@@ -159,12 +173,19 @@ pub fn complete(agent: &Agent, options: &Options, body: Value) -> Result<String>
         bail!("{url} answered {status}: {}", text.trim());
     }
     let completion: Completion = serde_json::from_str(&text).context("not a chat completion")?;
-    completion
+    let choice = completion
         .choices
         .into_iter()
         .next()
-        .and_then(|c| c.message.content)
-        .ok_or_else(|| anyhow!("the completion has no message"))
+        .ok_or_else(|| anyhow!("the completion has no message"))?;
+    let content = choice.message.content.unwrap_or_default();
+    if content.trim().is_empty() && choice.finish_reason.as_deref() == Some("length") {
+        bail!(
+            "the model used its {MAX_ANSWER_TOKENS} tokens up before answering \
+             (a reasoning model thinking at length): try another model"
+        );
+    }
+    Ok(content)
 }
 
 /// Names in a provider's listing of models that are not text generation
@@ -233,6 +254,7 @@ struct Completion {
 #[derive(Deserialize)]
 struct Choice {
     message: Message,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -583,6 +605,24 @@ mod tests {
         let request = server.join().unwrap();
         assert!(request.starts_with("POST /v1/chat/completions"));
         assert!(request.contains("Bearer secret"));
+        assert!(
+            request.contains(r#""max_completion_tokens": 8192"#),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn an_answer_cut_before_its_text_says_why() {
+        let completion = json!({"choices": [{
+            "message": {"content": "", "reasoning": "hm"},
+            "finish_reason": "length",
+        }]})
+        .to_string();
+        let (url, server) = serve("200 OK", &completion);
+        let out = polisher(url).polish(&[], vec![u(0.0, "ehm sì")]);
+        server.join().unwrap();
+        assert_eq!(out.utterances[0].text, "ehm sì");
+        assert!(out.errors[0].contains("tokens up"), "{}", out.errors[0]);
     }
 
     #[test]
