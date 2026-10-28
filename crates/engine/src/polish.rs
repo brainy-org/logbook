@@ -167,6 +167,64 @@ pub fn complete(agent: &Agent, options: &Options, body: Value) -> Result<String>
         .ok_or_else(|| anyhow!("the completion has no message"))
 }
 
+/// Names in a provider's listing of models that are not text generation
+/// (speech, images, moderation), named like chat models often enough to
+/// need saying; brainy leaves out the same ones.
+const NOT_TEXT: [&str; 11] = [
+    "whisper",
+    "tts",
+    "transcribe",
+    "audio",
+    "realtime",
+    "image",
+    "dall-e",
+    "sora",
+    "moderation",
+    "guard",
+    "orpheus",
+];
+
+/// The text models `options.url` offers (its `/models`, which Ollama,
+/// vLLM and the hosted providers all answer), sorted by name; `model`
+/// and `timeout` are not used.
+pub fn models(options: &Options) -> Result<Vec<String>> {
+    let url = format!("{}/models", options.url.trim_end_matches('/'));
+    let mut request = agent(options).get(&url);
+    if let Some(key) = &options.key {
+        request = request.header("Authorization", &format!("Bearer {key}"));
+    }
+    let mut response = request
+        .call()
+        .with_context(|| format!("could not reach {url}"))?;
+    let status = response.status();
+    let text = response.body_mut().read_to_string()?;
+    if !status.is_success() {
+        bail!("{url} answered {status}: {}", text.trim());
+    }
+    let listing: Listing = serde_json::from_str(&text).context("not a list of models")?;
+    let mut names: Vec<String> = listing
+        .data
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|id| {
+            let id = id.to_lowercase();
+            !NOT_TEXT.iter().any(|n| id.contains(n))
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+#[derive(Deserialize)]
+struct Listing {
+    data: Vec<Listed>,
+}
+
+#[derive(Deserialize)]
+struct Listed {
+    id: String,
+}
+
 #[derive(Deserialize)]
 struct Completion {
     choices: Vec<Choice>,
@@ -524,6 +582,26 @@ mod tests {
         assert_eq!(out.utterances[0].text, "Sì, va bene.");
         let request = server.join().unwrap();
         assert!(request.starts_with("POST /v1/chat/completions"));
+        assert!(request.contains("Bearer secret"));
+    }
+
+    #[test]
+    fn the_text_models_are_listed() {
+        let listing = json!({"data": [
+            {"id": "qwen/qwen3.8-27b"},
+            {"id": "whisper-large-v3"},
+            {"id": "llama-3.3-70b"},
+            {"id": "meta-llama/llama-guard-4-12b"},
+        ]})
+        .to_string();
+        let (url, server) = serve("200 OK", &listing);
+        let options = polisher(url).options;
+        assert_eq!(
+            models(&options).unwrap(),
+            ["llama-3.3-70b", "qwen/qwen3.8-27b"]
+        );
+        let request = server.join().unwrap();
+        assert!(request.starts_with("GET /v1/models"));
         assert!(request.contains("Bearer secret"));
     }
 

@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use logbook_client::meeting::{self, Backend, Renamed};
 use logbook_client::pending::Pending;
 use logbook_client::{audio, history, local, remote, voices};
+use logbook_engine::polish;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -135,6 +136,22 @@ async fn check_server(url: String, token: Option<String>) -> Answer<()> {
     let token = token.or_else(|| Secret::ServerToken.get());
     remote::check(&remote::Server::new(url.trim()).with_token(token))
         .await
+        .map_err(text)
+}
+
+/// The text models the API at `url` offers: `key` as typed and not saved
+/// yet, else the one kept.
+#[tauri::command]
+async fn list_models(url: String, key: Option<String>) -> Answer<Vec<String>> {
+    let options = polish::Options {
+        url: url.trim().to_string(),
+        model: String::new(),
+        key: key.or_else(|| Secret::ModelKey.get()),
+        timeout: std::time::Duration::from_secs(15),
+    };
+    tokio::task::spawn_blocking(move || polish::models(&options))
+        .await
+        .map_err(|e| e.to_string())?
         .map_err(text)
 }
 
@@ -481,6 +498,7 @@ pub fn run() {
             list_devices,
             check_server,
             check_brainy,
+            list_models,
             start_meeting,
             stop_meeting,
             set_notes,

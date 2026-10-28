@@ -16,16 +16,32 @@ import {
   secondaryButtonSmClass,
 } from './form-styles.js';
 
-/** Hosted models the report and the clean-up were tried with. */
-const PRESETS = [
-  { label: 'Groq · Qwen3.8 27B', url: 'https://api.groq.com/openai/v1', name: 'qwen/qwen3.8-27b' },
-  { label: 'Ollama (this computer)', url: 'http://localhost:11434/v1', name: '' },
+/**
+ * Hosted providers with an OpenAI-compatible API, and any other at an
+ * address given. The one chosen is read back from the address kept.
+ */
+const OTHER = { id: 'other', label: 'Other (OpenAI-compatible)', url: '', key: '' };
+const PROVIDERS = [
+  { id: 'groq', label: 'Groq', url: 'https://api.groq.com/openai/v1', key: 'gsk_…' },
+  { id: 'openai', label: 'OpenAI', url: 'https://api.openai.com/v1', key: 'sk-…' },
+  { id: 'mistral', label: 'Mistral', url: 'https://api.mistral.ai/v1', key: '' },
+  OTHER,
 ];
+
+const providerOf = (url: string) =>
+  PROVIDERS.find((p) => p.url && p.url === url.trim().replace(/\/+$/, '')) ?? OTHER;
 
 type Check =
   | { state: 'idle' }
   | { state: 'checking' }
   | { state: 'ok' }
+  | { state: 'failed'; message: string };
+
+/** The models the API offers, once asked for. */
+type Listed =
+  | { state: 'idle' }
+  | { state: 'listing' }
+  | { state: 'listed'; names: string[] }
   | { state: 'failed'; message: string };
 
 export function SettingsPage({ recording }: { recording: boolean }) {
@@ -40,11 +56,23 @@ export function SettingsPage({ recording }: { recording: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [serverCheck, setServerCheck] = useState<Check>({ state: 'idle' });
   const [brainyCheck, setBrainyCheck] = useState<Check>({ state: 'idle' });
+  const [listed, setListed] = useState<Listed>({ state: 'idle' });
+
+  const listModels = async (url: string, typedKey?: string) => {
+    if (!url.trim()) return;
+    setListed({ state: 'listing' });
+    try {
+      setListed({ state: 'listed', names: await api.listModels(url, typedKey || undefined) });
+    } catch (e) {
+      setListed({ state: 'failed', message: String(e) });
+    }
+  };
 
   useEffect(() => {
     api.getSettings().then((v) => {
       setView(v);
       setS(v.settings);
+      if (v.settings.transcription === 'local') void listModels(v.settings.model.url);
     });
     api.listDevices().then(setDevices, () => undefined);
     api.listVoices().then(setVoices, () => undefined);
@@ -87,6 +115,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
   };
 
   const local = s.transcription === 'local';
+  const provider = providerOf(s.model.url);
 
   return (
     <div className="flex h-full flex-col">
@@ -278,40 +307,82 @@ export function SettingsPage({ recording }: { recording: boolean }) {
             />
             {local && (
               <>
-                <div className="flex flex-wrap gap-2">
-                  {PRESETS.map((p) => (
-                    <button
-                      key={p.label}
-                      type="button"
-                      className={secondaryButtonSmClass}
-                      onClick={() =>
-                        update((n) => {
-                          n.model.url = p.url;
-                          n.model.name = p.name;
-                        })
-                      }
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-                <Field label="API address" help="OpenAI-compatible, up to /v1.">
-                  <input
-                    value={s.model.url}
-                    onChange={(e) => update((n) => (n.model.url = e.target.value))}
+                <Field label="Provider">
+                  <select
+                    value={provider.id}
+                    onChange={(e) => {
+                      const p = PROVIDERS.find((p) => p.id === e.target.value) ?? provider;
+                      update((n) => {
+                        n.model.url = p.url;
+                        n.model.name = '';
+                      });
+                      setListed({ state: 'idle' });
+                      if (p.url) void listModels(p.url, key);
+                    }}
                     className={`${fieldClass} w-full`}
-                  />
+                  >
+                    {PROVIDERS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
-                <Field label="Model">
-                  <input
-                    value={s.model.name}
-                    onChange={(e) => update((n) => (n.model.name = e.target.value))}
-                    className={`${fieldClass} w-full`}
-                  />
+                {provider.id === 'other' && (
+                  <Field label="API address" help="OpenAI-compatible, up to /v1.">
+                    <input
+                      value={s.model.url}
+                      onChange={(e) => {
+                        update((n) => (n.model.url = e.target.value));
+                        setListed({ state: 'idle' });
+                      }}
+                      placeholder="https://models.example.com/v1"
+                      className={`${fieldClass} w-full`}
+                    />
+                  </Field>
+                )}
+                <Field
+                  label="Model"
+                  help={
+                    listed.state === 'listed'
+                      ? undefined
+                      : "Its name, or the list of those the provider offers (with the provider's key)."
+                  }
+                >
+                  <div className="flex gap-2">
+                    {listed.state === 'listed' ? (
+                      <ModelSelect
+                        value={s.model.name}
+                        names={listed.names}
+                        onChange={(v) => update((n) => (n.model.name = v))}
+                      />
+                    ) : (
+                      <input
+                        value={s.model.name}
+                        onChange={(e) => update((n) => (n.model.name = e.target.value))}
+                        className={`${fieldClass} flex-1`}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      disabled={listed.state === 'listing' || !s.model.url.trim()}
+                      onClick={() => void listModels(s.model.url, key)}
+                      className={`${secondaryButtonSmClass} !h-8`}
+                    >
+                      {listed.state === 'listing'
+                        ? 'Listing…'
+                        : listed.state === 'listed'
+                          ? 'List again'
+                          : 'List models'}
+                    </button>
+                  </div>
+                  {listed.state === 'failed' && (
+                    <span className="block text-xs text-red-600">{listed.message}</span>
+                  )}
                 </Field>
                 <Field
                   label="API key"
-                  help={`Kept on this computer, readable by you only; none for a model on this computer.${view.secrets.modelKey ? ' One is set: type a new one to replace it.' : ''}`}
+                  help={`The provider's, kept on this computer, readable by you only.${view.secrets.modelKey ? ' One is set: type a new one to replace it.' : ''}`}
                 >
                   <input
                     type="password"
@@ -320,14 +391,14 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                       setKey(e.target.value);
                       setSaved(false);
                     }}
-                    placeholder={view.secrets.modelKey ? '••••••••' : 'gsk_…'}
+                    placeholder={view.secrets.modelKey ? '••••••••' : provider.key}
                     className={`${fieldClass} w-full`}
                   />
                 </Field>
-                {s.model.url.includes('groq.com') && (
+                {provider.id !== 'other' && (
                   <p className="rounded-md bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/30">
-                    Groq reads the text of every meeting it cleans up or reports on: fine for
-                    testing, not for meetings that must stay in the company.
+                    {provider.label} reads the text of every meeting it cleans up or reports on:
+                    fine for testing, not for meetings that must stay in the company.
                   </p>
                 )}
               </>
@@ -502,6 +573,32 @@ function DeviceSelect({
         </option>
       ))}
       {value && !options.includes(value) && <option value={value}>{value} (not connected)</option>}
+    </select>
+  );
+}
+
+function ModelSelect({
+  value,
+  names,
+  onChange,
+}: {
+  value: string;
+  names: string[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={`${fieldClass} flex-1`}
+    >
+      {!value && <option value="">Choose a model</option>}
+      {value && !names.includes(value) && <option value={value}>{value} (not offered)</option>}
+      {names.map((n) => (
+        <option key={n} value={n}>
+          {n}
+        </option>
+      ))}
     </select>
   );
 }

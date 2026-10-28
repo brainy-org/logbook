@@ -15,7 +15,7 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 | `src/components/Recorder.tsx` | notes, live transcript, the meter and stop |
 | `src/components/ModelsProgress.tsx` | the models' download and loading as a bar, on the home page and in the live transcript until they are ready |
 | `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
-| `src/components/SettingsPage.tsx` | the settings, the voices known by name |
+| `src/components/SettingsPage.tsx` | the settings (the language model: a provider, its address kept and the provider read back from it, then one of the models it lists at `/models`: `list_models`, engine `polish::models`), the voices known by name |
 
 ## Traps
 

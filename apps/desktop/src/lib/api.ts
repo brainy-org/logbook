@@ -134,6 +134,8 @@ export const api = {
   listDevices: () => invoke<Devices>('list_devices'),
   checkServer: (url: string, token?: string) => invoke<void>('check_server', { url, token }),
   checkBrainy: () => invoke<void>('check_brainy'),
+  /** The text models of an OpenAI-compatible API; `key` undefined: the one kept. */
+  listModels: (url: string, key?: string) => invoke<string[]>('list_models', { url, key }),
   /** `mode` is kept in the settings for the next meeting. */
   startMeeting: (title: string, mode: Mode) =>
     invoke<RecorderState>('start_meeting', { title, mode }),
