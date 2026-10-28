@@ -184,9 +184,17 @@ Once the meeting is published, a language model can write its report
 the person took during the meeting completed from what was said (nested
 under each of their points, in their order), the decisions and the
 action items with their owners. One request to the same
-OpenAI-compatible model as the clean-up, with the whole transcript: up to
-320 000 characters (six to nine hours), refused beyond, since a report of
-part of a meeting reads as one of all of it. The transcript is the one
+OpenAI-compatible model as the clean-up, with the whole transcript, up to
+320 000 characters (six to nine hours). A longer meeting is reported in
+steps, never cut (a report of part of a meeting reads as one of all of
+it): the transcript is split between paragraphs into parts of 80 000
+characters (two to three hours), the model takes detailed notes of each
+in order (subjects with who said what, names and numbers exactly,
+decisions, tasks with owners and dates, open questions, what touches the
+person's notes; at most about 1500 words), and the report is written
+from the notes as from the transcript. Notes still too long for one
+request (a meeting of weeks) are taken again the same way. Ten hours
+cost six requests instead of one. The transcript is the one
 on the page, with the names the client gave the speakers: the server
 never sees the client's voices, so the client sends the Markdown
 (`POST /reports`, docs/protocol.md), not the segments. The server answers

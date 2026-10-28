@@ -43,9 +43,9 @@ use tracing::{info, warn};
 /// decoded to the recordings folder as it arrives, 115 MB an hour a
 /// channel there until its final pass has read it.
 const MAX_UPLOAD: usize = 4 << 30;
-/// The largest report request: the transcript and the notes at their
-/// limits (engine report.rs), in UTF-8.
-const MAX_REPORT: usize = 4 << 20;
+/// The largest report request: a transcript of some three weeks of
+/// speech, in UTF-8; a long one is reported in steps (engine report.rs).
+const MAX_REPORT: usize = 64 << 20;
 
 #[derive(Parser)]
 #[command(version, about = "Live transcription and diarization server")]

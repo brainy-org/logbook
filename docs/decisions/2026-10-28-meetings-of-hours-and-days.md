@@ -8,7 +8,7 @@ end an upload or a pass on the client covers only the rest. Nothing on
 either side holds a whole channel in memory, and the client deletes its
 copy of the audio as the final segments pass it. A meeting of ten hours,
 or of days, is transcribed completely, with the memory and the disk of
-one of minutes; only the report has a length limit.
+one of minutes, and its report is written in steps.
 
 ## What failed on a long meeting
 
@@ -61,6 +61,16 @@ passes it, times in `f64`, samples in `u64`). What was not:
   whose last sample is before `final_until` is deleted. A folder kept
   before this, with one file per channel, is cut into files when opened.
 - **The publisher holds only what is not on the page yet.**
+- **The report of a long meeting is written in steps** (engine
+  report.rs): past `ONE_REQUEST` (320 000 characters, six to nine
+  hours), the model takes notes of each part of 80 000 characters, then
+  writes the report from them; notes too long are taken again. Cutting
+  the transcript instead would give a report of part of the meeting that
+  reads as one of all of it. Tried on a real meeting with Qwen3.8 27B on
+  Groq, cut into four parts on purpose: the report named the decisions
+  and the tasks of every part. The notes came out in English for an
+  Italian meeting until the instructions said, as the report's do, to
+  write in the text's language.
 - **The app shows the last 300 live phrases.**
 
 ## Measured
@@ -104,10 +114,6 @@ A synthetic meeting (macOS `say`, two voices taking 40 numbered turns,
 
 ## Not covered
 
-- **The report** reads the whole transcript in one request: refused past
-  `MAX_TRANSCRIPT` (320 000 characters, six to nine hours); the
-  transcript is complete without it. Writing it in steps (an hour at a
-  time, then the whole) is the way past that.
 - **brainy** gets the whole transcript on one page: a page of days has
   not been tried.
 - **The app's meeting page** shows the whole transcript at once.

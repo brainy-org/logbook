@@ -4,21 +4,30 @@
 //! decisions and the action items (docs/pipeline.md, "Report").
 //!
 //! One request to the same OpenAI-compatible endpoint as the clean-up
-//! (polish.rs), with the whole transcript: a meeting of a few hours fits
-//! the context of the models it is used with. The transcript comes with
-//! the speakers' names the client gave them (the server never sees the
-//! client's voices), so the report names people as the page does.
+//! (polish.rs), with the whole transcript, when it is up to
+//! `ONE_REQUEST`: six to nine hours. A longer meeting is reported in
+//! steps: the model takes detailed notes of each part of the transcript
+//! (`PART`, two to three hours), in order, and writes the report from
+//! them as from a transcript; notes too long for one request are taken
+//! again, part by part, until they fit. Nothing is cut: every hour of the
+//! meeting reaches the report. The transcript comes with the speakers'
+//! names the client gave them (the server never sees the client's
+//! voices), so the report names people as the page does.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use tracing::info;
 
 use crate::polish::{self, Options};
 use crate::protocol::ReportRequest;
 
-/// The longest transcript sent, in characters: some 90 000 tokens, six
-/// to nine hours of speech (a 28-minute meeting was 16 800 characters). A longer one is refused rather than cut:
-/// a report of part of the meeting reads as a report of all of it.
-pub const MAX_TRANSCRIPT: usize = 320_000;
+/// The longest transcript sent in one request, in characters: some
+/// 90 000 tokens, six to nine hours of speech (a 28-minute meeting was
+/// 16 800 characters). A longer one is reported in steps.
+pub const ONE_REQUEST: usize = 320_000;
+/// A part of a long transcript the model takes notes of: some 22 000
+/// tokens, two to three hours, within the context of small models too.
+const PART: usize = 80_000;
 /// The longest notes sent.
 pub const MAX_NOTES: usize = 40_000;
 
@@ -55,22 +64,91 @@ keep the label, unless the meeting itself makes their name certain.
 - The transcript comes from speech recognition: read misheard words for what they must have been.
 - No preamble, no closing remark, no title above the first heading.";
 
+/// For a meeting too long for one request: notes of one part, from which
+/// the report is written with the notes of the others.
+const PART_INSTRUCTIONS: &str = "\
+You take notes of one part of a long meeting, for whoever writes the meeting's report from \
+the notes of all its parts. What you are given is the transcript of that part, or the notes \
+already taken of several consecutive parts of it: keep their order and their detail.
+
+First decide which language most of the text is in, and write the notes in that language, \
+whatever the language of these instructions: an Italian meeting gets Italian notes. Answer \
+with Markdown only: bullets in the \
+order things were said, with the time where the text gives one. Keep:
+- every subject discussed, with who said what about it, and how it ended;
+- names, numbers, amounts, dates and places, exactly;
+- every decision, with who made it;
+- every task someone takes on or is given, with who and when it is due;
+- questions left open;
+- whatever touches the points of the person's notes, when there are notes.
+
+Rules:
+- Only what the text says: never invent names, numbers, dates or decisions.
+- Call people as the text does; keep labels such as \"Speaker 2\".
+- The transcript comes from speech recognition: read misheard words for what they must have been.
+- At most about 1500 words. No preamble, no closing remark.";
+
 /// The report's Markdown, from the model at `options`. Blocks for one
-/// request: run it off the async threads.
+/// request, or one per part of a long meeting: run it off the async
+/// threads.
 pub fn write(agent: &polish::Agent, options: &Options, request: &ReportRequest) -> Result<String> {
     if request.transcript.trim().is_empty() {
         bail!("the meeting has no transcript to report on");
     }
-    if request.transcript.chars().count() > MAX_TRANSCRIPT {
-        bail!(
-            "the meeting is too long for one report (its transcript is over \
-             {MAX_TRANSCRIPT} characters): the transcript is complete, only the report is not written"
-        );
-    }
     if request.notes.chars().count() > MAX_NOTES {
         bail!("the notes are longer than {MAX_NOTES} characters");
     }
-    let answer = polish::complete(agent, options, body(&options.model, request))?;
+    let mut source = Source::Transcript(request.transcript.trim().to_string());
+    let mut round = 1;
+    while source.text().chars().count() > ONE_REQUEST {
+        let parts = parts(source.text(), PART);
+        let total = parts.len();
+        info!(
+            round,
+            parts = total,
+            "the meeting is long: its report is written in steps"
+        );
+        let mut notes = Vec::with_capacity(total);
+        for (i, part) in parts.iter().enumerate() {
+            let user = format!(
+                "{}Part {} of {total}:\n<part>\n{part}\n</part>",
+                header(request),
+                i + 1
+            );
+            let answer = polish::complete(
+                agent,
+                options,
+                chat(&options.model, PART_INSTRUCTIONS, user),
+            )
+            .with_context(|| format!("the notes of part {} of {total}", i + 1))?;
+            let taken = clean(&answer);
+            if taken.is_empty() {
+                bail!("the model wrote no notes for part {} of {total}", i + 1);
+            }
+            notes.push(format!("## Part {} of {total}\n\n{taken}", i + 1));
+        }
+        let shorter = Source::Notes(notes.join("\n\n"));
+        if shorter.text().len() >= source.text().len() {
+            bail!("the model's notes of the meeting are no shorter than what they were taken from");
+        }
+        source = shorter;
+        round += 1;
+    }
+    let user = match &source {
+        Source::Transcript(text) => {
+            format!(
+                "{}Transcript:\n<transcript>\n{text}\n</transcript>",
+                header(request)
+            )
+        }
+        Source::Notes(text) => format!(
+            "{}The meeting was too long to give whole: these are detailed notes of its \
+             consecutive parts, in order, taken from its transcript. Write the report from \
+             them as from the transcript.\n\nTranscript notes:\n<transcript>\n{text}\n</transcript>",
+            header(request)
+        ),
+    };
+    let answer = polish::complete(agent, options, chat(&options.model, INSTRUCTIONS, user))?;
     let markdown = clean(&answer);
     if markdown.is_empty() {
         bail!("the model wrote an empty report");
@@ -78,7 +156,63 @@ pub fn write(agent: &polish::Agent, options: &Options, request: &ReportRequest) 
     Ok(markdown)
 }
 
-fn body(model: &str, request: &ReportRequest) -> Value {
+/// What the report is written from: the transcript, or notes of its parts.
+enum Source {
+    Transcript(String),
+    Notes(String),
+}
+
+impl Source {
+    fn text(&self) -> &str {
+        match self {
+            Source::Transcript(text) | Source::Notes(text) => text,
+        }
+    }
+}
+
+/// `text` in parts of at most `max` characters, cut between paragraphs
+/// (a paragraph longer than that, between words).
+fn parts(text: &str, max: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut length = 0;
+    for paragraph in text.split("\n\n") {
+        let n = paragraph.chars().count();
+        if length > 0 && length + 2 + n > max {
+            out.push(std::mem::take(&mut current));
+            length = 0;
+        }
+        if n > max {
+            for word in paragraph.split(' ') {
+                let w = word.chars().count();
+                if length > 0 && length + 1 + w > max {
+                    out.push(std::mem::take(&mut current));
+                    length = 0;
+                }
+                if length > 0 {
+                    current.push(' ');
+                    length += 1;
+                }
+                current.push_str(word);
+                length += w;
+            }
+            continue;
+        }
+        if length > 0 {
+            current.push_str("\n\n");
+            length += 2;
+        }
+        current.push_str(paragraph);
+        length += n;
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// The meeting's title and the person's notes, before what is reported on.
+fn header(request: &ReportRequest) -> String {
     let mut user = String::new();
     if !request.title.trim().is_empty() {
         user.push_str(&format!("Meeting: {}\n\n", request.title.trim()));
@@ -91,15 +225,15 @@ fn body(model: &str, request: &ReportRequest) -> Value {
             request.notes.trim()
         ));
     }
-    user.push_str(&format!(
-        "Transcript:\n<transcript>\n{}\n</transcript>",
-        request.transcript.trim()
-    ));
+    user
+}
+
+fn chat(model: &str, instructions: &str, user: String) -> Value {
     json!({
         "model": model,
         "temperature": 0.2,
         "messages": [
-            {"role": "system", "content": INSTRUCTIONS},
+            {"role": "system", "content": instructions},
             {"role": "user", "content": user},
         ],
     })
@@ -142,43 +276,52 @@ mod tests {
         assert_eq!(clean("  ## Summary\nOk.  "), "## Summary\nOk.");
     }
 
-    #[test]
-    fn notes_and_transcript_go_to_the_model() {
+    /// A model at a local address answering `answers` requests in turn,
+    /// each by what it was asked; returns the requests.
+    fn model(
+        answers: usize,
+        answer: fn(&str) -> String,
+    ) -> (Options, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 4096];
-            // Headers, then the body by Content-Length.
-            loop {
-                let n = stream.read(&mut buffer).unwrap();
-                request.extend_from_slice(&buffer[..n]);
-                let text = String::from_utf8_lossy(&request);
-                if let Some(end) = text.find("\r\n\r\n") {
-                    let length: usize = text
-                        .lines()
-                        .find_map(|l| {
-                            l.to_lowercase()
-                                .strip_prefix("content-length: ")
-                                .map(str::to_string)
-                        })
-                        .and_then(|v| v.trim().parse().ok())
-                        .unwrap_or(0);
-                    if request.len() >= end + 4 + length {
-                        break;
+            let mut requests = Vec::new();
+            for _ in 0..answers {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 65536];
+                // Headers, then the body by Content-Length.
+                loop {
+                    let n = stream.read(&mut buffer).unwrap();
+                    request.extend_from_slice(&buffer[..n]);
+                    let text = String::from_utf8_lossy(&request);
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length: usize = text
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length: ")
+                                    .map(str::to_string)
+                            })
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
                     }
                 }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let content = answer(&request);
+                let body = json!({"choices": [{"message": {"content": content}}]}).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                requests.push(request);
             }
-            let answer =
-                json!({"choices": [{"message": {"content": "## Summary\nDone."}}]}).to_string();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{answer}",
-                answer.len()
-            )
-            .unwrap();
-            String::from_utf8_lossy(&request).into_owned()
+            requests
         });
         let options = Options {
             url: format!("http://{address}/v1"),
@@ -186,6 +329,12 @@ mod tests {
             key: None,
             timeout: Duration::from_secs(5),
         };
+        (options, server)
+    }
+
+    #[test]
+    fn notes_and_transcript_go_to_the_model() {
+        let (options, server) = model(1, |_| "## Summary\nDone.".into());
         let request = ReportRequest {
             title: "Weekly".into(),
             notes: "- budget".into(),
@@ -194,12 +343,49 @@ mod tests {
         let report = write(&polish::agent(&options), &options, &request).unwrap();
         assert_eq!(report, "## Summary\nDone.");
         let sent = server.join().unwrap();
-        assert!(sent.contains("- budget"));
-        assert!(sent.contains("Il budget"));
+        assert!(sent[0].contains("- budget"));
+        assert!(sent[0].contains("Il budget"));
         let empty = ReportRequest {
             transcript: " ".into(),
             ..request
         };
         assert!(write(&polish::agent(&options), &options, &empty).is_err());
+    }
+
+    #[test]
+    fn a_long_meeting_is_reported_from_notes_of_its_parts() {
+        // Ten hours or so: 390 000 characters, in turns of 400.
+        let turn = format!("**Luca** · 00:00\n\n{}", "parola ".repeat(55));
+        let turns = 390_000 / turn.len();
+        let transcript = vec![turn; turns].join("\n\n");
+        assert!(transcript.chars().count() > ONE_REQUEST);
+        // Five parts of at most 80 000, then the report.
+        let (options, server) = model(6, |request| {
+            if request.contains("<part>") {
+                "- Luca spoke.".into()
+            } else {
+                "## Summary\nLong.".into()
+            }
+        });
+        let request = ReportRequest {
+            title: "Offsite".into(),
+            notes: "- hiring".into(),
+            transcript,
+        };
+        let report = write(&polish::agent(&options), &options, &request).unwrap();
+        assert_eq!(report, "## Summary\nLong.");
+        let sent = server.join().unwrap();
+        assert!(sent[0].contains("Part 1 of 5") && sent[0].contains("- hiring"));
+        assert!(sent[4].contains("Part 5 of 5"));
+        assert!(sent[5].contains("## Part 5 of 5") && sent[5].contains("- Luca spoke."));
+        assert!(!sent[5].contains("parola"));
+    }
+
+    #[test]
+    fn parts_are_cut_between_paragraphs() {
+        let text = "aaaa\n\nbbbb\n\ncccc";
+        assert_eq!(parts(text, 10), ["aaaa\n\nbbbb", "cccc"]);
+        assert_eq!(parts("one two three", 7), ["one two", "three"]);
+        assert_eq!(parts(text, 100), [text]);
     }
 }
