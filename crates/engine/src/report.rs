@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use crate::polish::{self, Options};
 use crate::protocol::ReportRequest;
 
-/// The longest transcript sent, in characters: about four hours of
-/// speech, some 90 000 tokens. A longer one is refused rather than cut:
+/// The longest transcript sent, in characters: some 90 000 tokens, six
+/// to nine hours of speech (a 28-minute meeting was 16 800 characters). A longer one is refused rather than cut:
 /// a report of part of the meeting reads as a report of all of it.
 pub const MAX_TRANSCRIPT: usize = 320_000;
 /// The longest notes sent.
@@ -62,7 +62,10 @@ pub fn write(agent: &polish::Agent, options: &Options, request: &ReportRequest) 
         bail!("the meeting has no transcript to report on");
     }
     if request.transcript.chars().count() > MAX_TRANSCRIPT {
-        bail!("the transcript is longer than {MAX_TRANSCRIPT} characters: too long for one report");
+        bail!(
+            "the meeting is too long for one report (its transcript is over \
+             {MAX_TRANSCRIPT} characters): the transcript is complete, only the report is not written"
+        );
     }
     if request.notes.chars().count() > MAX_NOTES {
         bail!("the notes are longer than {MAX_NOTES} characters");

@@ -36,6 +36,17 @@ pub enum ClientMessage {
         /// one. Off, the default, keeps the meeting's text away from it.
         #[serde(default)]
         polish: bool,
+        /// Where on the meeting's clock this session's first sample is, in
+        /// seconds: every time the server sends is on the meeting's clock.
+        /// A session that takes a meeting's final pass up again starts
+        /// where the last one's final segments stopped.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        offset: f64,
+        /// The meeting's speakers so far, from the last `final_segments`
+        /// of the session this one takes up: the final pass keeps their
+        /// numbers.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        voices: Vec<SpeakerVoice>,
     },
     /// No more audio: the server sends what it still holds, then `Done`.
     Stop,
@@ -88,6 +99,16 @@ pub struct Upload {
     /// As in `Start`.
     #[serde(default)]
     pub polish: bool,
+    /// As in `Start`: the audio parts start there on the meeting's clock.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub offset: f64,
+    /// As in `Start`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voices: Vec<SpeakerVoice>,
+}
+
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
 }
 
 /// `POST /finals` answers with the id of the pass it started.
@@ -147,6 +168,21 @@ pub struct Utterance {
     pub words: Vec<Word>,
 }
 
+impl Utterance {
+    /// Moved `by` seconds later, with its words.
+    pub fn shifted(mut self, by: f64) -> Self {
+        if by != 0.0 {
+            self.start += by;
+            self.end += by;
+            for w in &mut self.words {
+                w.start += by;
+                w.end += by;
+            }
+        }
+        self
+    }
+}
+
 /// A meeting speaker's voice: the mean of its embeddings (WeSpeaker
 /// ResNet34-LM, L2-normalized) over the audio where it spoke alone. A
 /// voiceprint: the server does not keep it past the meeting.
@@ -199,7 +235,7 @@ mod tests {
             serde_json::from_str(r#"{"type":"start","channels":[{"name":"mic","diarize":false}]}"#)
                 .unwrap();
         assert!(
-            matches!(start, ClientMessage::Start { channels, final_pass: false, polish: false } if channels[0].name == "mic")
+            matches!(start, ClientMessage::Start { channels, final_pass: false, polish: false, offset: 0.0, .. } if channels[0].name == "mic")
         );
     }
 }

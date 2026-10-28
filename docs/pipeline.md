@@ -150,9 +150,21 @@ model's eight
    model copied a neighbour's text into a segment
    (`docs/decisions/2026-10-25-llm-clean-up-of-the-final-transcript.md`).
 
-A meeting uploaded whole (`POST /finals`) goes through the same steps:
-each channel is read once for its pauses (Silero VAD), then range by range
-(`final_pass.rs`).
+A meeting read whole (uploaded with `POST /finals`, or kept by a client
+without a server) goes through the same steps (`final_pass.rs`): each
+channel is read once for its pauses (Silero VAD, ten minutes at a time; a
+pause at a part's very end is not one), then range by range. Neither
+holds a whole channel.
+
+**Taken up, never started again.** A pass that stopped (the connection
+was lost, the server restarted, the client crashed) goes on from where
+its final segments stopped, with the speakers it had found: a session
+opened again after a lost connection is sent the audio kept from there
+(docs/protocol.md, "Reconnection"), and a pass at the end reads or
+uploads only that. The client merges: the segments it kept before that
+point, the new pass's after it (client `meeting.rs`, `merged`). A word
+said across that point may be cut; a meeting of days with a lost
+connection costs a minute or so of audio read twice, not days.
 
 The recording is kept in files of 5 minutes per channel, and the files the
 pass has transcribed past are deleted as it goes (`Recording::forget_before`):
@@ -163,7 +175,7 @@ without a final pass, when the connection is lost, after an upload's pass; a ser
 deletes them when it starts again, having first taken the folder's lock
 (a second server on the same folder is refused, not let loose on the
 first one's live recordings). An uploaded meeting (`POST /finals`)
-is decoded into the same files and read by the same pass.
+is decoded into the same files as it arrives and read by the same pass.
 
 ## Report
 
@@ -173,7 +185,7 @@ the person took during the meeting completed from what was said (nested
 under each of their points, in their order), the decisions and the
 action items with their owners. One request to the same
 OpenAI-compatible model as the clean-up, with the whole transcript: up to
-320 000 characters (about four hours), refused beyond, since a report of
+320 000 characters (six to nine hours), refused beyond, since a report of
 part of a meeting reads as one of all of it. The transcript is the one
 on the page, with the names the client gave the speakers: the server
 never sees the client's voices, so the client sends the Markdown

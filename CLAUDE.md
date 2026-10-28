@@ -93,13 +93,21 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
   (at the session's end, whatever it was; after an upload's pass) and as
   the progressive pass passes them (`forget_before`), or is cleared at
   start if the server died. On the client, only in its pending folder,
-  until the final transcript is back (`pending.rs`). Audio written
-  anywhere else outlives the meeting, which the README promises it does
-  not (`docs/decisions/2026-10-24-the-client-keeps-the-meeting.md`).
-- **A live session's times are the meeting's**: after a reconnection the
-  client shifts them by where the new session started (`remote.rs`). The
-  upload's codec keeps the sample count and drops Opus's lookahead, for
-  the same reason: channels are compared by time.
+  from where the final segments have come (`final_until`) until the final
+  transcript is back (`pending.rs`). Audio written anywhere else outlives
+  the meeting, which the README promises it does not
+  (`docs/decisions/2026-10-24-the-client-keeps-the-meeting.md`).
+- **A live session's times are the meeting's**: one that takes a final
+  pass up (after a lost connection, or an upload) is given its `offset`
+  and the server moves every time it sends; one without a final pass is
+  moved by the client (`remote.rs`). The upload's codec keeps the sample
+  count and drops Opus's lookahead, for the same reason: channels are
+  compared by time.
+- **A final pass is taken up where its segments stopped, never started
+  again** (`final_until`, with the speakers' voices): one started again
+  reads the whole meeting, which for a meeting of hours costs as much as
+  the meeting and holds it on disk until the end
+  (`docs/decisions/2026-10-28-meetings-of-hours-and-days.md`).
 - **Final segments are sent once and never change**: up to the earliest
   cut of all channels, by start (`Progressive::ready`). The CLI appends
   them to the brainy page and records how far it got

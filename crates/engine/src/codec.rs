@@ -7,7 +7,7 @@
 //! at the number of samples, so that the decoded audio lines up with the
 //! original sample for sample: the channels' clocks are compared.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use opus::{Application, Bitrate, Channels, Decoder, Encoder};
 
 use crate::parakeet::SAMPLE_RATE;
@@ -18,56 +18,177 @@ const BITRATE: i32 = 32_000;
 /// The largest packet Opus makes, as its documentation recommends.
 const MAX_PACKET: usize = 4000;
 
-pub fn encode(pcm: &[i16]) -> Result<Vec<u8>> {
-    let mut encoder = Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip)?;
-    encoder.set_bitrate(Bitrate::Bits(BITRATE))?;
-    let lookahead = encoder.get_lookahead()? as usize;
-    let mut out = Vec::with_capacity(pcm.len() / 8 + 16);
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&(pcm.len() as u64).to_le_bytes());
-    out.extend_from_slice(&(lookahead as u16).to_le_bytes());
-    // The lookahead's worth of silence at the end, so that the last samples
-    // come out of the encoder; the last frame padded to a whole one.
-    let mut padded = pcm.to_vec();
-    padded.resize(pcm.len() + lookahead, 0);
-    padded.resize(padded.len().div_ceil(FRAME) * FRAME, 0);
-    let mut packet = [0u8; MAX_PACKET];
-    for frame in padded.chunks_exact(FRAME) {
-        let n = encoder.encode(frame, &mut packet)?;
-        out.extend_from_slice(&(n as u16).to_le_bytes());
-        out.extend_from_slice(&packet[..n]);
+/// One channel encoded as it is read: `new` writes the header (the
+/// number of samples is known before the audio), `push` the packets of
+/// each part, `finish` the last ones. A meeting of hours is never whole
+/// in memory.
+pub struct StreamEncoder {
+    encoder: Encoder,
+    lookahead: usize,
+    /// Samples short of a frame, for the next push.
+    rest: Vec<i16>,
+    packet: Box<[u8; MAX_PACKET]>,
+}
+
+impl StreamEncoder {
+    /// The encoder for `samples` samples, and the header to send first.
+    pub fn new(samples: u64) -> Result<(Self, Vec<u8>)> {
+        let mut encoder = Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip)?;
+        encoder.set_bitrate(Bitrate::Bits(BITRATE))?;
+        let lookahead = encoder.get_lookahead()? as usize;
+        let mut header = Vec::with_capacity(14);
+        header.extend_from_slice(MAGIC);
+        header.extend_from_slice(&samples.to_le_bytes());
+        header.extend_from_slice(&(lookahead as u16).to_le_bytes());
+        let encoder = Self {
+            encoder,
+            lookahead,
+            rest: Vec::with_capacity(FRAME),
+            packet: Box::new([0u8; MAX_PACKET]),
+        };
+        Ok((encoder, header))
     }
+
+    /// The packets of `pcm`'s whole frames, appended to `out`.
+    pub fn push(&mut self, pcm: &[i16], out: &mut Vec<u8>) -> Result<()> {
+        let mut pcm = pcm;
+        if !self.rest.is_empty() {
+            let take = (FRAME - self.rest.len()).min(pcm.len());
+            self.rest.extend_from_slice(&pcm[..take]);
+            pcm = &pcm[take..];
+            if self.rest.len() < FRAME {
+                return Ok(());
+            }
+            let frame = std::mem::take(&mut self.rest);
+            self.frame(&frame, out)?;
+            self.rest = frame;
+            self.rest.clear();
+        }
+        let mut frames = pcm.chunks_exact(FRAME);
+        for frame in &mut frames {
+            self.frame(frame, out)?;
+        }
+        self.rest.extend_from_slice(frames.remainder());
+        Ok(())
+    }
+
+    /// The last packets: the lookahead's worth of silence, so that the
+    /// last samples come out of the encoder, and the last frame padded
+    /// to a whole one.
+    pub fn finish(mut self, out: &mut Vec<u8>) -> Result<()> {
+        let mut tail = std::mem::take(&mut self.rest);
+        tail.resize(tail.len() + self.lookahead, 0);
+        tail.resize(tail.len().div_ceil(FRAME) * FRAME, 0);
+        for frame in tail.chunks_exact(FRAME) {
+            self.frame(frame, out)?;
+        }
+        Ok(())
+    }
+
+    fn frame(&mut self, frame: &[i16], out: &mut Vec<u8>) -> Result<()> {
+        let n = self.encoder.encode(frame, &mut self.packet[..])?;
+        out.extend_from_slice(&(n as u16).to_le_bytes());
+        out.extend_from_slice(&self.packet[..n]);
+        Ok(())
+    }
+}
+
+pub fn encode(pcm: &[i16]) -> Result<Vec<u8>> {
+    let (mut encoder, mut out) = StreamEncoder::new(pcm.len() as u64)?;
+    encoder.push(pcm, &mut out)?;
+    encoder.finish(&mut out)?;
     Ok(out)
+}
+
+/// One channel decoded as its bytes arrive, in parts of any size: the
+/// samples as floats in [-1, 1], the lookahead dropped and cut at the
+/// header's number of samples.
+pub struct StreamDecoder {
+    decoder: Decoder,
+    /// Bytes of a header or a packet not complete yet.
+    pending: Vec<u8>,
+    /// From the header, once read: (samples, lookahead).
+    header: Option<(u64, u64)>,
+    /// Samples the decoder has made, the lookahead included.
+    made: u64,
+    frame: Box<[f32; FRAME]>,
+}
+
+impl StreamDecoder {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            decoder: Decoder::new(SAMPLE_RATE, Channels::Mono)?,
+            pending: Vec::new(),
+            header: None,
+            made: 0,
+            frame: Box::new([0f32; FRAME]),
+        })
+    }
+
+    /// The samples `data` completes, appended to `out`.
+    pub fn push(&mut self, data: &[u8], out: &mut Vec<f32>) -> Result<()> {
+        self.pending.extend_from_slice(data);
+        let mut at = 0;
+        if self.header.is_none() {
+            if self.pending.len() < 14 {
+                return Ok(());
+            }
+            if &self.pending[..4] != MAGIC {
+                bail!("not a recording: wrong magic");
+            }
+            let samples = u64::from_le_bytes(self.pending[4..12].try_into().unwrap());
+            let lookahead = u16::from_le_bytes([self.pending[12], self.pending[13]]) as u64;
+            self.header = Some((samples, lookahead));
+            at = 14;
+        }
+        let (samples, lookahead) = self.header.expect("read above");
+        while let Some(len) = self.pending.get(at..at + 2) {
+            let len = u16::from_le_bytes([len[0], len[1]]) as usize;
+            let Some(packet) = self.pending.get(at + 2..at + 2 + len) else {
+                break;
+            };
+            let n = self
+                .decoder
+                .decode_float(packet, &mut self.frame[..], false)?;
+            // The part of this frame past the lookahead and within the samples.
+            let from = lookahead.saturating_sub(self.made).min(n as u64) as usize;
+            let to = (lookahead + samples)
+                .saturating_sub(self.made)
+                .min(n as u64) as usize;
+            if from < to {
+                out.extend_from_slice(&self.frame[from..to]);
+            }
+            self.made += n as u64;
+            at += 2 + len;
+        }
+        self.pending.drain(..at);
+        Ok(())
+    }
+
+    /// The whole recording was read: an error if it was cut short.
+    pub fn finish(self) -> Result<()> {
+        let Some((samples, lookahead)) = self.header else {
+            bail!("not a recording: too short");
+        };
+        if !self.pending.is_empty() {
+            bail!("a cut packet");
+        }
+        if self.made < lookahead + samples {
+            bail!(
+                "the recording holds {} samples, its header says {samples}",
+                self.made.saturating_sub(lookahead)
+            );
+        }
+        Ok(())
+    }
 }
 
 /// The samples as floats in [-1, 1].
 pub fn decode(data: &[u8]) -> Result<Vec<f32>> {
-    let header = data.get(..14).context("not a recording: too short")?;
-    if &header[..4] != MAGIC {
-        bail!("not a recording: wrong magic");
-    }
-    let samples = u64::from_le_bytes(header[4..12].try_into().unwrap()) as usize;
-    let lookahead = u16::from_le_bytes(header[12..14].try_into().unwrap()) as usize;
-    let mut decoder = Decoder::new(SAMPLE_RATE, Channels::Mono)?;
-    let mut out = Vec::with_capacity(samples + lookahead + FRAME);
-    let mut frame = [0f32; FRAME];
-    let mut rest = &data[14..];
-    while !rest.is_empty() {
-        let (len, tail) = rest.split_at_checked(2).context("a cut packet")?;
-        let len = u16::from_le_bytes([len[0], len[1]]) as usize;
-        let (packet, tail) = tail.split_at_checked(len).context("a cut packet")?;
-        let n = decoder.decode_float(packet, &mut frame, false)?;
-        out.extend_from_slice(&frame[..n]);
-        rest = tail;
-    }
-    if out.len() < lookahead + samples {
-        bail!(
-            "the recording holds {} samples, its header says {samples}",
-            out.len().saturating_sub(lookahead)
-        );
-    }
-    out.truncate(lookahead + samples);
-    out.drain(..lookahead);
+    let mut decoder = StreamDecoder::new()?;
+    let mut out = Vec::new();
+    decoder.push(data, &mut out)?;
+    decoder.finish()?;
     Ok(out)
 }
 
@@ -98,5 +219,23 @@ mod tests {
         assert!(energy(&out[..7800]) < 1e-5);
         assert!(energy(&out[8200..]) > 0.05);
         assert!(decode(b"nope").is_err());
+
+        // Encoded and decoded in parts of odd sizes: the same samples.
+        let (mut encoder, mut parts) = StreamEncoder::new(n as u64).unwrap();
+        for chunk in pcm.chunks(997) {
+            encoder.push(chunk, &mut parts).unwrap();
+        }
+        encoder.finish(&mut parts).unwrap();
+        assert_eq!(parts, data);
+        let mut decoder = StreamDecoder::new().unwrap();
+        let mut streamed = Vec::new();
+        for chunk in data.chunks(333) {
+            decoder.push(chunk, &mut streamed).unwrap();
+        }
+        decoder.finish().unwrap();
+        assert_eq!(streamed, out);
+        let mut cut = StreamDecoder::new().unwrap();
+        cut.push(&data[..data.len() / 2], &mut Vec::new()).unwrap();
+        assert!(cut.finish().is_err());
     }
 }

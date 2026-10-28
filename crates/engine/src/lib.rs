@@ -32,7 +32,7 @@ use channel::Channel;
 use final_pass::{Final, Recorded};
 use parakeet::{Kind, Latency, Model, Parakeet};
 use progressive::{Progressive, Transcribed};
-use protocol::ChannelConfig;
+use protocol::{ChannelConfig, SpeakerVoice};
 
 pub struct Options {
     /// libparakeet; None for the loader's search path.
@@ -172,9 +172,14 @@ impl Engine {
         ))
     }
 
-    /// A progressive final pass for a live session's channels.
-    pub fn progressive(&self, configs: Vec<ChannelConfig>) -> Result<Progressive> {
-        Progressive::new(configs, self.voice_threshold)
+    /// A progressive final pass for a live session's channels; `voices`:
+    /// the meeting's speakers so far, for a pass taken up again.
+    pub fn progressive(
+        &self,
+        configs: Vec<ChannelConfig>,
+        voices: &[SpeakerVoice],
+    ) -> Result<Progressive> {
+        Progressive::new(configs, self.voice_threshold, voices)
     }
 
     /// A range of a channel read again (progressive.rs): `pcm` is its
@@ -184,10 +189,21 @@ impl Engine {
         progressive::transcribe_range(&self.range_models(), pcm, range)
     }
 
-    /// The final pass over recorded channels (final_pass.rs). Long: run it
-    /// off the sessions' threads.
-    pub fn final_pass(&self, channels: Vec<Recorded>) -> Result<Final> {
-        final_pass::run(&self.range_models(), self.voice_threshold, channels)
+    /// The final pass over recorded channels (final_pass.rs), its times
+    /// moved by `offset`. Long: run it off the sessions' threads.
+    pub fn final_pass(
+        &self,
+        channels: Vec<Recorded>,
+        offset: f64,
+        voices: &[SpeakerVoice],
+    ) -> Result<Final> {
+        final_pass::run(
+            &self.range_models(),
+            self.voice_threshold,
+            channels,
+            offset,
+            voices,
+        )
     }
 
     fn range_models(&self) -> progressive::RangeModels<'_> {

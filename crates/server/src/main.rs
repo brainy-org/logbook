@@ -21,7 +21,8 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use clap::{Parser, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
-use logbook_engine::codec;
+use logbook_engine::codec::StreamDecoder;
+use logbook_engine::final_pass::Recorded;
 use logbook_engine::finalizer::{self, FinalJob};
 use logbook_engine::finals::Finals;
 use logbook_engine::mirror::Mirror;
@@ -33,13 +34,15 @@ use logbook_engine::protocol::{
 };
 use logbook_engine::recording::{self, Recording};
 use logbook_engine::report;
-use logbook_engine::session::{self, Input, Shared};
+use logbook_engine::session::{self, Input, Resume, Shared};
 use logbook_engine::{Engine, Options, batcher, polisher};
 use tracing::{info, warn};
 
-/// The largest upload: 14 MB an hour a channel (`codec`), so about 8 hours
-/// of a meeting with two channels.
-const MAX_UPLOAD: usize = 256 << 20;
+/// The largest upload: 14 MB an hour a channel (`codec`), so about 140
+/// hours of a meeting with two channels. It is never whole in memory:
+/// decoded to the recordings folder as it arrives, 115 MB an hour a
+/// channel there until its final pass has read it.
+const MAX_UPLOAD: usize = 4 << 30;
 /// The largest report request: the transcript and the notes at their
 /// limits (engine report.rs), in UTF-8.
 const MAX_REPORT: usize = 4 << 20;
@@ -304,44 +307,102 @@ async fn upload(
 }
 
 async fn start_upload(shared: &Shared, mut multipart: Multipart) -> Result<String> {
-    let mut upload: Option<Upload> = None;
-    let mut audio = Vec::new();
-    while let Some(field) = multipart.next_field().await? {
-        match field.name() {
-            Some("meeting") => upload = Some(serde_json::from_slice(&field.bytes().await?)?),
-            Some("audio") => audio.push(field.bytes().await?),
-            _ => {}
-        }
+    // The meeting part first: its channels name the recording's files.
+    let field = multipart.next_field().await?.context("no meeting part")?;
+    if field.name() != Some("meeting") {
+        anyhow::bail!("the meeting part comes first");
     }
-    let upload = upload.context("no meeting part")?;
-    if upload.channels.is_empty() || upload.channels.len() != audio.len() {
-        anyhow::bail!(
-            "{} channels and {} audio parts",
-            upload.channels.len(),
-            audio.len()
-        );
+    let upload: Upload = serde_json::from_slice(&field.bytes().await?)?;
+    let count = upload.channels.len();
+    if count == 0 {
+        anyhow::bail!("no channels");
     }
-    // Decoding an hour takes about a second of CPU: off the async threads.
-    let dir = shared.recordings.clone();
-    let (files, audio_s) = tokio::task::spawn_blocking(move || -> Result<_> {
-        let mut name = [0u8; 8];
-        getrandom::fill(&mut name).map_err(|e| anyhow::anyhow!("no randomness: {e}"))?;
-        let name: String = name.iter().map(|b| format!("{b:02x}")).collect();
-        let mut recording = Recording::create(&dir, &format!("upload-{name}"), audio.len())?;
-        let mut longest = 0;
-        for (i, data) in audio.iter().enumerate() {
-            let pcm = codec::decode(data).with_context(|| format!("audio part {i}"))?;
-            longest = longest.max(pcm.len());
-            recording.write(i, &pcm)?;
+    let mut name = [0u8; 8];
+    getrandom::fill(&mut name).map_err(|e| anyhow::anyhow!("no randomness: {e}"))?;
+    let name: String = name.iter().map(|b| format!("{b:02x}")).collect();
+    let mut recording = Recording::create(&shared.recordings, &format!("upload-{name}"), count)?;
+    // Each part decoded and written as it arrives, off the async threads:
+    // (channel, bytes), then (channel, None) at the part's end.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Option<axum::body::Bytes>)>(16);
+    let writer = tokio::task::spawn_blocking(move || -> Result<_> {
+        let mut decoders: Vec<Option<StreamDecoder>> = (0..count)
+            .map(|_| StreamDecoder::new().map(Some))
+            .collect::<Result<_>>()?;
+        let mut pcm = Vec::new();
+        while let Some((i, chunk)) = rx.blocking_recv() {
+            let decoder = &mut decoders[i];
+            match chunk {
+                Some(bytes) => {
+                    decoder
+                        .as_mut()
+                        .context("an audio part after its end")?
+                        .push(&bytes, &mut pcm)
+                        .with_context(|| format!("audio part {i}"))?;
+                    recording.write(i, &pcm)?;
+                    pcm.clear();
+                }
+                None => decoder
+                    .take()
+                    .context("an audio part ended twice")?
+                    .finish()
+                    .with_context(|| format!("audio part {i}"))?,
+            }
         }
-        Ok((recording.finish()?, longest as f64 / SAMPLE_RATE as f64))
-    })
-    .await??;
+        if decoders.iter().any(Option::is_some) {
+            anyhow::bail!("{count} channels and fewer audio parts");
+        }
+        recording.finish()
+    });
+    let mut parts = 0;
+    let received = async {
+        while let Some(mut field) = multipart.next_field().await? {
+            if field.name() != Some("audio") {
+                continue;
+            }
+            if parts == count {
+                anyhow::bail!("{count} channels and more audio parts");
+            }
+            while let Some(chunk) = field.chunk().await? {
+                if tx.send((parts, Some(chunk))).await.is_err() {
+                    return Ok(());
+                }
+            }
+            if tx.send((parts, None)).await.is_err() {
+                return Ok(());
+            }
+            parts += 1;
+        }
+        Ok(())
+    }
+    .await;
+    drop(tx);
+    // The writer's error first: it is why the parts stopped being taken.
+    let files = writer.await??;
+    received?;
+    let audio_s = files.iter().map(|f| f.samples()).max().unwrap_or(0) as f64 / SAMPLE_RATE as f64;
     let id = shared.finals.start(audio_s)?;
-    info!(audio_s = format!("{audio_s:.1}"), "upload received");
+    info!(
+        audio_s = format!("{audio_s:.1}"),
+        offset = upload.offset,
+        "upload received"
+    );
+    let channels = upload
+        .channels
+        .into_iter()
+        .zip(&files)
+        .map(|(config, file)| Recorded {
+            config,
+            reader: file.reader(),
+            start: 0.0,
+            seconds: file.samples() as f64 / SAMPLE_RATE as f64,
+        })
+        .collect();
     let _ = shared.finalizer.send(FinalJob::Whole {
         id: id.clone(),
-        channels: upload.channels.into_iter().zip(files).collect(),
+        channels,
+        files,
+        offset: upload.offset,
+        voices: upload.voices,
         polish: upload.polish,
     });
     Ok(id)
@@ -402,14 +463,16 @@ async fn live(
 
 async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
     let (mut sink, mut stream) = socket.split();
-    let (configs, final_pass, polish) = loop {
+    let (configs, final_pass, polish, resume) = loop {
         match stream.next().await {
             Some(Ok(Message::Text(text))) => match serde_json::from_str(text.as_str()) {
                 Ok(ClientMessage::Start {
                     channels,
                     final_pass,
                     polish,
-                }) => break (channels, final_pass, polish),
+                    offset,
+                    voices,
+                }) => break (channels, final_pass, polish, Resume { offset, voices }),
                 Ok(_) | Err(_) => {
                     warn!("the first message was not a start");
                     return;
@@ -439,6 +502,7 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
             session,
             configs,
             final_pass.then_some(polish),
+            resume,
             in_rx,
             reply,
             out_tx,

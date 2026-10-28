@@ -139,6 +139,23 @@ impl Linker {
         }
     }
 
+    /// Starts from a meeting's speakers so far (`voices`: speaker, voice,
+    /// seconds, as `voices` gives them), so that a pass taken up again
+    /// keeps their numbers. A speaker missing from them stays one with no
+    /// voice: nobody joins it.
+    pub fn seeded(mut self, voices: &[(u32, Vec<f32>, f64)]) -> Self {
+        let count = voices.iter().map(|v| v.0 as usize + 1).max().unwrap_or(0);
+        let width = voices.first().map_or(0, |v| v.1.len());
+        self.centroids = vec![vec![0.0; width]; count];
+        self.seconds = vec![0.0; count];
+        for (speaker, embedding, seconds) in voices {
+            let i = *speaker as usize;
+            self.centroids[i] = embedding.iter().map(|x| x * *seconds as f32).collect();
+            self.seconds[i] = *seconds;
+        }
+        self
+    }
+
     /// The similarity at which two slots of a range are one speaker.
     pub fn with_share(mut self, share: f32) -> Self {
         self.share = share;
@@ -275,6 +292,23 @@ mod tests {
         assert_eq!(v[0].2, 32.0);
         let n: f32 = v[0].1.iter().map(|x| x * x).sum();
         assert!((n - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_pass_taken_up_again_keeps_the_speakers_numbers() {
+        let mut first = Linker::new(0.5);
+        first.link(&[
+            voice(0, &[1.0, 0.0, 0.0], 20.0),
+            voice(1, &[0.0, 1.0, 0.0], 10.0),
+        ]);
+        let mut again = Linker::new(0.5).seeded(&first.voices());
+        // The second voice comes back as slot 0, a new one as slot 1.
+        let m = again.link(&[
+            voice(0, &[0.1, 0.9, 0.0], 12.0),
+            voice(1, &[0.0, 0.0, 1.0], 8.0),
+        ]);
+        assert_eq!((m[&0], m[&1]), (1, 2));
+        assert_eq!(again.voices()[1].2, 22.0);
     }
 
     #[test]

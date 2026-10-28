@@ -23,6 +23,11 @@ token ("Tokens", below).
    `"polish": true`, optional, has the final transcript cleaned up on a
    server with a model for it (`--polish-url`), which then reads the
    meeting's text. Default `false`: as heard, and nothing sent to it.
+   `"offset"`, optional (default 0): where on the meeting's clock the
+   session's first sample is, in seconds; every time the server sends is
+   moved by it. `"voices"`, optional: the meeting's speakers so far, as
+   in `final_segments`; the final pass keeps their numbers. Both are for
+   a session that takes a meeting's final pass up ("Reconnection").
 
 2. Binary frames, the audio: one byte, the channel's index in `channels`,
    then 16 kHz mono PCM, signed 16-bit little-endian. The CLI sends 100 ms
@@ -85,20 +90,31 @@ result is kept under the `finalizing` id.
 
 ## Reconnection
 
-A lost connection is the client's to repair: it opens a new session
-(without a final pass: it would not hear the whole meeting) and shifts
-the new session's times by where on the meeting's clock its first sample
-was. The server does not know the two sessions are one meeting. Audio
-captured while disconnected is not sent live; the client keeps it for
-the final pass (`docs/decisions/2026-10-24-the-client-keeps-the-meeting.md`).
+A lost connection is the client's to repair; the server drops the
+session, its recording and its final pass, and does not know the next
+session is the same meeting. With a final pass, the client opens one
+that takes it up: `offset` is where the last `final_segments` stopped
+(their `until`, on a sample), `voices` the speakers they last sent. It
+sends the audio it kept from there to now first (each channel in step,
+as fast as the socket takes it), then the audio as it comes, and the
+final pass goes on from `offset`: nothing before it is read again, the
+speakers keep their numbers. Live utterances come again for what is
+sent twice; the client passes on only those that end after the last it
+showed. Without a final pass the new session has none, starts now and
+the client moves its times by where it started
+(`docs/decisions/2026-10-28-meetings-of-hours-and-days.md`).
 
 ## Final passes over HTTP
 
-- `POST /finals`, multipart: a part `meeting`, JSON
-  `{"channels":[...],"polish":true}` as in `start` (`polish` optional, default `false`),
-then one part `audio` per channel
-  in the same order. Answers `202 {"id":"…"}`, or `400` with the reason.
-  At most 256 MB.
+- `POST /finals`, multipart: a part `meeting` first, JSON
+  `{"channels":[...],"polish":true,"offset":1834.2,"voices":[...]}` as in
+  `start` (all but `channels` optional), then one part `audio` per
+  channel in the same order, starting at `offset` on the meeting's clock:
+  the client uploads from where the final segments it has stopped. Its
+  times come back on the meeting's clock. Answers `202 {"id":"…"}`, or
+  `400` with the reason. At most 4 GB (about 140 hours of two channels):
+  the client encodes it and the server decodes it a part at a time, to
+  its recordings folder.
 - `GET /finals/{id}`: `{"state":"running","audio_s":…}`,
   `{"state":"done","utterances":[...],"warnings":[...]}` or
   `{"state":"failed","message":"…"}`; `404` if the server does not know

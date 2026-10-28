@@ -104,8 +104,14 @@ impl Track {
 }
 
 impl Progressive {
-    /// `threshold`: the voice similarity of one speaker (speakers.rs).
-    pub fn new(configs: Vec<ChannelConfig>, threshold: f32) -> Result<Self> {
+    /// `threshold`: the voice similarity of one speaker (speakers.rs);
+    /// `voices`: the meeting's speakers so far, for a pass taken up again
+    /// (their numbers are kept).
+    pub fn new(
+        configs: Vec<ChannelConfig>,
+        threshold: f32,
+        voices: &[SpeakerVoice],
+    ) -> Result<Self> {
         let mut echo = Vec::new();
         for config in &configs {
             echo.push(config.echo_of.as_ref().and_then(|name| {
@@ -117,14 +123,21 @@ impl Progressive {
         }
         let tracks = configs
             .into_iter()
-            .map(|config| Track {
-                config,
-                speakers: Vec::new(),
-                linker: Linker::new(threshold),
-                fed: 0,
-                quiet: VecDeque::new(),
-                cut: 0.0,
-                words: Vec::new(),
+            .map(|config| {
+                let known: Vec<(u32, Vec<f32>, f64)> = voices
+                    .iter()
+                    .filter(|v| v.channel == config.name)
+                    .map(|v| (v.speaker, v.embedding.clone(), v.seconds))
+                    .collect();
+                Track {
+                    config,
+                    speakers: Vec::new(),
+                    linker: Linker::new(threshold).seeded(&known),
+                    fed: 0,
+                    quiet: VecDeque::new(),
+                    cut: 0.0,
+                    words: Vec::new(),
+                }
             })
             .collect();
         Ok(Self {
@@ -512,7 +525,7 @@ mod tests {
 
     #[test]
     fn segments_follow_the_meeting_in_order_and_complete_at_the_end() {
-        let mut p = Progressive::new(vec![config("a", None), config("b", None)], 0.5).unwrap();
+        let mut p = Progressive::new(vec![config("a", None), config("b", None)], 0.5, &[]).unwrap();
         let second = vec![0.0f32; SAMPLE_RATE as usize];
         for _ in 0..100 {
             p.feed(0, &second);
@@ -558,7 +571,7 @@ mod tests {
 
     #[test]
     fn a_pause_too_early_does_not_hold_the_channel_after_long_speech() {
-        let mut p = Progressive::new(vec![config("a", None)], 0.5).unwrap();
+        let mut p = Progressive::new(vec![config("a", None)], 0.5, &[]).unwrap();
         let second = vec![0.0f32; SAMPLE_RATE as usize];
         for _ in 0..200 {
             p.feed(0, &second);
@@ -578,6 +591,7 @@ mod tests {
         let mut p = Progressive::new(
             vec![config("mic", Some("system")), config("system", None)],
             0.5,
+            &[],
         )
         .unwrap();
         let second = vec![0.0f32; SAMPLE_RATE as usize];

@@ -5,7 +5,9 @@
 //! session, or a whole uploaded meeting, whose result goes to `Finals`.
 //! Running them one after another bounds what final passes take from the
 //! live sessions' GPU to one call at a time, and keeps them off the
-//! sessions' threads. An upload's result goes through the model that
+//! sessions' threads. A whole meeting is an upload, or one a client kept
+//! and reads again in its own process (client local.rs), from where its
+//! final segments stopped. An upload's result goes through the model that
 //! cleans the transcript up, when there is one and the client did not
 //! decline it (polisher.rs).
 
@@ -16,7 +18,7 @@ use std::time::Instant;
 use crate::Engine;
 use crate::final_pass::Recorded;
 use crate::progressive::Range;
-use crate::protocol::{ChannelConfig, FinalState};
+use crate::protocol::{FinalState, SpeakerVoice};
 use tracing::{info, warn};
 
 use crate::finals::Finals;
@@ -31,10 +33,16 @@ pub enum FinalJob {
         ranges: Vec<(Range, RangeReader)>,
         reply: Sender<Input>,
     },
-    /// A meeting a client uploaded, whole.
+    /// A meeting read whole, from where its final segments stopped.
     Whole {
         id: String,
-        channels: Vec<(ChannelConfig, RecordedFile)>,
+        channels: Vec<Recorded>,
+        /// An upload's files, deleted once the pass has read them.
+        files: Vec<RecordedFile>,
+        /// Where the channels' start is on the meeting's clock.
+        offset: f64,
+        /// The meeting's speakers before it.
+        voices: Vec<SpeakerVoice>,
         /// Through the clean-up model, if there is one.
         polish: bool,
     },
@@ -59,10 +67,15 @@ pub fn spawn(
                     FinalJob::Whole {
                         id,
                         channels,
+                        files,
+                        offset,
+                        voices,
                         polish,
                     } => {
                         let polisher = polisher.as_ref().filter(|_| polish);
-                        run_whole(&engine, &finals, polisher, id, channels)
+                        let state = engine.final_pass(channels, offset, &voices);
+                        drop(files);
+                        whole_done(&finals, polisher, id, state)
                     }
                 }
             }
@@ -100,32 +113,17 @@ fn run_ranges(
     }
 }
 
-fn run_whole(
-    engine: &Engine,
+fn whole_done(
     finals: &Finals,
     polisher: Option<&Sender<PolishJob>>,
     id: String,
-    channels: Vec<(ChannelConfig, RecordedFile)>,
+    result: anyhow::Result<crate::final_pass::Final>,
 ) {
-    let started = Instant::now();
-    let channels = channels
-        .into_iter()
-        .map(|(config, file)| {
-            let reader = file.reader();
-            // The files move into the closure: read, then deleted with it.
-            Recorded {
-                config,
-                audio: Box::new(move || file.read()),
-                range: Box::new(move |from, to| reader.read(from, to)),
-            }
-        })
-        .collect();
-    let state = match engine.final_pass(channels) {
+    let state = match result {
         Ok(result) => {
             info!(
                 utterances = result.utterances.len(),
-                took_ms = started.elapsed().as_millis() as u64,
-                "final pass of an upload"
+                "final pass of a whole meeting"
             );
             if let Some(polisher) = polisher {
                 let job = PolishJob::Whole {
@@ -164,7 +162,7 @@ fn run_whole(
             }
         }
         Err(error) => {
-            warn!("final pass of an upload failed: {error:#}");
+            warn!("final pass of a whole meeting failed: {error:#}");
             FinalState::Failed {
                 message: format!("the final pass failed: {error:#}"),
             }

@@ -19,8 +19,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 const RATE: u64 = 16_000;
-/// Samples per file: 5 minutes, 9.6 MB.
-const SEGMENT: u64 = 300 * RATE;
+/// Samples per file: 5 minutes, 9.6 MB. The client's pending folder
+/// keeps a meeting's audio in the same files (client pending.rs).
+pub const SEGMENT: u64 = 300 * RATE;
 
 /// Takes `dir` for this server, and deletes the recordings a server that
 /// died left there: no session of this one owns them, and their clients
@@ -76,7 +77,8 @@ impl Track {
     }
 }
 
-fn segment_path(stem: &Path, n: u64) -> PathBuf {
+/// File `n` of a channel's audio: samples [n·SEGMENT, (n+1)·SEGMENT).
+pub fn segment_path(stem: &Path, n: u64) -> PathBuf {
     let mut name = stem.as_os_str().to_owned();
     name.push(format!("-{n:05}.pcm"));
     PathBuf::from(name)
@@ -192,6 +194,7 @@ impl Recording {
             out.push(RecordedFile {
                 stem: track.stem.clone(),
                 paths: track.files.drain(..).map(|(_, p)| p).collect(),
+                samples: track.written,
             });
         }
         Ok(out)
@@ -206,6 +209,13 @@ pub struct RangeReader {
 }
 
 impl RangeReader {
+    /// Reads the files of `stem` (`<stem>-<n>.pcm`), whoever wrote them.
+    pub fn new(stem: &Path) -> Self {
+        Self {
+            stem: stem.to_path_buf(),
+        }
+    }
+
     /// Samples [from, to) in seconds, as floats; shorter where the files are.
     pub fn read(&self, from: f64, to: f64) -> Result<Vec<f32>> {
         let mut at = (from.max(0.0) * RATE as f64) as u64;
@@ -238,6 +248,7 @@ impl RangeReader {
 pub struct RecordedFile {
     stem: PathBuf,
     paths: Vec<PathBuf>,
+    samples: u64,
 }
 
 impl RecordedFile {
@@ -248,17 +259,9 @@ impl RecordedFile {
         }
     }
 
-    pub fn read(&self) -> Result<Vec<f32>> {
-        let mut bytes = Vec::new();
-        for path in &self.paths {
-            File::open(path)
-                .and_then(|mut f| f.read_to_end(&mut bytes))
-                .with_context(|| format!("could not read {}", path.display()))?;
-        }
-        Ok(bytes
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
-            .collect())
+    /// How long it is, in samples.
+    pub fn samples(&self) -> u64 {
+        self.samples
     }
 }
 
@@ -285,8 +288,12 @@ mod tests {
         assert_eq!(reader.read(0.0, 1.0).unwrap(), vec![0.5, -0.25, 0.0]);
         assert_eq!(reader.read(1.0 / 16_000.0, 1.0).unwrap(), vec![-0.25, 0.0]);
         let files = recording.finish().unwrap();
-        assert_eq!(files[0].read().unwrap(), Vec::<f32>::new());
-        assert_eq!(files[1].read().unwrap(), vec![0.5, -0.25, 0.0]);
+        assert_eq!(files[0].samples(), 0);
+        assert_eq!(files[1].samples(), 3);
+        assert_eq!(
+            files[1].reader().read(0.0, 1.0).unwrap(),
+            vec![0.5, -0.25, 0.0]
+        );
         let path = files[1].paths[0].clone();
         drop(files);
         assert!(!path.exists());

@@ -3,21 +3,27 @@
 //!
 //! One folder per meeting under `<data>/pending`: `meeting.json` (the
 //! channels, when it started, how to publish it, the server's pass id once
-//! known, the brainy page and how far it is written), one raw 16 kHz s16le
-//! file per channel on the session's clock, written as the audio is
-//! captured, `segments.jsonl` (the final segments as they come during the
-//! meeting), `notes.md` (what the person wrote during it, for the report)
-//! and `final.json` once the final pass is complete (the audio is
-//! deleted then: it is no longer needed). The folder goes away once the
-//! transcript is published; until then `logbook finish` picks it up again.
-//! No brainy token is ever written.
+//! known, how far the final segments have come, the brainy page and how
+//! far it is written), each channel's audio as raw 16 kHz s16le on the
+//! meeting's clock, written as it is captured, in files of 5 minutes
+//! (`<channel>-<n>.pcm`, engine recording.rs's layout), `segments.jsonl`
+//! (the final segments as they come during the meeting), `notes.md` (what
+//! the person wrote during it, for the report) and `final.json` once the
+//! final pass is complete. The audio is kept only from where the final
+//! segments have come (`trim`): a final pass taken up again starts there,
+//! and a meeting of days keeps minutes of it; all of it goes with
+//! `final.json`. The folder goes away once the transcript is published;
+//! until then `logbook finish` picks it up again. No brainy token is ever
+//! written.
 
 use std::fs::File;
-use std::io::{BufWriter, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::protocol::ChannelConfig;
+use logbook_engine::recording::{RangeReader, SEGMENT, segment_path};
 use serde::{Deserialize, Serialize};
 
 use crate::brainy::Page;
@@ -46,6 +52,11 @@ pub struct Meeting {
     /// Segments starting before this are on the page.
     #[serde(default)]
     pub published_until: f64,
+    /// Final segments starting before this are in `segments.jsonl`: a
+    /// final pass taken up again starts here, and the audio before it is
+    /// gone. `f64::MAX` once they all are.
+    #[serde(default)]
+    pub final_until: f64,
     /// The speakers' voices as last sent: their names come from them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub voices: Vec<SpeakerVoice>,
@@ -73,9 +84,13 @@ pub struct Pending {
     pub meeting: Meeting,
 }
 
-/// The audio being written, one file per channel.
+/// The audio being written: each channel's file being written and how
+/// many samples it has had. Unbuffered: what a live session reads back to
+/// take the final pass up again (remote.rs) is on disk once written here.
 pub struct Spool {
-    files: Vec<BufWriter<File>>,
+    stems: Vec<PathBuf>,
+    files: Vec<Option<File>>,
+    written: Vec<u64>,
 }
 
 impl Pending {
@@ -95,26 +110,28 @@ impl Pending {
         }
         let pending = Self { dir, meeting };
         pending.save()?;
-        let files = (0..pending.meeting.channels.len())
-            .map(|i| {
-                let path = pending.audio_path(i);
-                File::create(&path)
-                    .map(BufWriter::new)
-                    .with_context(|| format!("could not create {}", path.display()))
-            })
-            .collect::<Result<_>>()?;
-        Ok((pending, Spool { files }))
+        let count = pending.meeting.channels.len();
+        let spool = Spool {
+            stems: (0..count).map(|i| stem(&pending.dir, i)).collect(),
+            files: (0..count).map(|_| None).collect(),
+            written: vec![0; count],
+        };
+        Ok((pending, spool))
     }
 
     pub fn open(dir: &Path) -> Result<Self> {
         let path = dir.join("meeting.json");
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("could not read {}", path.display()))?;
-        Ok(Self {
+        let pending = Self {
             dir: dir.to_path_buf(),
             meeting: serde_json::from_str(&text)
                 .with_context(|| format!("could not read {}", path.display()))?,
-        })
+        };
+        for i in 0..pending.meeting.channels.len() {
+            split_whole_file(&pending.dir, i)?;
+        }
+        Ok(pending)
     }
 
     /// Every pending meeting, oldest first.
@@ -146,10 +163,52 @@ impl Pending {
         std::fs::write(&tmp, serde_json::to_vec(finalized)?)
             .and_then(|_| std::fs::rename(&tmp, &path))
             .with_context(|| format!("could not write {}", path.display()))?;
-        for i in 0..self.meeting.channels.len() {
-            let _ = std::fs::remove_file(self.audio_path(i));
-        }
+        self.trim(f64::MAX);
         Ok(())
+    }
+
+    /// Final segments have come up to `until`: noted, and the audio before
+    /// it deleted (a file whose last sample is before it).
+    pub fn set_final_until(&mut self, until: f64) -> Result<()> {
+        if until <= self.meeting.final_until {
+            return Ok(());
+        }
+        self.meeting.final_until = until;
+        self.save()?;
+        self.trim(until);
+        Ok(())
+    }
+
+    /// Deletes the files of audio wholly before `until` (all of them at
+    /// `f64::MAX`).
+    fn trim(&self, until: f64) {
+        let before = (until.max(0.0) * SAMPLE_RATE as f64).min(u64::MAX as f64) as u64;
+        for i in 0..self.meeting.channels.len() {
+            let stem = stem(&self.dir, i);
+            for n in segments(&self.dir, i) {
+                if until == f64::MAX || (n + 1).saturating_mul(SEGMENT) <= before {
+                    let _ = std::fs::remove_file(segment_path(&stem, n));
+                }
+            }
+        }
+    }
+
+    /// A channel's audio, by range on the meeting's clock, from
+    /// `final_until` on.
+    pub fn reader(&self, channel: usize) -> RangeReader {
+        reader(&self.dir, channel)
+    }
+
+    /// Samples of a channel kept so far, counted from the meeting's start.
+    pub fn samples(&self, channel: usize) -> u64 {
+        let stem = stem(&self.dir, channel);
+        match segments(&self.dir, channel).last() {
+            Some(&n) => {
+                let bytes = std::fs::metadata(segment_path(&stem, n)).map_or(0, |m| m.len());
+                n * SEGMENT + bytes / 2
+            }
+            None => 0,
+        }
     }
 
     /// Final segments that came during the meeting.
@@ -200,23 +259,6 @@ impl Pending {
         }
     }
 
-    /// Every channel's samples, in channel order.
-    pub fn audio(&self) -> Result<Vec<Vec<i16>>> {
-        (0..self.meeting.channels.len())
-            .map(|i| {
-                let path = self.audio_path(i);
-                let mut bytes = Vec::new();
-                File::open(&path)
-                    .and_then(|mut f| f.read_to_end(&mut bytes))
-                    .with_context(|| format!("could not read {}", path.display()))?;
-                Ok(bytes
-                    .chunks_exact(2)
-                    .map(|b| i16::from_le_bytes([b[0], b[1]]))
-                    .collect())
-            })
-            .collect()
-    }
-
     /// What the person wrote during the meeting.
     pub fn save_notes(&self, notes: &str) -> Result<()> {
         let path = self.dir.join("notes.md");
@@ -262,25 +304,102 @@ impl Pending {
         std::fs::write(&path, serde_json::to_vec_pretty(&self.meeting)?)
             .with_context(|| format!("could not write {}", path.display()))
     }
+}
 
-    fn audio_path(&self, channel: usize) -> PathBuf {
-        self.dir.join(format!("{channel}.pcm"))
+/// A channel's audio in the pending folder `dir`, while it is written.
+pub fn reader(dir: &Path, channel: usize) -> RangeReader {
+    RangeReader::new(&stem(dir, channel))
+}
+
+/// `<dir>/<channel>`: its files are `<channel>-<n>.pcm`.
+fn stem(dir: &Path, channel: usize) -> PathBuf {
+    dir.join(channel.to_string())
+}
+
+/// The numbers of a channel's files on disk, increasing.
+fn segments(dir: &Path, channel: usize) -> Vec<u64> {
+    let prefix = format!("{channel}-");
+    let mut found: Vec<u64> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            name.strip_prefix(&prefix)?
+                .strip_suffix(".pcm")?
+                .parse()
+                .ok()
+        })
+        .collect();
+    found.sort_unstable();
+    found
+}
+
+/// A meeting kept before the audio was in files of 5 minutes had one file
+/// per channel (`<channel>.pcm`): cut into them, a part at a time.
+fn split_whole_file(dir: &Path, channel: usize) -> Result<()> {
+    let whole = dir.join(format!("{channel}.pcm"));
+    let Ok(mut file) = File::open(&whole) else {
+        return Ok(());
+    };
+    let stem = stem(dir, channel);
+    let mut buf = vec![0u8; SEGMENT as usize * 2];
+    let mut n = 0;
+    loop {
+        let mut filled = 0;
+        while filled < buf.len() {
+            let read = file.read(&mut buf[filled..])?;
+            if read == 0 {
+                break;
+            }
+            filled += read;
+        }
+        if filled == 0 {
+            break;
+        }
+        let path = segment_path(&stem, n);
+        std::fs::write(&path, &buf[..filled & !1])
+            .with_context(|| format!("could not write {}", path.display()))?;
+        n += 1;
+        if filled < buf.len() {
+            break;
+        }
     }
+    std::fs::remove_file(&whole).with_context(|| format!("could not delete {}", whole.display()))
 }
 
 impl Spool {
     pub fn write(&mut self, channel: usize, samples: &[i16]) -> Result<()> {
-        let Some(file) = self.files.get_mut(channel) else {
+        let Some(stem) = self.stems.get(channel) else {
             return Ok(());
         };
-        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-        Ok(file.write_all(&bytes)?)
+        let mut rest = samples;
+        while !rest.is_empty() {
+            let written = self.written[channel];
+            let n = written / SEGMENT;
+            let file = match &mut self.files[channel] {
+                Some(file) if !written.is_multiple_of(SEGMENT) => file,
+                slot => {
+                    let path = segment_path(stem, n);
+                    let file = File::options()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .with_context(|| format!("could not create {}", path.display()))?;
+                    slot.insert(file)
+                }
+            };
+            let room = (SEGMENT - written % SEGMENT) as usize;
+            let (now, later) = rest.split_at(room.min(rest.len()));
+            let bytes: Vec<u8> = now.iter().flat_map(|s| s.to_le_bytes()).collect();
+            file.write_all(&bytes)?;
+            self.written[channel] += now.len() as u64;
+            rest = later;
+        }
+        Ok(())
     }
 
     pub fn finish(self) -> Result<()> {
-        for mut file in self.files {
-            file.flush()?;
-        }
         Ok(())
     }
 }
@@ -313,6 +432,7 @@ mod tests {
             page: None,
             writer: None,
             published_until: 0.0,
+            final_until: 0.0,
             voices: Vec::new(),
         };
         let (mut pending, mut spool) = Pending::create(&root, "m", meeting.clone()).unwrap();
@@ -321,6 +441,7 @@ mod tests {
         second.remove().unwrap();
         spool.write(0, &[1, -2, 3]).unwrap();
         spool.finish().unwrap();
+        assert_eq!(pending.samples(0), 3);
         assert_eq!(pending.notes(), "");
         pending.save_notes("- budget").unwrap();
         assert_eq!(pending.notes(), "- budget");
@@ -330,7 +451,9 @@ mod tests {
         assert_eq!(dirs.len(), 1);
         let opened = Pending::open(&dirs[0]).unwrap();
         assert_eq!(opened.meeting.final_id.as_deref(), Some("abc"));
-        assert_eq!(opened.audio().unwrap(), vec![vec![1, -2, 3]]);
+        let read = opened.reader(0).read(0.0, 3.0 / 16_000.0).unwrap();
+        assert_eq!(read.len(), 3);
+        assert!((read[1] * 32768.0 + 2.0).abs() < 1e-3);
         assert!(opened.final_result().unwrap().is_none());
         let finalized = Finalized {
             utterances: Vec::new(),
@@ -339,9 +462,58 @@ mod tests {
         };
         opened.save_final(&finalized).unwrap();
         assert_eq!(opened.final_result().unwrap().unwrap().warnings, ["w"]);
-        assert!(opened.audio().is_err());
+        assert_eq!(opened.samples(0), 0);
         opened.remove().unwrap();
         assert!(Pending::list(&root).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_audio_goes_as_the_final_segments_come() {
+        let root = std::env::temp_dir().join(format!("logbook-spool-{}", std::process::id()));
+        let meeting: Meeting = serde_json::from_value(serde_json::json!({
+            "started": "2026-10-28T09:00:00+01:00",
+            "channels": [{"name": "mic", "diarize": false}],
+            "publish": {"brainy": false, "brainy_url": null, "parent": null, "title": null, "me": "Me"},
+        }))
+        .unwrap();
+        let (mut pending, mut spool) = Pending::create(&root, "m", meeting).unwrap();
+        // 11 minutes, written as a live meeting does: 100 ms at a time.
+        let frame = vec![7i16; 1600];
+        for _ in 0..11 * 600 {
+            spool.write(0, &frame).unwrap();
+        }
+        assert_eq!(pending.samples(0), 11 * 60 * 16_000);
+        assert_eq!(segments(&pending.dir, 0), [0, 1, 2]);
+        // Read across the first file's end, while it is written.
+        let pcm = pending.reader(0).read(299.5, 300.5).unwrap();
+        assert_eq!(pcm.len(), 16_000);
+        // Final segments up to 7 minutes: the first file (0–5 min) goes.
+        pending.set_final_until(420.0).unwrap();
+        assert_eq!(segments(&pending.dir, 0), [1, 2]);
+        assert_eq!(pending.samples(0), 11 * 60 * 16_000);
+        assert_eq!(pending.reader(0).read(420.0, 421.0).unwrap().len(), 16_000);
+        assert_eq!(
+            Pending::open(&pending.dir).unwrap().meeting.final_until,
+            420.0
+        );
+        pending
+            .save_final(&Finalized {
+                utterances: Vec::new(),
+                warnings: Vec::new(),
+                voices: Vec::new(),
+            })
+            .unwrap();
+        assert!(segments(&pending.dir, 0).is_empty());
+
+        // A meeting kept with one file per channel is cut into files.
+        let whole: Vec<u8> = (0..SEGMENT + 10).flat_map(|_| 3i16.to_le_bytes()).collect();
+        std::fs::write(pending.dir.join("0.pcm"), whole).unwrap();
+        let opened = Pending::open(&pending.dir).unwrap();
+        assert_eq!(segments(&opened.dir, 0), [0, 1]);
+        assert_eq!(opened.samples(0), SEGMENT + 10);
+        assert!(!opened.dir.join("0.pcm").exists());
+        opened.remove().unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 }

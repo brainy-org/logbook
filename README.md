@@ -193,9 +193,9 @@ A meeting with `--final` is also kept on your computer, in
 `~/.local/share/logbook` on Linux), until its transcript is published:
 
 - the connection drops during the meeting: recording goes on, the CLI
-  connects again as soon as the server answers (no live text for what
-  was said in between), and at the end it uploads its own copy for the
-  final pass (14 MB an hour a channel);
+  connects again as soon as the server answers, sends what was said in
+  between, and the final transcript goes on from where it was: nothing
+  is read twice, and the speakers keep their names;
 - the server cannot be reached at the end (for about a minute: the
   upload is tried again), the connection drops during the final pass,
   or brainy refuses the page: the meeting stays pending
@@ -205,11 +205,13 @@ A meeting with `--final` is also kept on your computer, in
 scripts/client.sh finish            # every pending meeting; or: finish DIR
 ```
 
-picks it up where it stopped. The token is never written: `finish` reads
-`BRAINY_TOKEN` again. The audio on your computer is deleted once the final
-transcript is back, the folder once it is published; the server keeps
-the audio only until the final pass has read it, and the result for an
-hour.
+picks it up where it stopped: it uploads only the audio the final
+transcript has not reached (14 MB an hour a channel). The token is never
+written: `finish` reads `BRAINY_TOKEN` again. The audio on your computer
+is deleted as the final transcript passes it (a meeting of days keeps
+minutes of it), the rest once the final transcript is back, the folder
+once it is published; the server keeps the audio only until the final
+pass has read it, and the result for an hour.
 
 ### The call's audio
 

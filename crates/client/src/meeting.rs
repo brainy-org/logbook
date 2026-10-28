@@ -17,9 +17,11 @@ use tracing::{info, warn};
 
 use crate::brainy::{Brainy, Page};
 use crate::local;
-use crate::pending::{Meeting, Pending, Saved, Spool};
-use crate::remote::{self, Audio, Finalized, Live, Pass, Server};
+use crate::pending::{self, Meeting, Pending, Saved, Spool};
+use crate::remote::{self, Audio, Finalized, KeptChannel, Live, Pass, Server};
 use crate::{history, transcript, voices};
+use logbook_engine::final_pass::Recorded;
+use logbook_engine::parakeet::SAMPLE_RATE;
 
 /// "Up to the end" for `published_until`: JSON has no infinity.
 const END: f64 = f64::MAX;
@@ -57,7 +59,8 @@ impl Backend {
     }
 
     /// A live session; `dir` is the meeting's pending folder, with a
-    /// final pass.
+    /// final pass: on a server, a session opened again after a lost
+    /// connection takes the final pass up from the audio kept there.
     pub async fn live(
         &self,
         channels: Vec<ChannelConfig>,
@@ -68,7 +71,11 @@ impl Backend {
     ) -> Live {
         match self {
             Backend::Server(server) => {
-                remote::live(server, channels, final_pass, audio, events).await
+                let kept = dir.map(|dir| {
+                    let dir = dir.to_path_buf();
+                    Box::new(move |i| pending::reader(&dir, i)) as remote::Kept
+                });
+                remote::live(server, channels, final_pass, audio, kept, events).await
             }
             Backend::Local(local) => {
                 let dir = dir
@@ -292,12 +299,14 @@ async fn write_page(
 
 /// The meeting's final segments as they come: kept in the pending folder,
 /// and written to brainy. A failed write is tried again with the next
-/// segments. Gives the folder back when the meeting is over.
+/// segments: the ones not written yet are held here, never the whole
+/// meeting. Gives the folder back when the meeting is over.
 async fn publisher(
     mut pending: Pending,
     brainy: Option<Brainy>,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Progress>,
 ) -> Pending {
+    let mut unwritten: Vec<Utterance> = Vec::new();
     while let Some(progress) = rx.recv().await {
         let written = async {
             match progress {
@@ -312,10 +321,14 @@ async fn publisher(
                         pending.meeting.voices = voices;
                         pending.save()?;
                     }
+                    pending.set_final_until(until)?;
                     match &brainy {
                         Some(b) => {
-                            let segments = pending.segments()?;
-                            write_page(b, &mut pending, until, &segments).await
+                            unwritten.extend(utterances);
+                            let written = write_page(b, &mut pending, until, &unwritten).await;
+                            let on_page = pending.meeting.published_until;
+                            unwritten.retain(|u| u.start >= on_page);
+                            written
                         }
                         None => Ok(()),
                     }
@@ -597,46 +610,105 @@ fn remember_voices(pending: &Pending) -> Result<()> {
     voices::remember(pending.data(), &pending.id(), &heard)
 }
 
+/// The final pass of a meeting whose live session did not complete it:
+/// the one the server is running, or a new one over the audio kept here
+/// from where its final segments stopped (`final_until`), never from the
+/// start again. Its result follows the segments kept.
 async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalized> {
+    let until = pending.meeting.final_until;
+    if until == END {
+        // Every segment came; only `final.json` was not written.
+        return Ok(Finalized {
+            utterances: pending.segments()?,
+            warnings: Vec::new(),
+            voices: pending.meeting.voices.clone(),
+        });
+    }
+    let from = (until * SAMPLE_RATE as f64) as u64;
+    let offset = from as f64 / SAMPLE_RATE as f64;
+    let rest = |pending: &Pending, i: usize| pending.samples(i).saturating_sub(from);
     let server = match backend {
         Backend::Server(server) => server,
         Backend::Local(local) => {
             pending.set_final_id(None)?;
-            info!("reading the whole meeting again…");
-            let audio = pending.audio()?;
+            info!("reading the meeting again from {offset:.0} s…");
             let meeting = &pending.meeting;
-            return local
-                .final_pass(
-                    meeting.channels.clone(),
-                    meeting.polish,
-                    audio,
-                    &pending.dir,
-                )
-                .await;
+            let channels = meeting
+                .channels
+                .iter()
+                .enumerate()
+                .map(|(i, config)| Recorded {
+                    config: config.clone(),
+                    reader: pending.reader(i),
+                    start: offset,
+                    seconds: rest(pending, i) as f64 / SAMPLE_RATE as f64,
+                })
+                .collect();
+            let result = local
+                .final_pass(channels, offset, meeting.voices.clone(), meeting.polish)
+                .await?;
+            return merged(pending, result);
         }
     };
     if let Some(id) = pending.meeting.final_id.clone() {
         info!("waiting for the final pass…");
         match remote::poll(server, &id).await? {
-            Pass::Done(f) => return Ok(f),
+            Pass::Done(f) => return merged(pending, f),
             Pass::Unknown => warn!("the server no longer has the final pass"),
             Pass::Failed(message) => warn!("{message}"),
         }
         pending.set_final_id(None)?;
     }
-    let audio = pending.audio()?;
     let meeting = &pending.meeting;
-    let id = remote::upload(server, meeting.channels.clone(), meeting.polish, audio).await?;
+    let audio = (0..meeting.channels.len())
+        .map(|i| KeptChannel {
+            reader: pending.reader(i),
+            from,
+            to: from + rest(pending, i),
+        })
+        .collect();
+    let id = remote::upload(
+        server,
+        meeting.channels.clone(),
+        meeting.polish,
+        offset,
+        meeting.voices.clone(),
+        audio,
+    )
+    .await?;
     pending.set_final_id(Some(id.clone()))?;
-    info!("reading the whole meeting again…");
+    info!("reading the meeting again from {offset:.0} s…");
     match remote::poll(server, &id).await? {
-        Pass::Done(f) => Ok(f),
+        Pass::Done(f) => merged(pending, f),
         Pass::Unknown => bail!("the server lost the final pass it had just started"),
         Pass::Failed(message) => {
             pending.set_final_id(None)?;
             bail!("{message}")
         }
     }
+}
+
+/// A final pass's result after the segments kept: those before
+/// `final_until` from the folder, the rest from the result (which may
+/// start earlier: a pass taken up during the meeting).
+fn merged(pending: &Pending, result: Finalized) -> Result<Finalized> {
+    let until = pending.meeting.final_until;
+    let mut utterances: Vec<Utterance> = pending
+        .segments()?
+        .into_iter()
+        .filter(|u| u.start < until)
+        .collect();
+    utterances.extend(result.utterances.into_iter().filter(|u| u.start >= until));
+    let voices = if result.voices.is_empty() {
+        pending.meeting.voices.clone()
+    } else {
+        result.voices
+    };
+    Ok(Finalized {
+        utterances,
+        warnings: result.warnings,
+        voices,
+    })
 }
 
 /// A meeting being recorded: the audio of `audio` goes to the backend,
@@ -681,6 +753,7 @@ pub async fn meeting(
             page: None,
             writer: None,
             published_until: 0.0,
+            final_until: 0.0,
             voices: Vec::new(),
         };
         let (created, writer) =

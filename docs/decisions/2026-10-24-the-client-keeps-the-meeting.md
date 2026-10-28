@@ -10,6 +10,10 @@ server that cannot be reached leaves the meeting pending for
 `logbook finish`. This replaces "a lost connection loses the result" of
 `2026-10-24-final-pass-on-the-live-server.md`.
 
+Since `2026-10-28-meetings-of-hours-and-days.md` the pass is taken up
+from where its segments stopped instead of read again from the start,
+and the client keeps the audio only from there.
+
 ## What was lost before
 
 The only complete copy of the audio was on the side that could go away:

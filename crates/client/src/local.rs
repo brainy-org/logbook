@@ -5,22 +5,22 @@
 //! and loaded once per run.
 //!
 //! The audio stays in the meeting's pending folder: the session records
-//! its final pass's audio there, and a final pass over a pending meeting
-//! copies it there, both deleted as they are read (engine recording.rs).
+//! its final pass's audio there, deleted as it is read (engine
+//! recording.rs), and a final pass over a pending meeting reads the audio
+//! kept there, from where its final segments stopped.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use logbook_engine::final_pass::Recorded;
 use logbook_engine::finalizer::{self, FinalJob};
 use logbook_engine::finals::Finals;
 use logbook_engine::mirror::{Fetching, Mirror};
-use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::polish::{self, Polisher};
-use logbook_engine::protocol::{ChannelConfig, FinalState, ReportRequest};
-use logbook_engine::recording::Recording;
-use logbook_engine::session::{self, Input, Shared};
+use logbook_engine::protocol::{ChannelConfig, FinalState, ReportRequest, SpeakerVoice};
+use logbook_engine::session::{self, Input, Resume, Shared};
 use logbook_engine::{Engine, Options, batcher, polisher, report};
 use serde::Serialize;
 use tokio::sync::OnceCell;
@@ -168,11 +168,7 @@ impl Local {
         dir: &Path,
         events: &mut impl Events,
     ) -> Live {
-        let mut out = Live {
-            finalized: None,
-            final_id: None,
-            intact: true,
-        };
+        let mut out = Live::new();
         let loaded = match self.loaded(1).await {
             Ok(loaded) => loaded,
             Err(error) => {
@@ -191,6 +187,7 @@ impl Local {
                 "local".into(),
                 channels,
                 final_pass,
+                Resume::default(),
                 in_rx,
                 reply,
                 out_tx,
@@ -211,7 +208,7 @@ impl Local {
                 },
                 message = out_rx.recv() => {
                     let done = match message {
-                        Some(m) => remote::handle(m, &mut out, final_pass.is_some(), |u| u, events),
+                        Some(m) => remote::handle(m, &mut out, final_pass.is_some(), Some, events),
                         None => Err(anyhow::anyhow!("the session stopped")),
                     };
                     match done {
@@ -228,35 +225,27 @@ impl Local {
         }
     }
 
-    /// The final pass over a meeting kept here, its audio copied to `dir`
-    /// while it runs.
+    /// The final pass over a meeting kept here, read where it is
+    /// (`channels` from `offset` on the meeting's clock), with the
+    /// meeting's speakers before it.
     pub async fn final_pass(
         &self,
-        channels: Vec<ChannelConfig>,
+        channels: Vec<Recorded>,
+        offset: f64,
+        voices: Vec<SpeakerVoice>,
         polish: bool,
-        audio: Vec<Vec<i16>>,
-        dir: &Path,
     ) -> Result<Finalized> {
         let loaded = self.loaded(1).await?;
-        let dir = dir.to_path_buf();
-        let count = audio.len();
-        let (files, audio_s) = tokio::task::spawn_blocking(move || -> Result<_> {
-            let mut recording = Recording::create(&dir, "final", count)?;
-            let mut longest = 0;
-            for (i, pcm) in audio.iter().enumerate() {
-                let pcm: Vec<f32> = pcm.iter().map(|&s| s as f32 / 32768.0).collect();
-                longest = longest.max(pcm.len());
-                recording.write(i, &pcm)?;
-            }
-            Ok((recording.finish()?, longest as f64 / SAMPLE_RATE as f64))
-        })
-        .await??;
+        let audio_s = channels.iter().map(|c| c.seconds).fold(0.0, f64::max);
         let id = loaded.finals.start(audio_s)?;
         loaded
             .finalizer
             .send(FinalJob::Whole {
                 id: id.clone(),
-                channels: channels.into_iter().zip(files).collect(),
+                channels,
+                files: Vec::new(),
+                offset,
+                voices,
                 polish,
             })
             .context("the finalizer has stopped")?;

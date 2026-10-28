@@ -11,6 +11,10 @@
 //! With a model to clean the transcript up (polisher.rs), and unless the
 //! client declined it, the segments go through it before they are sent, a
 //! part at a time and in order.
+//!
+//! A session may take up a meeting another one started (`Resume`): its
+//! first sample is at `offset` on the meeting's clock, every time it sends
+//! is moved there, and its final pass keeps the meeting's speakers.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -24,7 +28,7 @@ use crate::echo::EchoFilter;
 use crate::parakeet::Transcript;
 use crate::polish::{self, Polished};
 use crate::progressive::{Progressive, Range, Transcribed};
-use crate::protocol::{ChannelConfig, FinalState, ServerMessage, Utterance};
+use crate::protocol::{ChannelConfig, FinalState, ServerMessage, SpeakerVoice, Utterance};
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -72,6 +76,15 @@ pub enum Input {
 
 const TICK: Duration = Duration::from_millis(100);
 
+/// Where a session starts in its meeting (protocol.rs, `Start`).
+#[derive(Clone, Debug, Default)]
+pub struct Resume {
+    /// The meeting's time of the session's first sample, in seconds.
+    pub offset: f64,
+    /// The meeting's speakers so far.
+    pub voices: Vec<SpeakerVoice>,
+}
+
 /// A session's final pass.
 struct Final {
     pass: Progressive,
@@ -89,6 +102,8 @@ struct Final {
     unpolished: Vec<String>,
     /// The model, if the server has one and the client wants it.
     polisher: Option<Sender<PolishJob>>,
+    /// The meeting's time of the session's first sample.
+    offset: f64,
 }
 
 impl Final {
@@ -98,11 +113,13 @@ impl Final {
 }
 
 /// `final_pass`, if asked: whether the model may clean it up.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     shared: &Shared,
     session: String,
     configs: Vec<ChannelConfig>,
     final_pass: Option<bool>,
+    resume: Resume,
     inbox: Receiver<Input>,
     reply: Sender<Input>,
     out: UnboundedSender<ServerMessage>,
@@ -112,7 +129,7 @@ pub fn run(
         let created =
             Recording::create(&shared.recordings, &session, configs.len()).and_then(|recording| {
                 Ok(Final {
-                    pass: shared.engine.progressive(configs.clone())?,
+                    pass: shared.engine.progressive(configs.clone(), &resume.voices)?,
                     recording,
                     sent: Vec::new(),
                     warnings: Vec::new(),
@@ -121,6 +138,7 @@ pub fn run(
                     polishing: false,
                     unpolished: Vec::new(),
                     polisher: shared.polisher.clone().filter(|_| polish),
+                    offset: resume.offset,
                 })
             });
         match created {
@@ -133,7 +151,16 @@ pub fn run(
             }
         }
     }
-    let result = live(shared, &session, configs, &mut fin, inbox, reply, &out);
+    let result = live(
+        shared,
+        &session,
+        configs,
+        resume.offset,
+        &mut fin,
+        inbox,
+        reply,
+        &out,
+    );
     // A pass whose meeting ended but which did not complete is failed, not
     // left running for a client that polls it.
     if let Some(Final { id: Some(id), .. }) = &fin
@@ -151,10 +178,12 @@ pub fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn live(
     shared: &Shared,
     session: &str,
     configs: Vec<ChannelConfig>,
+    offset: f64,
     fin: &mut Option<Final>,
     inbox: Receiver<Input>,
     reply: Sender<Input>,
@@ -182,7 +211,7 @@ fn live(
     }
     let names: Vec<&str> = channels.iter().map(|c| c.name()).collect();
     let polish = fin.as_ref().is_some_and(|f| f.polisher.is_some());
-    info!(session, channels = ?names, final_pass = fin.is_some(), polish, "session started");
+    info!(session, channels = ?names, final_pass = fin.is_some(), polish, offset, "session started");
     let _ = out.send(ServerMessage::Ready);
 
     let submit = |clips: Vec<crate::channel::Clip>| {
@@ -266,14 +295,14 @@ fn live(
                     match &mut echo[i] {
                         Some((_, filter)) => filter.hold(utterance),
                         None => {
-                            let _ = out.send(ServerMessage::Utterance(utterance));
+                            let _ = out.send(ServerMessage::Utterance(utterance.shifted(offset)));
                         }
                     }
                 }
             }
             for (source, filter) in echo.iter_mut().flatten() {
                 for utterance in filter.release(channels[*source].settled()) {
-                    let _ = out.send(ServerMessage::Utterance(utterance));
+                    let _ = out.send(ServerMessage::Utterance(utterance.shifted(offset)));
                 }
                 // The meeting's words: only at debug (RUST_LOG=debug).
                 for seen in filter.take_seen() {
@@ -430,13 +459,24 @@ fn release(
     }
 }
 
-/// Final segments out to the client, and kept for `Finals`.
+/// Final segments out to the client, and kept for `Finals`, on the
+/// meeting's clock.
 fn send(
     f: &mut Final,
     until: f64,
     utterances: Vec<Utterance>,
     out: &UnboundedSender<ServerMessage>,
 ) {
+    let utterances: Vec<Utterance> = utterances
+        .into_iter()
+        .map(|u| u.shifted(f.offset))
+        .collect();
+    // f64::MAX ("everything") stays as it is.
+    let until = if until == f64::MAX {
+        until
+    } else {
+        until + f.offset
+    };
     f.sent.extend(utterances.iter().cloned());
     // Every speaker's voice as it stands: a few kB a minute, and the client
     // names a speaker from it before the segment goes on the page.
