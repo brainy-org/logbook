@@ -248,6 +248,13 @@ select:disabled {
 .prose-report code {
   @apply rounded bg-neutral-100 px-1 font-mono text-[0.9em] dark:bg-neutral-800;
 }
+/* A code block: one box, its lines without inline code's background. */
+.prose-report pre {
+  @apply my-3 overflow-x-auto rounded-md bg-neutral-100 px-3 py-2 font-mono text-[0.85em] leading-normal dark:bg-neutral-800;
+}
+.prose-report pre code {
+  @apply bg-transparent p-0 text-[1em];
+}
 .prose-report blockquote {
   @apply my-3 border-l-2 border-neutral-300 pl-3 text-neutral-600 dark:border-neutral-600 dark:text-neutral-400;
 }
@@ -263,7 +270,11 @@ select:disabled {
   transition: height 90ms linear;
 }
 
-/* The notes' editor (NotesEditor.tsx): its placeholder, its screenshots. */
+/* The notes' editor (NotesEditor.tsx): a line per point, close together;
+   its placeholder, its screenshots. */
+.notes-editor p {
+  @apply my-1;
+}
 .notes-editor p.is-editor-empty:first-child::before {
   @apply pointer-events-none float-left h-0 text-neutral-400;
   content: attr(data-placeholder);
