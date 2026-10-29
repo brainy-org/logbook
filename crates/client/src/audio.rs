@@ -168,6 +168,12 @@ pub fn capture(
     tx: UnboundedSender<(u8, Vec<i16>)>,
     stop: std::sync::mpsc::Receiver<()>,
 ) -> Result<String> {
+    // Android's microphone through AAudio itself: cpal sets no input
+    // preset (docs/decisions/2026-10-29-android-app.md, "The microphone").
+    #[cfg(target_os = "android")]
+    if let (Source::Microphone, None) = (source, &device) {
+        return aaudio::capture(channel, start, tx, stop);
+    }
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<String>>();
     std::thread::spawn(move || {
         let timeline = Arc::new(Mutex::new(Timeline { start, sent: 0 }));
@@ -416,6 +422,163 @@ impl Timeline {
         let silence = (to - self.sent as i64).max(0) as usize;
         self.sent += silence as u64;
         silence
+    }
+}
+
+/// Android's microphone opened through AAudio directly, for its input
+/// preset: `VOICE_RECOGNITION`, the one meant for speech heard from afar
+/// (no handset noise suppression or echo cancelling, the platform's AGC off
+/// by contract), else `UNPROCESSED`; never `VOICE_COMMUNICATION`, whose
+/// noise suppression takes distant voices for noise. cpal 0.18 opens AAudio
+/// streams without a preset. The contract is cpal's capture's: mono 16 kHz
+/// frames on `channel`, on the session's clock (`Timeline`), until `stop`.
+#[cfg(target_os = "android")]
+mod aaudio {
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use anyhow::{Context, Result};
+    use ndk::audio::{
+        AudioCallbackResult, AudioDirection, AudioFormat, AudioInputPreset, AudioSharingMode,
+        AudioStream, AudioStreamBuilder,
+    };
+    use tokio::sync::mpsc::UnboundedSender;
+
+    use super::{IDLE_TICK, RecvTimeoutError, Resampler, SAMPLE_RATE, Timeline};
+
+    /// Tried in this order.
+    const PRESETS: [AudioInputPreset; 2] = [
+        AudioInputPreset::VoiceRecognition,
+        AudioInputPreset::Unprocessed,
+    ];
+
+    pub fn capture(
+        channel: u8,
+        start: Instant,
+        tx: UnboundedSender<(u8, Vec<i16>)>,
+        stop: std::sync::mpsc::Receiver<()>,
+    ) -> Result<String> {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<String>>();
+        std::thread::spawn(move || {
+            let timeline = Arc::new(Mutex::new(Timeline { start, sent: 0 }));
+            let mut failures = Vec::new();
+            let mut opened = None;
+            for preset in PRESETS {
+                match open(preset, channel, &timeline, tx.clone()) {
+                    Ok(stream) => {
+                        opened = Some((stream, preset));
+                        break;
+                    }
+                    Err(error) => failures.push(format!("{preset:?}: {error:#}")),
+                }
+            }
+            let Some((stream, preset)) = opened else {
+                let _ = ready_tx.send(Err(anyhow::anyhow!(
+                    "AAudio opened no microphone ({})",
+                    failures.join("; ")
+                )));
+                return;
+            };
+            let name = format!(
+                "microphone (AAudio, {preset:?}, {} Hz, {} channel(s))",
+                stream.sample_rate(),
+                stream.channel_count()
+            );
+            let _ = ready_tx.send(Ok(name));
+            // A stream that stops delivering (the device taken away)
+            // still moves along the clock, as cpal's does.
+            while let Err(RecvTimeoutError::Timeout) = stop.recv_timeout(IDLE_TICK) {
+                let silence = timeline.lock().unwrap().idle(Instant::now());
+                if silence > 0 {
+                    let _ = tx.send((channel, vec![0; silence]));
+                }
+            }
+            let _ = stream.request_stop();
+            drop(stream);
+        });
+        ready_rx
+            .recv()
+            .context("the recording thread ended")?
+            .context("could not record the Microphone")
+    }
+
+    /// A started input stream with `preset`: 16-bit mono at 16 kHz asked
+    /// for, whatever AAudio gives taken (mixed down, resampled).
+    fn open(
+        preset: AudioInputPreset,
+        channel: u8,
+        timeline: &Arc<Mutex<Timeline>>,
+        tx: UnboundedSender<(u8, Vec<i16>)>,
+    ) -> Result<AudioStream> {
+        let (format_tx, format_rx) = std::sync::mpsc::channel::<(usize, i32, bool)>();
+        let timeline = timeline.clone();
+        let mut shape: Option<(usize, Resampler, bool)> = None;
+        let builder = AudioStreamBuilder::new()?
+            .direction(AudioDirection::Input)
+            .sharing_mode(AudioSharingMode::Shared)
+            .input_preset(preset)
+            .format(AudioFormat::PCM_I16)
+            .channel_count(1)
+            .sample_rate(SAMPLE_RATE as i32)
+            .data_callback(Box::new(move |_stream, data, frames| {
+                // The stream's shape, sent once it is open (below).
+                if shape.is_none() {
+                    if let Ok((channels, rate, float)) = format_rx.try_recv() {
+                        shape = Some((
+                            channels,
+                            Resampler::new(rate as f64, SAMPLE_RATE as f64),
+                            float,
+                        ));
+                    } else {
+                        return AudioCallbackResult::Continue;
+                    }
+                }
+                let (channels, resampler, float) = shape.as_mut().unwrap();
+                let n = frames.max(0) as usize * *channels;
+                let out = if *float {
+                    // SAFETY: AAudio hands `frames` frames of the stream's
+                    // format (f32 here) at `data`, valid for this call.
+                    let samples = unsafe { std::slice::from_raw_parts(data as *const f32, n) };
+                    resampler.push(
+                        samples
+                            .chunks(*channels)
+                            .map(|f| f.iter().sum::<f32>() / f.len() as f32),
+                    )
+                } else {
+                    // SAFETY: as above, 16-bit samples.
+                    let samples = unsafe { std::slice::from_raw_parts(data as *const i16, n) };
+                    resampler.push(samples.chunks(*channels).map(|f| {
+                        f.iter().map(|&s| s as f32).sum::<f32>() / (f.len() as f32 * 32768.0)
+                    }))
+                };
+                if !out.is_empty() {
+                    let silence = timeline.lock().unwrap().gap(Instant::now(), out.len());
+                    if silence > 0 {
+                        let _ = tx.send((channel, vec![0; silence]));
+                    }
+                    let _ = tx.send((channel, out));
+                }
+                AudioCallbackResult::Continue
+            }))
+            .error_callback(Box::new(|_stream, error| {
+                tracing::warn!("microphone: AAudio stopped the stream ({error:?})");
+            }));
+        let stream = builder.open_stream()?;
+        let float = match stream.format() {
+            AudioFormat::PCM_I16 => false,
+            AudioFormat::PCM_Float => true,
+            other => anyhow::bail!("AAudio gave {other:?} samples"),
+        };
+        let _ = format_tx.send((
+            stream.channel_count().max(1) as usize,
+            stream.sample_rate(),
+            float,
+        ));
+        if stream.input_preset() != preset {
+            anyhow::bail!("AAudio gave {:?} instead", stream.input_preset());
+        }
+        stream.request_start()?;
+        Ok(stream)
     }
 }
 

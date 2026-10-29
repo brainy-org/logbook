@@ -223,9 +223,10 @@ enum Command {
         #[arg(long)]
         no_aec: bool,
         /// Raise the microphone's level: "auto" follows the voice (a quiet
-        /// room, someone far from the mic), a number is that many dB (0 to
-        /// 50), "off" keeps the device's level.
-        #[arg(long, default_value = "off", value_name = "auto|DB|off")]
+        /// room, someone far from the mic), "max" the same pushed for
+        /// distant voices (more background noise), a number is that many
+        /// dB (0 to 50), "off" keeps the device's level.
+        #[arg(long, default_value = "off", value_name = "auto|max|DB|off")]
         mic_gain: aec::Gain,
         #[command(flatten)]
         publish: Publish,

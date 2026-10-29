@@ -615,9 +615,24 @@ where
 }
 
 fn http() -> Result<reqwest::Client> {
-    // reqwest is built without a crypto provider (rustls on ring).
+    Ok(http_builder().build()?)
+}
+
+/// Every HTTP client's builder (the server's, brainy's). reqwest is built
+/// without a crypto provider (rustls on ring): installed here. On Android
+/// the certificates are Mozilla's roots: reqwest's platform verifier there
+/// needs a JNI context and a Kotlin component the app does not set up
+/// (docs/decisions/2026-10-29-android-app.md, "TLS").
+pub(crate) fn http_builder() -> reqwest::ClientBuilder {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    Ok(reqwest::Client::builder().build()?)
+    let builder = reqwest::Client::builder();
+    #[cfg(target_os = "android")]
+    let builder = builder.tls_certs_only(
+        webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .filter_map(|der| reqwest::Certificate::from_der(der).ok()),
+    );
+    builder
 }
 
 /// A channel kept here, to upload: `reader` from sample `from` to `to`

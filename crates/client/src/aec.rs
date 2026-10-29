@@ -52,6 +52,26 @@ pub enum Gain {
     Auto,
     /// By this many dB, 0 to 50, with a limiter.
     Fixed(f32),
+    /// `Auto` pushed for voices far from the mic (the Android app's
+    /// default): AGC2's highest gain (50 dB) reached sooner and kept with
+    /// more background noise under it. The limiter still keeps it from
+    /// clipping (docs/decisions/2026-10-29-android-app.md).
+    Max,
+}
+
+/// `Gain::Max`'s adaptive controller: 50 dB at most, as `Auto` (the most
+/// AGC2's design and the fixed gain's range allow); starting at 30 dB, not
+/// 15, and moving 10 dB a second, not 6, so that a faint voice is raised
+/// within a few seconds; noise let up to -40 dBFS, not -50, which is the
+/// cap that otherwise holds the gain down in a room with any hum.
+fn max_adaptive() -> AdaptiveDigital {
+    AdaptiveDigital {
+        max_gain_db: 50.0,
+        initial_gain_db: 30.0,
+        max_gain_change_db_per_second: 10.0,
+        max_output_noise_level_dbfs: -40.0,
+        ..AdaptiveDigital::default()
+    }
 }
 
 impl std::str::FromStr for Gain {
@@ -61,10 +81,13 @@ impl std::str::FromStr for Gain {
     fn from_str(s: &str) -> Result<Self, String> {
         match s {
             "auto" => Ok(Self::Auto),
+            "max" => Ok(Self::Max),
             "off" | "0" => Ok(Self::Off),
             _ => match s.trim_end_matches("dB").parse::<f32>() {
                 Ok(db) if (0.0..50.0).contains(&db) => Ok(Self::Fixed(db)),
-                _ => Err(format!("{s:?}: \"auto\", \"off\" or dB from 0 to under 50")),
+                _ => Err(format!(
+                    "{s:?}: \"auto\", \"max\", \"off\" or dB from 0 to under 50"
+                )),
             },
         }
     }
@@ -124,6 +147,10 @@ impl Canceller {
             Gain::Off => None,
             Gain::Auto => Some(GainController2 {
                 adaptive_digital: Some(AdaptiveDigital::default()),
+                ..Default::default()
+            }),
+            Gain::Max => Some(GainController2 {
+                adaptive_digital: Some(max_adaptive()),
                 ..Default::default()
             }),
             Gain::Fixed(gain_db) => Some(GainController2 {
@@ -273,11 +300,14 @@ mod tests {
         // tone is not: measured on a recording instead (the decision record).
         let auto = run(Gain::Auto, &near);
         assert_eq!(auto.len(), off.len());
+        // `Max` is AGC2 with other settings: accepted, every sample out.
+        assert_eq!(run(Gain::Max, &near).len(), off.len());
     }
 
     #[test]
     fn gains_are_read() {
         assert_eq!("auto".parse(), Ok(Gain::Auto));
+        assert_eq!("max".parse(), Ok(Gain::Max));
         assert_eq!("off".parse(), Ok(Gain::Off));
         assert_eq!("12".parse(), Ok(Gain::Fixed(12.0)));
         assert_eq!("6dB".parse(), Ok(Gain::Fixed(6.0)));

@@ -65,13 +65,10 @@ struct Inserted {
 
 impl Brainy {
     pub fn new(url: &str, token: &str) -> Result<Self> {
-        // reqwest is built without a crypto provider (rustls on ring, as
-        // galley-client).
-        let _ = rustls::crypto::ring::default_provider().install_default();
         Ok(Self {
             base: url.trim_end_matches('/').to_string(),
             token: token.to_string(),
-            http: reqwest::Client::builder().build()?,
+            http: crate::remote::http_builder().build()?,
         })
     }
 
