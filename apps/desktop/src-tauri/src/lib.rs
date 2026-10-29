@@ -408,13 +408,19 @@ async fn finish_pending(app: State<'_, App>, handle: AppHandle) -> Answer<()> {
     tauri::async_runtime::spawn(async move {
         for dir in dirs {
             let result = async {
-                let mut pending = Pending::open(&dir)?;
+                // One being recorded, or finished elsewhere, is left alone.
+                let Some(mut pending) = Pending::claim(&dir)? else {
+                    return Ok(None);
+                };
                 backend.prepare(false, 1).await?;
-                meeting::finish(&backend, &mut pending, &credentials).await
+                meeting::finish(&backend, &mut pending, &credentials)
+                    .await
+                    .map(Some)
             }
             .await;
             match result {
-                Ok(_) => tracing::info!("finished the pending meeting {}", dir.display()),
+                Ok(Some(_)) => tracing::info!("finished the pending meeting {}", dir.display()),
+                Ok(None) => tracing::info!("{} is being recorded or finished", dir.display()),
                 Err(error) => tracing::warn!("{error:#}"),
             }
         }

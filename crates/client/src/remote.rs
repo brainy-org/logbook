@@ -696,7 +696,11 @@ pub async fn upload(
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
-        bail!("the server refused the upload ({status}): {}", text.trim());
+        return Err(crate::finishing::HttpStatus {
+            status: status.as_u16(),
+            message: format!("the server refused the upload ({status}): {}", text.trim()),
+        }
+        .into());
     }
     let started: Started = response.json().await?;
     Ok(started.id)

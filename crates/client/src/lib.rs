@@ -1,7 +1,8 @@
 //! logbook's client, a library: what the CLI and the desktop app share.
 //! The audio taken (audio.rs, aec.rs), the session on logbook-server
 //! (remote.rs) or in this process (local.rs), the meeting from its first
-//! sample to its page (meeting.rs): kept until published (pending.rs),
+//! sample to its page (meeting.rs): kept until published (pending.rs) and
+//! finished later if it could not be then (finishing.rs),
 //! written as Markdown (transcript.rs) into brainy (brainy.rs), its
 //! speakers named from voices known on this computer (voices.rs), and,
 //! for the app, kept once published (history.rs). Messages for the person
@@ -11,6 +12,7 @@
 pub mod aec;
 pub mod audio;
 pub mod brainy;
+pub mod finishing;
 pub mod history;
 pub mod local;
 pub mod meeting;

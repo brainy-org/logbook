@@ -35,7 +35,8 @@ crates/client/   the client, a library the CLI and the app share: the audio (aud
                  the call's echo cancelled and the mic's level raised: aec.rs), the
                  session on a server with reconnection (remote.rs) or in this process
                  (local.rs), the meeting from its first sample to its page (meeting.rs):
-                 kept until published (pending.rs), the final transcript as Markdown a
+                 kept until published (pending.rs) and finished later, waiting for
+                 the server if need be (finishing.rs), the final transcript as Markdown a
                  part at a time (transcript.rs) into brainy as it comes (brainy.rs),
                  the report, speakers named from voices known on this computer
                  (voices.rs), and for the app the meetings kept (history.rs); a
@@ -156,6 +157,11 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
   the `meetings` router of the server's `main.rs`, under
   `auth::require_token`. One added beside it answers anyone who reaches
   the server, and nothing fails to say so (docs/protocol.md, "Tokens").
+- **A pending meeting is touched only by the process holding its
+  `.lock`** (`Pending::create` while it is recorded, `Pending::claim` to
+  finish it; `open` only reads). A `finish` that skipped the lock would
+  upload and publish a meeting still being recorded, or publish one
+  twice (client `finishing.rs`).
 - **logbook-server holds no brainy credentials.** It returns the final
   transcript and the report; the client writes the page with the person's
   own token (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).

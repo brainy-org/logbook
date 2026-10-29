@@ -23,6 +23,9 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   the app only chooses its options (`Settings::publish`, `sources`). A
   step added in `recorder.rs` is a step `logbook finish` skips for the
   same meeting left pending.
+- **Pending meetings are finished through `Pending::claim`**
+  (`finish_pending`): a meeting the recorder (or a `logbook finish`)
+  holds is left to it. `Pending::open` only reads, for the list.
 - **Secrets never go to the pages.** `get_settings` says whether the
   token and the key are set; `save_settings` takes new ones and writes
   them to `secrets.json` (mode 600, beside `settings.json`). A command that returns one puts it within reach

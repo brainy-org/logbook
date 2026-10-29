@@ -19,10 +19,9 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use logbook_client::meeting::{self, Backend, Credentials, Outcome};
-use logbook_client::pending::Pending;
 use logbook_client::remote::{self, Server};
 use logbook_client::series::{self, Limits};
-use logbook_client::{aec, audio, local, voices};
+use logbook_client::{aec, audio, finishing, local, voices};
 use logbook_engine::protocol::{ChannelConfig, Codec, Utterance};
 
 #[derive(Parser)]
@@ -242,6 +241,11 @@ enum Command {
         brainy_url: Option<String>,
         #[arg(long, env = "BRAINY_TOKEN", hide_env_values = true)]
         brainy_token: Option<String>,
+        /// Until the server (and brainy) can be reached: try again every
+        /// 5 s, doubling up to 5 minutes, for as long as it takes; a
+        /// meeting refused for another reason is left pending.
+        #[arg(long)]
+        wait: bool,
     },
     /// The voices known by name, and the last meetings' speakers.
     Speakers {
@@ -370,36 +374,20 @@ async fn run(cli: Cli) -> Result<()> {
             dir,
             brainy_url,
             brainy_token,
+            wait,
         } => {
-            let dirs = match dir {
-                Some(dir) => vec![dir],
-                None => Pending::list(&data)?,
-            };
-            if dirs.is_empty() {
-                eprintln!("no meeting is pending");
-            }
             let brainy = Credentials {
                 url: brainy_url,
                 token: brainy_token,
             };
-            let mut failed = 0;
-            for dir in dirs {
-                eprintln!("{}:", dir.display());
-                let result = async {
-                    let mut pending = Pending::open(&dir)?;
-                    meeting::finish(server, &mut pending, &brainy).await
-                }
-                .await;
-                match result {
-                    Ok(outcome) => print_outcome(&outcome),
-                    Err(error) => {
-                        eprintln!("  {error:#}");
-                        failed += 1;
-                    }
-                }
+            let summary =
+                finishing::finish_all(server, &data, dir.as_deref(), &brainy, wait, &mut Printed)
+                    .await?;
+            if summary.finished == 0 && summary.left == 0 {
+                eprintln!("no meeting is pending");
             }
-            if failed > 0 {
-                bail!("{failed} meeting(s) still pending");
+            if summary.left > 0 {
+                bail!("{} meeting(s) still pending", summary.left);
             }
             Ok(())
         }
@@ -483,6 +471,30 @@ fn list_speakers(data: &Path) -> Result<()> {
 }
 
 /// The final transcript and the report, when they went to no page.
+/// `finish`'s progress, on stderr (the transcripts on stdout).
+struct Printed;
+
+impl finishing::Progress for Printed {
+    fn started(&mut self, dir: &Path) {
+        eprintln!("{}:", dir.display());
+    }
+    fn finished(&mut self, _dir: &Path, outcome: &Outcome) {
+        print_outcome(outcome);
+    }
+    fn busy(&mut self, _dir: &Path) {
+        eprintln!("  being recorded, or finished by another process: left to it");
+    }
+    fn failed(&mut self, _dir: &Path, error: &anyhow::Error, retry: bool) {
+        eprintln!("  {error:#}");
+        if !retry && !finishing::is_transient(error) {
+            eprintln!("  (waiting would not fix this: not tried again)");
+        }
+    }
+    fn waiting(&mut self, wait: std::time::Duration) {
+        eprintln!("trying again in {} s…", wait.as_secs());
+    }
+}
+
 fn print_outcome(outcome: &Outcome) {
     if outcome.silent {
         eprintln!("nothing was said: nothing published");

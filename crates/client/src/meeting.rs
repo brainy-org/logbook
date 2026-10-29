@@ -17,6 +17,7 @@ use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::brainy::{Brainy, Page};
+use crate::finishing::Transient;
 use crate::local;
 use crate::pending::{self, Meeting, Pending, Saved, Spool};
 use crate::remote::{self, Audio, Finalized, KeptChannel, Live, Pass, Server};
@@ -728,7 +729,10 @@ async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalize
     info!("reading the meeting again from {offset:.0} s…");
     match remote::poll(server, &id).await? {
         Pass::Done(f) => merged(pending, f)?.context("the final pass started after the audio sent"),
-        Pass::Unknown => bail!("the server lost the final pass it had just started"),
+        // It restarted: once it is back, the audio goes again.
+        Pass::Unknown => {
+            Err(Transient("the server lost the final pass it had just started".into()).into())
+        }
         Pass::Failed(message) => {
             pending.set_final_id(None)?;
             bail!("{message}")

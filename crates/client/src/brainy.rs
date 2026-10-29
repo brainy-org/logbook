@@ -8,6 +8,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::finishing::HttpStatus;
 use crate::transcript::escape;
 
 /// brainy refuses Markdown longer than 200 000 characters in one call
@@ -286,10 +287,14 @@ impl Brainy {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
-            bail!(
-                "brainy answered {status} to {method} {path}: {}",
-                text.trim()
-            );
+            return Err(HttpStatus {
+                status: status.as_u16(),
+                message: format!(
+                    "brainy answered {status} to {method} {path}: {}",
+                    text.trim()
+                ),
+            }
+            .into());
         }
         Ok(response.json().await?)
     }

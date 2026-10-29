@@ -15,6 +15,11 @@
 //! `final.json`. The folder goes away once the transcript is published;
 //! until then `logbook finish` picks it up again. No brainy token is ever
 //! written.
+//!
+//! `.lock` is held (an OS lock on the file, gone with the process) by the
+//! process that records the meeting or finishes it: `claim` leaves a
+//! meeting another holds alone, so `finish` (or the app) never finishes a
+//! meeting still being recorded, nor one being finished elsewhere.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -82,6 +87,9 @@ pub struct Saved {
 pub struct Pending {
     pub dir: PathBuf,
     pub meeting: Meeting,
+    /// `.lock`, held while this process records or finishes the meeting;
+    /// None when only read (`open`).
+    lock: Option<File>,
 }
 
 /// The audio being written: each channel's file being written and how
@@ -108,7 +116,12 @@ impl Pending {
             n += 1;
             dir = root.join(format!("{name}-{n}"));
         }
-        let pending = Self { dir, meeting };
+        let lock = lock(&dir)?.context("a new folder is locked by another process")?;
+        let pending = Self {
+            dir,
+            meeting,
+            lock: Some(lock),
+        };
         pending.save()?;
         let count = pending.meeting.channels.len();
         let spool = Spool {
@@ -119,19 +132,31 @@ impl Pending {
         Ok((pending, spool))
     }
 
+    /// The meeting, to read: whoever holds it may change it meanwhile.
     pub fn open(dir: &Path) -> Result<Self> {
         let path = dir.join("meeting.json");
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("could not read {}", path.display()))?;
-        let pending = Self {
+        Ok(Self {
             dir: dir.to_path_buf(),
             meeting: serde_json::from_str(&text)
                 .with_context(|| format!("could not read {}", path.display()))?,
+            lock: None,
+        })
+    }
+
+    /// The meeting, to finish: held by this process until dropped. None
+    /// if another holds it (it is being recorded, or finished elsewhere).
+    pub fn claim(dir: &Path) -> Result<Option<Self>> {
+        let Some(lock) = lock(dir)? else {
+            return Ok(None);
         };
+        let mut pending = Self::open(dir)?;
+        pending.lock = Some(lock);
         for i in 0..pending.meeting.channels.len() {
             split_whole_file(&pending.dir, i)?;
         }
-        Ok(pending)
+        Ok(Some(pending))
     }
 
     /// Every pending meeting, oldest first.
@@ -320,7 +345,13 @@ impl Pending {
             .unwrap_or(Path::new("."))
     }
 
-    pub fn remove(&self) -> Result<()> {
+    pub fn remove(&mut self) -> Result<()> {
+        // No longer listed, then let go (Windows removes no open file),
+        // then gone.
+        let path = self.dir.join("meeting.json");
+        std::fs::remove_file(&path)
+            .with_context(|| format!("could not remove {}", path.display()))?;
+        self.lock = None;
         std::fs::remove_dir_all(&self.dir)
             .with_context(|| format!("could not remove {}", self.dir.display()))
     }
@@ -329,6 +360,24 @@ impl Pending {
         let path = self.dir.join("meeting.json");
         std::fs::write(&path, serde_json::to_vec_pretty(&self.meeting)?)
             .with_context(|| format!("could not write {}", path.display()))
+    }
+}
+
+/// `dir`'s `.lock`, held; None if another holds it.
+fn lock(dir: &Path) -> Result<Option<File>> {
+    let path = dir.join(".lock");
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("could not open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("could not lock {}", path.display()))
+        }
     }
 }
 
@@ -462,7 +511,7 @@ mod tests {
             voices: Vec::new(),
         };
         let (mut pending, mut spool) = Pending::create(&root, "m", meeting.clone()).unwrap();
-        let (second, _) = Pending::create(&root, "m", meeting).unwrap();
+        let (mut second, _) = Pending::create(&root, "m", meeting).unwrap();
         assert!(second.dir.ends_with("m-2"));
         second.remove().unwrap();
         spool.write(0, &[1, -2, 3]).unwrap();
@@ -475,7 +524,12 @@ mod tests {
 
         let dirs = Pending::list(&root).unwrap();
         assert_eq!(dirs.len(), 1);
-        let opened = Pending::open(&dirs[0]).unwrap();
+        // Being recorded: read, not claimed, until its recorder lets go.
+        assert!(Pending::claim(&dirs[0]).unwrap().is_none());
+        assert!(Pending::open(&dirs[0]).is_ok());
+        drop(pending);
+        let mut opened = Pending::claim(&dirs[0]).unwrap().unwrap();
+        assert!(Pending::claim(&dirs[0]).unwrap().is_none(), "claimed once");
         assert_eq!(opened.meeting.final_id.as_deref(), Some("abc"));
         let read = opened.reader(0).read(0.0, 3.0 / 16_000.0).unwrap();
         assert_eq!(read.len(), 3);
@@ -525,10 +579,13 @@ mod tests {
         pending.save_final(&Finalized::default()).unwrap();
         assert!(segments(&pending.dir, 0).is_empty());
 
-        // A meeting kept with one file per channel is cut into files.
+        // A meeting kept with one file per channel is cut into files
+        // when it is claimed to be finished.
         let whole: Vec<u8> = (0..SEGMENT + 10).flat_map(|_| 3i16.to_le_bytes()).collect();
         std::fs::write(pending.dir.join("0.pcm"), whole).unwrap();
-        let opened = Pending::open(&pending.dir).unwrap();
+        let dir = pending.dir.clone();
+        drop(pending);
+        let mut opened = Pending::claim(&dir).unwrap().unwrap();
         assert_eq!(segments(&opened.dir, 0), [0, 1]);
         assert_eq!(opened.samples(0), SEGMENT + 10);
         assert!(!opened.dir.join("0.pcm").exists());

@@ -228,10 +228,19 @@ A meeting with `--final` is also kept on your computer, in
 
 ```bash
 scripts/client.sh finish            # every pending meeting; or: finish DIR
+scripts/client.sh finish --wait     # and again until the server and brainy answer
 ```
 
 picks it up where it stopped: it uploads only the audio the final
-transcript has not reached (14 MB an hour a channel). The token is never
+transcript has not reached (14 MB an hour a channel). Oldest first. With
+`--wait` it tries again whatever could not reach the server or brainy
+(or got a "not now" from them: 5xx, 429), every 5 s, doubling up to 5
+minutes, until each is finished, for as long as it takes (Ctrl-C to
+stop); a meeting refused for another reason (brainy refusing the page
+with a 4xx, a token refused, a final pass that failed) is reported and
+left pending for that run, since waiting would not fix it. A meeting
+still being recorded, or being finished by another `finish` or by the
+app, is left to that process. The token is never
 written: `finish` reads `BRAINY_TOKEN` again. The audio on your computer
 is deleted as the final transcript passes it (a meeting of days keeps
 minutes of it), the rest once the final transcript is back, the folder
