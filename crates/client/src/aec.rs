@@ -142,6 +142,49 @@ struct Canceller {
     far_block: Vec<i16>,
     near_block: Vec<i16>,
     scratch: Vec<i16>,
+    /// The mic's level before and after, logged every `LEVELS` blocks:
+    /// what the gain did, which nothing else shows.
+    levels: Levels,
+}
+
+/// Blocks between two lines of `Levels` in the log: 10 s.
+const LEVELS: usize = 1000;
+
+/// The mic's energy and peak over the blocks since the last line, before
+/// the processing and after it.
+#[derive(Default)]
+struct Levels {
+    blocks: usize,
+    energy_in: f64,
+    energy_out: f64,
+    peak_in: i16,
+    peak_out: i16,
+}
+
+impl Levels {
+    fn add(&mut self, before: &[i16], after: &[i16]) {
+        for &s in before {
+            self.energy_in += f64::from(s) * f64::from(s);
+            self.peak_in = self.peak_in.max(s.saturating_abs());
+        }
+        for &s in after {
+            self.energy_out += f64::from(s) * f64::from(s);
+            self.peak_out = self.peak_out.max(s.saturating_abs());
+        }
+        self.blocks += 1;
+        if self.blocks == LEVELS {
+            let n = (LEVELS * BLOCK) as f64;
+            let db = |x: f64| 20.0 * (x / 32768.0).max(1e-6).log10();
+            tracing::info!(
+                "mic level over 10 s: in {:.1} dBFS RMS (peak {:.1}), out {:.1} dBFS RMS (peak {:.1})",
+                db((self.energy_in / n).sqrt()),
+                db(f64::from(self.peak_in)),
+                db((self.energy_out / n).sqrt()),
+                db(f64::from(self.peak_out)),
+            );
+            *self = Self::default();
+        }
+    }
 }
 
 impl Canceller {
@@ -181,6 +224,7 @@ impl Canceller {
             far_block: vec![0; BLOCK],
             near_block: vec![0; BLOCK],
             scratch: vec![0; BLOCK],
+            levels: Levels::default(),
         }
     }
 
@@ -216,7 +260,10 @@ impl Canceller {
                 .apm
                 .process_capture_i16(&self.near_block, &mut self.scratch)
             {
-                Ok(()) => out.extend_from_slice(&self.scratch),
+                Ok(()) => {
+                    self.levels.add(&self.near_block, &self.scratch);
+                    out.extend_from_slice(&self.scratch);
+                }
                 Err(_) => out.extend_from_slice(&self.near_block),
             }
         }

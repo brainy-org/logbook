@@ -90,7 +90,7 @@ Built with `scripts/desktop.sh android` (README).
 | `src-tauri/src/android.rs` | before the microphone opens: the permissions, the battery exemption asked once, the foreground service started (its Stop is `Recorder::stop`); at the end the service stopped; `Finisher`, pending meetings finished again with backoff while the app lives |
 | `plugins/recording/` | `tauri-plugin-recording`: the Rust handle (`RecordingExt`, `run_mobile_plugin`) and `android/` (Kotlin): `RecordingPlugin` (permissions, start, update, stop, battery optimization) and `RecordingService` (foreground service of type microphone, its notification, the wake and Wi-Fi locks); its manifest brings the permissions and the service |
 | `src-tauri/gen/android/` | the Android project `tauri android init` made (kept; its build outputs are not): `minSdk` 28, `MainActivity` keeping the pages inside the system bars and the keyboard |
-| crates/client `audio.rs`, `aaudio` | the microphone through AAudio with the `VOICE_RECOGNITION` preset (cpal sets none) |
+| crates/client `audio.rs`, `aaudio` | the microphone through AAudio with the `UNPROCESSED` preset, else `VOICE_RECOGNITION` (cpal sets none) |
 
 ### Traps
 

@@ -426,10 +426,11 @@ impl Timeline {
 }
 
 /// Android's microphone opened through AAudio directly, for its input
-/// preset: `VOICE_RECOGNITION`, the one meant for speech heard from afar
-/// (no handset noise suppression or echo cancelling, the platform's AGC off
-/// by contract), else `UNPROCESSED`; never `VOICE_COMMUNICATION`, whose
-/// noise suppression takes distant voices for noise. cpal 0.18 opens AAudio
+/// preset: `UNPROCESSED`, the raw microphone, whose level our gain raises
+/// (aec.rs), else `VOICE_RECOGNITION`, meant for speech heard from afar but
+/// shaped by the vendor's HAL (compressed on the S10e); never
+/// `VOICE_COMMUNICATION`, whose noise suppression takes distant voices for
+/// noise (docs/decisions/2026-10-29-android-app.md). cpal 0.18 opens AAudio
 /// streams without a preset. The contract is cpal's capture's: mono 16 kHz
 /// frames on `channel`, on the session's clock (`Timeline`), until `stop`.
 #[cfg(target_os = "android")]
@@ -448,8 +449,8 @@ mod aaudio {
 
     /// Tried in this order.
     const PRESETS: [AudioInputPreset; 2] = [
-        AudioInputPreset::VoiceRecognition,
         AudioInputPreset::Unprocessed,
+        AudioInputPreset::VoiceRecognition,
     ];
 
     pub fn capture(

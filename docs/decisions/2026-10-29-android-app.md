@@ -14,8 +14,8 @@ foreground service of type `microphone` with an ongoing notification
 (with Stop), a partial wake lock and a Wi-Fi lock, held from the start of
 a recording until its last meeting has finished; Android's battery
 optimization exemption is asked once. The microphone is opened through
-AAudio itself with the `VOICE_RECOGNITION` preset (`UNPROCESSED` if that
-fails), and its level raised by AGC2 at its most (`Gain::Max`), so that
+AAudio itself with the `UNPROCESSED` preset, the raw microphone
+(`VOICE_RECOGNITION` if that fails), and its level raised by AGC2 at its most (`Gain::Max`), so that
 the far side of a room is heard. Pending meetings are finished again on
 their own while the app is open, until the server and brainy answer. The
 secrets are in a file in the app's private folder (mode 600), which is
@@ -118,15 +118,17 @@ pending folders cover the network coming and going.
 
 ## The microphone
 
-- **AAudio's `VOICE_RECOGNITION` preset, else `UNPROCESSED`, never
-  `VOICE_COMMUNICATION`.** `VOICE_RECOGNITION` is the capture path meant
-  for speech recognition from a distance: by Android's compatibility
-  definition it has no noise suppression or echo cancelling meant for a
-  handset call and the platform's AGC off, so a voice across the room is
-  not taken for noise. `VOICE_COMMUNICATION` would add exactly those, and
-  its noise suppression removes distant voices. `UNPROCESSED` (no effects
-  at all, often quieter) is the fallback where the first one does not
-  open. cpal 0.18 opens AAudio streams without setting a preset, so on
+- **AAudio's `UNPROCESSED` preset, else `VOICE_RECOGNITION`, never
+  `VOICE_COMMUNICATION`.** `UNPROCESSED` is the raw microphone: no
+  effects, no gain, a flat response; whatever raises the level is ours
+  (AGC2, below), the same on every phone. `VOICE_RECOGNITION` is meant
+  for speech recognition from a distance and, by Android's compatibility
+  definition, has no handset noise suppression or echo cancelling and the
+  platform's AGC off, but the vendor's HAL may still shape it: on the S10e
+  its peaks came out compressed (see "Tried on the phone"). It is the
+  fallback where `UNPROCESSED` does not open. `VOICE_COMMUNICATION` would
+  add a call's processing, whose noise suppression removes distant
+  voices. cpal 0.18 opens AAudio streams without setting a preset, so on
   Android the microphone is opened through the `ndk` crate's AAudio API
   directly (client `audio.rs`, `aaudio`), behind the same contract as the
   cpal capture: mono 16 kHz frames on the channel, on the session's clock
@@ -154,8 +156,21 @@ pending folders cover the network coming and going.
   the limiter; across the room it stayed near -35 dBFS RMS (peaks about
   -18) and the server transcribed nothing of 30 s of it. The same 30 s
   raised 20 dB offline (noise near -26 dBFS) gave every phrase through
-  the local pipeline. The cap is now -25 dBFS, to be tried again in the
-  room.
+  the local pipeline. The cap is now -25 dBFS.
+- **Then, with the cap at -25** and the mic's level logged every 10 s
+  before and after the gain (client `aec.rs`, "mic level over 10 s"), a
+  phrase said near the phone, then across the room, about 20 s each way:
+  - `VOICE_RECOGNITION`: in -34.1 dBFS RMS (peak -4.0), out -22.1 (peak
+    0); the far "Prova da lontano?" was transcribed.
+  - `UNPROCESSED` (granted: the log names it): in -36.9 dBFS RMS (peak
+    -13.9), out -18.5 (peak 0), then in -30.5 (peak -10.9), out -26.8
+    (peak -8.7) while AGC2 settled; the far phrase was transcribed both
+    times it was said, and the conversation after it.
+  - A similar level with peaks 10 dB lower: the HAL compresses
+    `VOICE_RECOGNITION`; the raw signal leaves our gain the headroom.
+    `UNPROCESSED` comes first since. Two short trials of different
+    phrases: the direction, not a measure; a meeting at a few metres for
+    longer is what would settle it.
 
 ## Pending meetings finish on their own
 
