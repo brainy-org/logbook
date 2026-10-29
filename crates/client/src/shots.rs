@@ -52,9 +52,16 @@ pub enum Piece {
     Image { name: String, caption: String },
 }
 
-/// The screenshot a line is, if it is one alone: `![caption](name.png)`.
+/// The screenshot a line is, if it is one alone: `![caption](name.png)`,
+/// or a list's item of it (`- ![caption](name.png)`), where a model may
+/// put it.
 fn image(line: &str) -> Option<(String, String)> {
-    let rest = line.trim().strip_prefix("![")?;
+    let line = line.trim();
+    let line = ["- ", "* ", "+ "]
+        .iter()
+        .find_map(|m| line.strip_prefix(m))
+        .unwrap_or(line);
+    let rest = line.trim_start().strip_prefix("![")?;
     let (caption, rest) = rest.split_once("](")?;
     let name = rest.strip_suffix(')')?;
     is_name(name).then(|| (name.to_string(), caption.to_string()))
@@ -155,6 +162,13 @@ mod tests {
             ]
         );
         assert_eq!(names(notes), ["screenshot-1.png"]);
+    }
+
+    #[test]
+    fn a_screenshot_in_a_list_is_one() {
+        let report = "- Point\n  - ![a](one.png)\n";
+        assert_eq!(names(report), ["one.png"]);
+        assert_eq!(with_missing(report, "![a](one.png)"), report);
     }
 
     #[test]

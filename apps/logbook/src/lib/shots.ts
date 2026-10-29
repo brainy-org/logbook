@@ -11,7 +11,7 @@ export const AREA_KEYS = '⌘⇧1';
 /** Selecting an area is macOS's own tool (src-tauri/src/screenshot.rs). */
 export const AREA = mac;
 
-const LINE = /^\s*!\[([^\]]*)\]\(([A-Za-z0-9_.-]+\.png)\)\s*$/;
+const LINE = /^\s*(?:[-*+]\s+)?!\[([^\]]*)\]\(([A-Za-z0-9_.-]+\.png)\)\s*$/;
 
 /** A file name the app could keep: nothing that walks out of its folder. */
 export function isShot(name: string): boolean {

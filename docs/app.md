@@ -18,7 +18,7 @@ builds for Android, as a recorder for a server ("Android" below).
 | `src/lib/shots.ts` | the screenshots' lines in the notes (`![Screenshot 10:32](screenshot-….png)`, crates/client `shots.rs`) and their `shot` addresses |
 | `src/components/Shots.tsx` | the notes' screenshots under them, and any screenshot (the report's too) over the whole window when clicked |
 | `src/components/ModelsProgress.tsx` | the models' download and loading as a bar, on the home page and in the live transcript until they are ready |
-| `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
+| `src/components/MeetingPage.tsx` | a kept meeting: report, notes (Markdown with their screenshots in place, every line break kept; Edit for the text), transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
 | `src/lib/platform.ts` | `android`: what the pages hide or say otherwise on a phone |
 | `src/components/SettingsPage.tsx` | the settings (the language model: a provider, its address kept and the provider read back from it, then one of the models it lists at `/models`: `list_models`, engine `polish::models`), the voices known by name |
 

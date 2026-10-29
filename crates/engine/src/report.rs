@@ -47,10 +47,12 @@ Three to six sentences: what the meeting was about and how it ended.
 
 ## <Notes>
 Only when there are notes: every point of the person's notes, in their order and in their \
-words, each completed with what the transcript says about it as nested bullets. \
+words, each followed, as nested bullets, by what the transcript says about that point. \
+A point the transcript says nothing about stays alone: never put a sentence under a point it \
+does not concern, never the same thing under two points, never the transcript copied out. \
 The notes say what mattered to the person: follow them. A line of the notes that is only \
 an image, ![...](name.png), is a screenshot the person took at that point: copy each such line \
-as it is, on its own line, under the point it belongs to.
+as it is, on a line of its own after the point it belongs to and its bullets, outside any list.
 
 ## <Decisions>
 A bulleted list of what was decided.

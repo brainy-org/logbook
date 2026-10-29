@@ -1,9 +1,9 @@
-// A past meeting: its report, your notes and the final transcript, and its
-// speakers, each of which can be given a name ("Speaker 2" → "Luca"):
+// A past meeting: its report, your notes (Markdown, edited as text) and
+// the final transcript, and its speakers, each of which can be given a name ("Speaker 2" → "Luca"):
 // here, on the brainy page, and in the voices known by name, so that the
 // next meetings name them by themselves.
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ExternalLink, RefreshCw, Trash2, UserRound } from 'lucide-react';
+import { ExternalLink, Pencil, RefreshCw, Trash2, UserRound } from 'lucide-react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, clock, duration, type MeetingView } from '../lib/api.js';
@@ -307,17 +307,41 @@ function Notes({ meeting, onSaved }: { meeting: MeetingView; onSaved: (notes: st
     saved.current = text;
     onSaved(text);
   };
+  const [editing, setEditing] = useState(false);
+  const folder = `meetings/${meeting.id}`;
+  if (!editing) {
+    return (
+      <section>
+        {text.trim() ? (
+          <Markdown text={text} shots={folder} breaks />
+        ) : (
+          <p className={`text-sm ${mutedTextClass}`}>No notes were written during this meeting.</p>
+        )}
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className={`${secondaryButtonSmClass} mt-6`}
+        >
+          <span className="flex items-center gap-1.5">
+            <Pencil className="size-3.5" />
+            Edit
+          </span>
+        </button>
+      </section>
+    );
+  }
   const shots = shotsIn(text);
   return (
     <>
       <textarea
+        autoFocus
         value={text}
         onChange={(e) => setText(e.target.value)}
-        onBlur={() => void save()}
-        placeholder="No notes were written during this meeting."
+        onBlur={() => void save().then(() => setEditing(false))}
+        placeholder="Write notes… (Markdown)"
         className="min-h-[40vh] w-full resize-none border-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-neutral-400"
       />
-      {shots.length > 0 && <Shots folder={`meetings/${meeting.id}`} shots={shots} />}
+      {shots.length > 0 && <Shots folder={folder} shots={shots} />}
     </>
   );
 }
