@@ -372,12 +372,36 @@ fn lock(dir: &Path) -> Result<Option<File>> {
         .write(true)
         .open(&path)
         .with_context(|| format!("could not open {}", path.display()))?;
+    match try_lock(&file) {
+        Ok(true) => Ok(Some(file)),
+        Ok(false) => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("could not lock {}", path.display())),
+    }
+}
+
+/// An exclusive lock on `file` if no one holds one: false if someone does.
+#[cfg(not(target_os = "android"))]
+fn try_lock(file: &File) -> std::io::Result<bool> {
     match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(error)) => {
-            Err(error).with_context(|| format!("could not lock {}", path.display()))
-        }
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// On Android `File::try_lock` answers "not supported" (std does not
+/// implement it there), while the `flock` it calls elsewhere is there.
+#[cfg(target_os = "android")]
+fn try_lock(file: &File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: a valid descriptor, owned by `file` for the whole call.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EWOULDBLOCK) => Ok(false),
+        _ => Err(error),
     }
 }
 

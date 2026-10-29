@@ -2521,6 +2521,7 @@ dependencies = [
  "chrono",
  "cpal",
  "futures-util",
+ "libc",
  "logbook-engine",
  "ndk",
  "reqwest",
