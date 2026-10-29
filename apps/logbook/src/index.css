@@ -318,16 +318,17 @@ select:disabled {
 .notes-editor ul[data-type='taskList'] {
   @apply list-none pl-0.5;
 }
-.notes-editor li[data-type='taskItem'] {
+/* TaskItem's node view writes no data-type on its li: only data-checked. */
+.notes-editor ul[data-type='taskList'] > li {
   @apply flex items-start gap-2;
 }
-.notes-editor li[data-type='taskItem'] > label {
+.notes-editor ul[data-type='taskList'] > li > label {
   @apply mt-[0.3em] select-none;
 }
-.notes-editor li[data-type='taskItem'] > label input {
+.notes-editor ul[data-type='taskList'] > li > label input {
   @apply accent-accent;
 }
-.notes-editor li[data-type='taskItem'] > div {
+.notes-editor ul[data-type='taskList'] > li > div {
   @apply min-w-0 flex-1;
 }
 .notes-editor li[data-checked='true'] > div {
