@@ -4,6 +4,7 @@
 // views while a meeting is recorded.
 import { useCallback, useEffect, useState } from 'react';
 import { Menu } from 'lucide-react';
+import { ask } from '@tauri-apps/plugin-dialog';
 import {
   api,
   events,
@@ -83,6 +84,19 @@ export function App() {
     );
   }, [refresh]);
 
+  // As the meeting's page deletes it: asked first, its brainy page kept.
+  const deleteMeeting = async (m: MeetingSummary) => {
+    const sure = await ask('The meeting is removed from this computer. Its page in brainy stays.', {
+      title: `Delete "${m.title}"?`,
+      kind: 'warning',
+      okLabel: 'Delete',
+    });
+    if (!sure) return;
+    await api.deleteMeeting(m.id);
+    refresh();
+    if (view.kind === 'meeting' && view.id === m.id) setView({ kind: 'home' });
+  };
+
   const recording = recorder !== null;
   let main;
   if (view.kind === 'settings') {
@@ -152,7 +166,13 @@ export function App() {
       <div
         className={`flex max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:z-40 max-sm:shadow-xl ${drawer ? '' : 'max-sm:hidden'}`}
       >
-        <Sidebar view={view} recorder={recorder} meetings={meetings} onView={show} />
+        <Sidebar
+          view={view}
+          recorder={recorder}
+          meetings={meetings}
+          onView={show}
+          onDelete={(m) => void deleteMeeting(m)}
+        />
       </div>
       <main className="min-h-0 min-w-0 flex-1 overflow-hidden">{main}</main>
     </div>
