@@ -23,14 +23,18 @@ use crate::voices::Library;
 pub struct Kept {
     pub id: String,
     pub title: String,
-    /// RFC 3339, local time.
+    /// RFC 3339, local time: the displayed start, at the first word
+    /// (`writer`'s offset), not the meeting's first sample.
     pub started: String,
+    /// From the first word to the last.
     pub duration_s: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<Page>,
-    /// The speakers' labels, as on the page.
+    /// The speakers' labels, as on the page, and the displayed clock's
+    /// offset (`Writer::shown`).
     pub writer: Writer,
-    /// The final transcript, without the words' times.
+    /// The final transcript, without the words' times, on the meeting's
+    /// clock: shown through `writer`.
     pub utterances: Vec<Utterance>,
     #[serde(default)]
     pub warnings: Vec<String>,
@@ -192,7 +196,7 @@ mod tests {
     fn a_meeting_is_kept_listed_and_forgotten() {
         let data = std::env::temp_dir().join(format!("logbook-history-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);
-        let mut writer = Writer::new("Marco");
+        let mut writer = Writer::new("Marco", 0.0);
         let utterances = vec![Utterance {
             channel: "system".into(),
             speaker: Some(0),

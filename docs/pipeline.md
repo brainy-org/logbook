@@ -187,6 +187,24 @@ for one another, while each runs the passes whose audio it holds. One
 that stops leaves its running passes unknown within a minute
 (`docs/decisions/2026-10-29-replicas-share-the-data-folder.md`).
 
+## The page's clock
+
+A meeting is shown from its first word (client `transcript.rs`,
+`Writer::offset`): the page's first line ("Meeting started …") and its
+header at the end ("Recorded … · duration · speakers"), the default
+title, the history's start and duration, the date the tasks are read
+with, and every turn's time, which reads 00:00 at the first word. The
+offset is the start of the first final segment, down to a whole second,
+fixed when the page is created (`write_page`) and saved with the writer
+in `meeting.json`, so `finish` and a resumed meeting print the same
+clock; without brainy it is fixed when the Markdown is written. A
+meeting of notes only has 0. Nothing else moves: segments, `until`,
+`published_until` and `final_until` stay on the meeting's samples. What
+is printed and read back (the report's and the tasks' transcript, the
+page's turns a task links to, the app's turns) is all on the displayed
+clock
+(`docs/decisions/2026-10-29-the-meeting-starts-at-its-first-word.md`).
+
 ## Report
 
 Once the meeting is published, a language model can write its report

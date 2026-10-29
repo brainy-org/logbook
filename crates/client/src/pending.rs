@@ -4,7 +4,8 @@
 //! One folder per meeting under `<data>/pending`: `meeting.json` (the
 //! channels, when it started, how to publish it, the server's pass id once
 //! known, how far the final segments have come, the brainy page and how
-//! far it is written), each channel's audio as raw 16 kHz s16le on the
+//! far it is written, and the writer with the displayed clock's offset,
+//! fixed with the page: transcript.rs), each channel's audio as raw 16 kHz s16le on the
 //! meeting's clock, written as it is captured, in files of 5 minutes
 //! (`<channel>-<n>.pcm`, engine recording.rs's layout), `segments.jsonl`
 //! (the final segments as they come during the meeting), `notes.md` (what
@@ -93,6 +94,21 @@ pub struct Saved {
     /// (tasks.rs); none: no tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks: Option<String>,
+}
+
+impl Meeting {
+    /// The displayed start, RFC 3339: `started` (the first sample) moved
+    /// to the first word by the writer's offset, once a page or the
+    /// Markdown has fixed it; `started` until then.
+    pub fn shown_started(&self) -> String {
+        let offset = self.writer.as_ref().map_or(0.0, Writer::offset);
+        match chrono::DateTime::parse_from_rfc3339(&self.started) {
+            Ok(at) if offset > 0.0 => {
+                (at + chrono::Duration::milliseconds((offset * 1000.0) as i64)).to_rfc3339()
+            }
+            _ => self.started.clone(),
+        }
+    }
 }
 
 pub struct Pending {

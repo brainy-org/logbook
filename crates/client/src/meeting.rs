@@ -281,20 +281,58 @@ impl<E: remote::Events> remote::Events for Tee<'_, E> {
     }
 }
 
+/// The meeting's first sample: where it was cut from the recording.
 fn started(pending: &Pending) -> Result<DateTime<FixedOffset>> {
     DateTime::parse_from_rfc3339(&pending.meeting.started)
         .context("meeting.json: started is not a date")
 }
 
-fn title(pending: &Pending) -> Result<String> {
-    let started = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
-    Ok(pending
+/// Where the meeting's displayed clock starts, in seconds of the meeting:
+/// the writer's offset, fixed when the page was created; before any
+/// writer, where it will be for `utterances` (`first_word`). A page made
+/// before the offset was kept has 0.
+fn offset(pending: &Pending, utterances: &[Utterance]) -> f64 {
+    match (&pending.meeting.writer, &pending.meeting.page) {
+        (Some(writer), _) => writer.offset(),
+        (None, Some(_)) => 0.0,
+        (None, None) => transcript::first_word(utterances),
+    }
+}
+
+/// The displayed start: the first sample, `offset` seconds on.
+fn shown(pending: &Pending, offset: f64) -> Result<DateTime<FixedOffset>> {
+    Ok(started(pending)? + chrono::Duration::milliseconds((offset * 1000.0) as i64))
+}
+
+fn minute(at: &DateTime<FixedOffset>) -> String {
+    at.format("%Y-%m-%d %H:%M").to_string()
+}
+
+/// The title asked for, or "Meeting <displayed start>".
+fn title(pending: &Pending, shown: &DateTime<FixedOffset>) -> String {
+    pending
         .meeting
         .publish
         .title
         .clone()
         .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| format!("Meeting {started}")))
+        .unwrap_or_else(|| format!("Meeting {}", minute(shown)))
+}
+
+/// Where `write_page` writes: brainy, or a test's.
+pub(crate) trait Pages {
+    async fn create_page(&self, title: &str, parent: Option<&str>, markdown: &str) -> Result<Page>;
+    async fn append(&self, page: &str, markdown: &str) -> Result<()>;
+}
+
+impl Pages for Brainy {
+    async fn create_page(&self, title: &str, parent: Option<&str>, markdown: &str) -> Result<Page> {
+        Brainy::create_page(self, title, parent, markdown).await
+    }
+
+    async fn append(&self, page: &str, markdown: &str) -> Result<()> {
+        Brainy::append(self, page, markdown).await
+    }
 }
 
 /// Writes the segments that start between what the page already has and
@@ -303,7 +341,7 @@ fn title(pending: &Pending) -> Result<String> {
 /// makes no page until then). What is written is recorded in the pending
 /// folder, so nothing is written twice, whatever fails.
 async fn write_page(
-    b: &Brainy,
+    b: &impl Pages,
     pending: &mut Pending,
     limit: f64,
     segments: &[Utterance],
@@ -319,27 +357,38 @@ async fn write_page(
         return pending.save();
     }
     if pending.meeting.page.is_none() {
-        let started = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
+        // The displayed clock is fixed here, with the page, and kept with
+        // it: its first segments are the meeting's earliest (they leave
+        // in order, and none before `published_until` is written), and
+        // nothing on the page is ever rewritten to another clock.
+        let writer = match pending.meeting.writer.clone() {
+            Some(writer) => writer,
+            None => transcript::Writer::new(&saved.me, transcript::first_word(&new)),
+        };
+        let shown = shown(pending, writer.offset())?;
         let page = b
             .create_page(
-                &title(pending)?,
+                &title(pending, &shown),
                 saved.parent.as_deref(),
                 &format!(
-                    "Recording started {started} · the transcript follows the meeting, \
-                     a minute or so behind\n\n---\n"
+                    "Meeting started {} · the transcript follows the meeting, \
+                     a minute or so behind\n\n---\n",
+                    minute(&shown)
                 ),
             )
             .await?;
         info!("brainy page: {}", page.url);
         pending.meeting.page = Some(page);
+        pending.meeting.writer = Some(writer);
         pending.save()?;
     }
     let page = pending.meeting.page.clone().expect("created above");
+    // None only for a page made before the writer was kept with it.
     let mut writer = pending
         .meeting
         .writer
         .clone()
-        .unwrap_or_else(|| transcript::Writer::new(&saved.me));
+        .unwrap_or_else(|| transcript::Writer::new(&saved.me, 0.0));
     if !new.is_empty() {
         let known = voices::Library::load(pending.data())?;
         let body = writer.body(&new, &pending.meeting.voices, &known);
@@ -405,12 +454,14 @@ async fn publisher(
     pending
 }
 
-fn duration_s(finalized: &Finalized) -> f64 {
-    finalized
+/// From the first word (`offset`) to the last.
+fn duration_s(finalized: &Finalized, offset: f64) -> f64 {
+    let end = finalized
         .utterances
         .iter()
         .map(|u| u.end)
-        .fold(0.0, f64::max)
+        .fold(0.0, f64::max);
+    (end - offset).max(0.0)
 }
 
 /// The final transcript, complete: the rest written to the brainy page and
@@ -424,16 +475,16 @@ async fn publish(
         pending.meeting.voices = finalized.voices.clone();
     }
     let saved = pending.meeting.publish.clone();
-    let started_text = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
-    let duration_s = duration_s(finalized);
     let Some(b) = brainy.brainy(&saved)? else {
         let known = voices::Library::load(pending.data())?;
+        let offset = offset(pending, &finalized.utterances);
         let (markdown, writer) = transcript::markdown(&transcript::Meeting {
             utterances: &finalized.utterances,
             warnings: &finalized.warnings,
             me: &saved.me,
-            started: &started_text,
-            duration_s,
+            started: &minute(&shown(pending, offset)?),
+            duration_s: duration_s(finalized, offset),
+            offset,
             voices: &pending.meeting.voices,
             known: &known,
         });
@@ -443,6 +494,8 @@ async fn publish(
     };
     write_page(&b, pending, END, &finalized.utterances).await?;
     let writer = pending.meeting.writer.clone().unwrap_or_default();
+    let started_text = minute(&shown(pending, writer.offset())?);
+    let duration_s = duration_s(finalized, writer.offset());
     let mut header = writer
         .header(&started_text, duration_s, &[])
         .trim()
@@ -499,13 +552,14 @@ pub async fn finish(
     let transcript = match publish(pending, brainy, &finalized).await {
         Ok(transcript) => transcript,
         Err(error) => {
-            let started_text = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
+            let offset = offset(pending, &finalized.utterances);
             let (markdown, _) = transcript::markdown(&transcript::Meeting {
                 utterances: &finalized.utterances,
                 warnings: &finalized.warnings,
                 me: &pending.meeting.publish.me,
-                started: &started_text,
-                duration_s: duration_s(&finalized),
+                started: &minute(&shown(pending, offset)?),
+                duration_s: duration_s(&finalized, offset),
+                offset,
                 voices: &pending.meeting.voices,
                 known: &voices::Library::load(pending.data()).unwrap_or_default(),
             });
@@ -519,14 +573,18 @@ pub async fn finish(
             ));
         }
     };
-    if let Err(error) = remember_voices(pending) {
+    // The writer is there by now (the page's, or the Markdown's): its
+    // offset is the meeting's displayed start from here on.
+    let offset = offset(pending, &finalized.utterances);
+    let shown = shown(pending, offset)?;
+    if let Err(error) = remember_voices(pending, &shown) {
         warn!("the meeting's voices were not kept to be named: {error:#}");
     }
     let mut kept_meeting = history::Kept {
         id: pending.id(),
-        title: title(pending)?,
-        started: pending.meeting.started.clone(),
-        duration_s: duration_s(&finalized),
+        title: title(pending, &shown),
+        started: shown.to_rfc3339(),
+        duration_s: duration_s(&finalized, offset),
         page: pending.meeting.page.clone(),
         writer: pending.meeting.writer.clone().unwrap_or_default(),
         utterances: finalized.utterances.clone(),
@@ -566,7 +624,7 @@ pub async fn finish(
                 title: kept_meeting.title.clone(),
                 notes: kept_meeting.notes.clone(),
                 transcript: kept_meeting.transcript(),
-                date: started(pending).ok()?.format("%Y-%m-%d").to_string(),
+                date: shown.format("%Y-%m-%d").to_string(),
             };
             Some(backend.tasks(request).await)
         }
@@ -792,7 +850,7 @@ pub async fn rename_speaker(
 
 /// The meeting's speakers, by their labels on the page, kept to be named
 /// (voices.rs).
-fn remember_voices(pending: &Pending) -> Result<()> {
+fn remember_voices(pending: &Pending, shown: &DateTime<FixedOffset>) -> Result<()> {
     let Some(writer) = &pending.meeting.writer else {
         return Ok(());
     };
@@ -812,7 +870,7 @@ fn remember_voices(pending: &Pending) -> Result<()> {
         })
         .collect();
     let page = pending.meeting.page.as_ref().map(|p| p.url.clone());
-    let heard = voices::heard(&pending.meeting.started, page, speakers);
+    let heard = voices::heard(&shown.to_rfc3339(), page, speakers);
     voices::remember(pending.data(), &pending.id(), &heard)
 }
 
@@ -1138,6 +1196,126 @@ mod tests {
         let old: Finalized =
             serde_json::from_str(r#"{"utterances":[],"warnings":[],"voices":[]}"#).unwrap();
         assert!(merged(&p, old).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
+    }
+
+    fn said(channel: &str, speaker: Option<u32>, start: f64) -> Utterance {
+        Utterance {
+            channel: channel.into(),
+            speaker,
+            ..seg(start)
+        }
+    }
+
+    /// A page in memory: what was created and appended.
+    #[derive(Default)]
+    struct Fake {
+        created: Mutex<Vec<(String, String)>>,
+        appended: Mutex<String>,
+    }
+
+    impl Pages for Fake {
+        async fn create_page(&self, title: &str, _: Option<&str>, markdown: &str) -> Result<Page> {
+            self.created
+                .lock()
+                .unwrap()
+                .push((title.into(), markdown.into()));
+            Ok(Page {
+                id: "p".into(),
+                url: "https://b/p".into(),
+            })
+        }
+
+        async fn append(&self, _: &str, markdown: &str) -> Result<()> {
+            self.appended.lock().unwrap().push_str(markdown);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_displayed_clock_starts_at_the_first_word_and_is_kept() {
+        // Cut at 09:00; the first word at 07:12.4.
+        let mut p = pending("first-word");
+        let dir = p.dir.clone();
+        let fake = Fake::default();
+        // Nothing said in the first minute: no page, no clock yet.
+        write_page(&fake, &mut p, 60.0, &[]).await.unwrap();
+        assert!(fake.created.lock().unwrap().is_empty());
+        assert!(p.meeting.writer.is_none());
+        let first = [said("system", Some(0), 432.4), said("mic", None, 440.0)];
+        write_page(&fake, &mut p, 480.0, &first).await.unwrap();
+        let (title, header) = fake.created.lock().unwrap()[0].clone();
+        assert_eq!(title, "Meeting 2026-10-29 09:07");
+        assert!(header.starts_with("Meeting started 2026-10-29 09:07 · "));
+        assert_eq!(
+            *fake.appended.lock().unwrap(),
+            "**Speaker 1** · 00:00\n\n432.4\n\n**Me** · 00:08\n\n440\n\n"
+        );
+        // Kept in meeting.json with the page.
+        let saved = Pending::open(&dir).unwrap();
+        assert_eq!(saved.meeting.writer.as_ref().unwrap().offset(), 432.0);
+        assert_eq!(saved.meeting.shown_started(), "2026-10-29T09:07:12+01:00");
+        drop(p);
+
+        // Finished by another process: the same clock, whatever comes.
+        let mut again = Pending::claim(&dir).unwrap().unwrap();
+        let rest = [
+            said("system", Some(1), 700.0),
+            said("system", Some(1), 4100.0),
+        ];
+        write_page(&fake, &mut again, END, &rest).await.unwrap();
+        assert_eq!(fake.created.lock().unwrap().len(), 1);
+        assert!(
+            fake.appended
+                .lock()
+                .unwrap()
+                .ends_with("**Speaker 2** · 04:28\n\n700\n\n4100\n\n")
+        );
+        let offset = offset(&again, &rest);
+        assert_eq!(offset, 432.0);
+        let finalized = Finalized {
+            utterances: first.iter().chain(&rest).cloned().collect(),
+            ..Finalized::default()
+        };
+        // From the first word (432 s) to the last's end (4102 s).
+        assert_eq!(duration_s(&finalized, offset), 3670.0);
+        let writer = again.meeting.writer.clone().unwrap();
+        let header = writer.header(&minute(&shown(&again, offset).unwrap()), 3670.0, &[]);
+        assert!(header.starts_with("Recorded 2026-10-29 09:07 · 1 h 1 min · Speaker 1, Me"));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_meeting_of_notes_only_starts_at_its_first_sample() {
+        let mut p = pending("notes-only");
+        let fake = Fake::default();
+        write_page(&fake, &mut p, END, &[]).await.unwrap();
+        let (title, header) = fake.created.lock().unwrap()[0].clone();
+        assert_eq!(title, "Meeting 2026-10-29 09:00");
+        assert!(header.starts_with("Meeting started 2026-10-29 09:00 · "));
+        assert_eq!(offset(&p, &[]), 0.0);
+        let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_meeting_saved_before_the_offset_keeps_its_clock() {
+        // meeting.json of a page written before the offset was kept.
+        let mut p = pending("old-offset");
+        let old: Meeting = serde_json::from_value(serde_json::json!({
+            "started": "2026-10-29T09:00:00+01:00",
+            "channels": [{"name": "mic", "diarize": false}],
+            "publish": {"brainy": true, "brainy_url": null, "parent": null, "title": null, "me": "Me"},
+            "page": {"id": "p", "url": "https://b/p"},
+            "writer": {"me": "Me", "names": [], "known": [], "previous": null},
+            "published_until": 600.0,
+        }))
+        .unwrap();
+        p.meeting = old;
+        assert_eq!(offset(&p, &[seg(432.0)]), 0.0);
+        assert_eq!(p.meeting.shown_started(), "2026-10-29T09:00:00+01:00");
+        // A page with no writer kept: 0 as well, as its turns were written.
+        p.meeting.writer = None;
+        assert_eq!(offset(&p, &[seg(432.0)]), 0.0);
         let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
     }
 

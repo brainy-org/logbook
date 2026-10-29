@@ -8,6 +8,13 @@
 //! not sure. A speaker's label is chosen at its first segment and kept: the
 //! page is written once. A speaker's consecutive segments go under one
 //! heading line.
+//!
+//! Times are printed on the meeting's displayed clock: 00:00 is its first
+//! word, not its first sample (a meeting of a series starts at the cut,
+//! up to 15 minutes before anyone speaks). The `Writer` carries that one
+//! offset, fixed when the page is created and kept with it; segments stay
+//! on the meeting's clock everywhere else
+//! (docs/decisions/2026-10-29-the-meeting-starts-at-its-first-word.md).
 
 use logbook_engine::protocol::{SpeakerVoice, Utterance};
 use serde::{Deserialize, Serialize};
@@ -19,9 +26,12 @@ pub struct Meeting<'a> {
     pub warnings: &'a [String],
     /// The person behind the microphone.
     pub me: &'a str,
-    /// "2026-10-24 17:40"
+    /// "2026-10-24 17:40": the displayed start, at `offset`.
     pub started: &'a str,
+    /// From the first word (`offset`) to the last.
     pub duration_s: f64,
+    /// Where the displayed clock starts, in seconds of the meeting.
+    pub offset: f64,
     /// The speakers' voices, and the voices known by name.
     pub voices: &'a [SpeakerVoice],
     pub known: &'a Library,
@@ -29,7 +39,7 @@ pub struct Meeting<'a> {
 
 /// The transcript, and the writer that named its speakers.
 pub fn markdown(m: &Meeting) -> (String, Writer) {
-    let mut writer = Writer::new(m.me);
+    let mut writer = Writer::new(m.me, m.offset);
     let body = writer.body(m.utterances, m.voices, m.known);
     let mut out = writer.header(m.started, m.duration_s, m.warnings);
     out.push_str("---\n\n");
@@ -49,14 +59,41 @@ pub struct Writer {
     #[serde(default)]
     known: Vec<String>,
     previous: Option<String>,
+    /// The seconds of the meeting printed as 00:00 (`first_word`): fixed
+    /// when the writer is made, with the page, never changed after, since
+    /// the page is never rewritten. 0 in a writer saved before it was kept.
+    #[serde(default)]
+    offset: f64,
+}
+
+/// The displayed clock's start for a meeting whose first final segments
+/// are `utterances`: the earliest start, down to a whole second; 0 with
+/// none (a meeting of notes only starts at its first sample).
+pub fn first_word(utterances: &[Utterance]) -> f64 {
+    utterances
+        .iter()
+        .map(|u| u.start)
+        .reduce(f64::min)
+        .map_or(0.0, |t| t.max(0.0).floor())
 }
 
 impl Writer {
-    pub fn new(me: &str) -> Self {
+    pub fn new(me: &str, offset: f64) -> Self {
         Self {
             me: me.to_string(),
+            offset,
             ..Default::default()
         }
+    }
+
+    /// The seconds of the meeting printed as 00:00.
+    pub fn offset(&self) -> f64 {
+        self.offset
+    }
+
+    /// A time of the meeting on the displayed clock.
+    pub fn shown(&self, t: f64) -> f64 {
+        (t - self.offset).max(0.0)
     }
 
     /// The Markdown of the next segments; `voices`, the speakers' voices
@@ -71,7 +108,11 @@ impl Writer {
         for u in utterances {
             let name = self.name_of(u, voices, known);
             if self.previous.as_ref() != Some(&name) {
-                body.push_str(&format!("**{}** · {}\n\n", escape(&name), clock(u.start)));
+                body.push_str(&format!(
+                    "**{}** · {}\n\n",
+                    escape(&name),
+                    clock(self.shown(u.start))
+                ));
                 self.previous = Some(name);
             }
             body.push_str(&escape(&u.text));
@@ -257,6 +298,7 @@ mod tests {
             me: "Marco",
             started: "2026-10-24 17:40",
             duration_s: 80.0,
+            offset: 0.0,
             voices: &[],
             known: &Library::default(),
         });
@@ -270,10 +312,50 @@ mod tests {
         assert!(md.contains("**Marco** · 01:15"));
 
         // In parts, the same text: names and the last speaker carry over.
-        let mut w = Writer::new("Marco");
+        let mut w = Writer::new("Marco", 0.0);
         let none = Library::default();
         let parts = w.body(&utterances[..2], &[], &none) + &w.body(&utterances[2..], &[], &none);
         assert!(md.trim_end().ends_with(parts.trim_end()));
+    }
+
+    #[test]
+    fn times_read_from_the_first_word() {
+        // A meeting cut at 11:00 in which the first word is at 07:12.3.
+        let utterances = vec![
+            u("system", Some(0), 432.3, "Ciao."),
+            u("mic", None, 440.0, "Buongiorno."),
+            u("mic", None, 4000.0, "A dopo."),
+        ];
+        let offset = first_word(&utterances);
+        assert_eq!(offset, 432.0);
+        let (md, writer) = markdown(&Meeting {
+            utterances: &utterances,
+            warnings: &[],
+            me: "Marco",
+            started: "2026-10-29 11:07",
+            duration_s: 4001.0 - offset,
+            offset,
+            voices: &[],
+            known: &Library::default(),
+        });
+        assert!(md.starts_with("Recorded 2026-10-29 11:07 · 59 min · Speaker 1, Marco\n"));
+        assert!(md.contains("**Speaker 1** · 00:00\n"));
+        assert!(md.contains("**Marco** · 00:08\n"));
+        // Kept with the meeting (meeting.json, the history): the same
+        // clock for the text the report and the tasks are read from.
+        let saved: Writer = serde_json::from_str(&serde_json::to_string(&writer).unwrap()).unwrap();
+        assert_eq!(saved.offset(), 432.0);
+        assert!(
+            saved
+                .text(&utterances, &[], &Library::default())
+                .starts_with("**Speaker 1** · 00:00")
+        );
+        // A writer saved before the offset was kept: 0, as its page has it.
+        let old: Writer =
+            serde_json::from_str(r#"{"me":"Marco","names":[],"known":[],"previous":null}"#)
+                .unwrap();
+        assert_eq!(old.offset(), 0.0);
+        assert_eq!(first_word(&[]), 0.0);
     }
 
     #[test]
@@ -297,7 +379,7 @@ mod tests {
         };
         known.add("Luca", print(vec![1.0, 0.0, 0.0]));
         known.add("Anna", print(vec![0.0, 0.0, 1.0]));
-        let mut w = Writer::new("Marco");
+        let mut w = Writer::new("Marco", 0.0);
         let md = w.body(
             &[
                 u("system", Some(3), 4.0, "Ciao Marco."),

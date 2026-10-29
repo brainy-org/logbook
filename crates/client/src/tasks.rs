@@ -553,6 +553,44 @@ mod tests {
         assert_eq!(moment("https://b/w/x/p", &[], 10.0), "https://b/w/x/p");
     }
 
+    #[test]
+    fn a_row_links_to_its_turn_on_the_displayed_clock() {
+        use crate::transcript::Writer;
+        use crate::voices::Library;
+        use logbook_engine::protocol::Utterance;
+        let u = |speaker: u32, start: f64| Utterance {
+            channel: "system".into(),
+            speaker: Some(speaker),
+            start,
+            end: start + 5.0,
+            text: format!("{start}"),
+            words: Vec::new(),
+        };
+        // A meeting whose first word is 7 minutes after its cut.
+        let utterances = [u(0, 432.3), u(1, 600.0), u(0, 1200.0)];
+        let mut writer = Writer::new("Marco", 432.0);
+        let page = writer.body(&utterances, &[], &Library::default());
+        // The page's turns, as `Brainy::turns` reads them: by block.
+        let turns: Vec<(String, f64)> = page
+            .split("\n\n")
+            .enumerate()
+            .filter_map(|(i, b)| Some((i.to_string(), crate::brainy::turn_time(b)?)))
+            .collect();
+        assert_eq!(turns[0].1, 0.0);
+        // The model reads the times the transcript prints (history's
+        // `transcript`, the writer's `text`): the third turn's.
+        let text = writer.text(&utterances, &[], &Library::default());
+        let third = text.lines().filter(|l| l.starts_with("**")).nth(2).unwrap();
+        assert_eq!(third, "**Speaker 1** · 12:48");
+        let at = crate::brainy::turn_time(third).unwrap();
+        assert_eq!(
+            moment("https://b/p", &turns, at),
+            format!("https://b/p#block-{}", turns[2].0)
+        );
+        // A task said just before the second turn links to the first.
+        assert_eq!(moment("https://b/p", &turns, 160.0), "https://b/p#block-0");
+    }
+
     fn property(name: &str, kind: &str, options: &[&str]) -> Property {
         Property {
             name: name.into(),

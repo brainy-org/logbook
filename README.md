@@ -207,7 +207,8 @@ default) while the live transcript runs; when it has lasted
 `--max-length` hours (8), at the end of its next phrase, or two minutes
 later in any case (continuous noise, or no server: offline only the
 length closes it). Every channel is cut at the same instant; the next
-meeting's page starts there. A word said right at the cut may be split
+meeting starts there, and its page counts from its first word: the start
+it shows, its duration and its turns' times (00:00 at the first word). A word said right at the cut may be split
 between the two. 0 turns either off; with both off a meeting, and what
 it keeps, grow for as long as it runs. `play` takes the same options.
 

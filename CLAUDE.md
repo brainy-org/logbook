@@ -145,6 +145,12 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   the audio transcribes for a client long gone, or never yields to its
   live transcript
   (`docs/decisions/2026-10-29-a-server-on-a-cpu-falls-behind.md`).
+- **Turn times are printed on the meeting's displayed clock: one offset,
+  fixed at the page's creation** (`Writer::offset`, client
+  `transcript.rs`), and kept with the writer. Shift only where times
+  become text; an offset changed later, or applied to segments, prints a
+  page with two clocks or moves `published_until`
+  (`docs/decisions/2026-10-29-the-meeting-starts-at-its-first-word.md`).
 - **Times that go out as JSON are never infinite**: serde_json writes
   infinity as `null`, which does not read back as a number. "To the end"
   is `f64::MAX` (`until`, `published_until`).

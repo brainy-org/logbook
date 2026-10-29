@@ -352,8 +352,11 @@ struct Phrase {
     text: String,
 }
 
+/// The times go out on the displayed clock, as the page and the tasks
+/// have them: 00:00 at the first word (`Writer::shown`).
 fn view(kept: history::Kept) -> MeetingView {
     let mut turns: Vec<Turn> = Vec::new();
+    let shown = |t: f64| kept.writer.shown(t);
     for u in &kept.utterances {
         let label = kept
             .writer
@@ -361,15 +364,15 @@ fn view(kept: history::Kept) -> MeetingView {
             .unwrap_or("Unknown speaker")
             .to_string();
         let phrase = Phrase {
-            start: u.start,
-            end: u.end,
+            start: shown(u.start),
+            end: shown(u.end),
             text: u.text.clone(),
         };
         match turns.last_mut() {
             Some(t) if t.label == label => t.phrases.push(phrase),
             _ => turns.push(Turn {
                 label,
-                start: u.start,
+                start: shown(u.start),
                 phrases: vec![phrase],
             }),
         }
@@ -500,7 +503,7 @@ fn list_pending(app: State<App>) -> Answer<Vec<PendingView>> {
         if let Ok(p) = Pending::open(&dir) {
             out.push(PendingView {
                 id: p.id(),
-                started: p.meeting.started.clone(),
+                started: p.meeting.shown_started(),
                 title: p.meeting.publish.title.clone(),
             });
         }

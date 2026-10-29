@@ -474,7 +474,7 @@ impl Brainy {
 }
 
 /// The time of a turn's heading line ("**Luca** · 1:02:03"), in seconds.
-fn turn_time(markdown: &str) -> Option<f64> {
+pub(crate) fn turn_time(markdown: &str) -> Option<f64> {
     let line = markdown.trim();
     let rest = line.strip_prefix("**")?;
     let (_, time) = rest.rsplit_once("** · ")?;
