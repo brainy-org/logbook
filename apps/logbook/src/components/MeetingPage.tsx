@@ -9,7 +9,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, clock, duration, type MeetingView } from '../lib/api.js';
 import { shotsIn } from '../lib/shots.js';
 import { Markdown } from './Markdown.js';
-import { Shots } from './Recorder.js';
+import { Shots } from './Shots.js';
 import {
   compactFieldClass,
   mutedTextClass,

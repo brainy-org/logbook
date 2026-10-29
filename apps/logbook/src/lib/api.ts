@@ -150,8 +150,8 @@ export const api = {
   stopMeeting: () => invoke<void>('stop_meeting'),
   /** The notes of meeting `part` of the recording (`RecorderState.part`). */
   setNotes: (part: number, notes: string) => invoke<void>('set_notes', { part, notes }),
-  /** The screen under the pointer, for the notes (desktop only). */
-  takeScreenshot: () => invoke<Shot>('take_screenshot'),
+  /** The screen under the pointer, or an area (macOS), for the notes; null if given up. */
+  takeScreenshot: (kind: 'screen' | 'area') => invoke<Shot | null>('take_screenshot', { kind }),
   meetingState: () => invoke<RecorderState | null>('meeting_state'),
   getLogs: () => invoke<LogLine[]>('get_logs'),
   listMeetings: () => invoke<MeetingSummary[]>('list_meetings'),

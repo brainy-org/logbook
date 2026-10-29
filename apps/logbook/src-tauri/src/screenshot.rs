@@ -1,6 +1,8 @@
 //! Screenshots for the notes of the meeting being recorded, on the
-//! desktop: the screen under the pointer, taken by the button on the
-//! recorder (`take_screenshot`) or by `SHORTCUT` from any app while a
+//! desktop: the screen under the pointer, or on macOS an area chosen as
+//! with ⌘⇧4 (`screencapture -i`, the system's own selection: a window
+//! with the space bar, Esc to give up). Taken by the recorder's buttons
+//! (`take_screenshot`) or by `SCREEN` and `AREA` from any app while a
 //! meeting is recorded (`screenshot` events). The file goes to
 //! `<data>/screenshots` and the page puts its line in the notes; the
 //! client takes it from there (crates/client `shots.rs`). The pages show
@@ -18,10 +20,22 @@ use serde::Serialize;
 use tauri::http::{Request, Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use xcap::image::RgbaImage;
 use xcap::image::imageops::{self, FilterType};
 
-/// Takes a screenshot while a meeting is recorded, from any app.
-pub const SHORTCUT: &str = "CmdOrCtrl+Shift+2";
+/// Take the screen, or an area, while a meeting is recorded, from any app.
+pub const SCREEN: &str = "CmdOrCtrl+Shift+2";
+pub const AREA: &str = "CmdOrCtrl+Shift+1";
+
+/// What a screenshot takes.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Kind {
+    /// The screen under the pointer.
+    Screen,
+    /// An area the person selects; macOS only.
+    Area,
+}
 
 /// A screenshot wider than this is scaled down: a 5K screen's PNG would
 /// pass brainy's 10 MB for an upload.
@@ -38,9 +52,22 @@ pub struct Shot {
     pub caption: String,
 }
 
+/// A screenshot into `<data>/screenshots`; None when the selection of an
+/// area was given up.
+pub fn take(app: &AppHandle, data: &Path, kind: Kind) -> Result<Option<Shot>> {
+    let image = match kind {
+        Kind::Screen => screen(app)?,
+        Kind::Area => match area(data)? {
+            Some(image) => image,
+            None => return Ok(None),
+        },
+    };
+    save(data, image).map(Some)
+}
+
 /// The screen under the pointer, the app's window out of it when it is in
 /// front (the button was clicked, or the shortcut pressed from it).
-pub fn take(app: &AppHandle, data: &Path) -> Result<Shot> {
+fn screen(app: &AppHandle) -> Result<RgbaImage> {
     let window = app
         .get_webview_window("main")
         .filter(|w| w.is_focused().unwrap_or(false) && w.is_visible().unwrap_or(false));
@@ -53,7 +80,39 @@ pub fn take(app: &AppHandle, data: &Path) -> Result<Shot> {
         let _ = w.show();
         let _ = w.set_focus();
     }
-    let mut image = image?;
+    image
+}
+
+/// An area selected by the system's own tool; None if given up (Esc).
+#[cfg(target_os = "macos")]
+fn area(data: &Path) -> Result<Option<RgbaImage>> {
+    let dir = shots::staging(data);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(".area.png");
+    let _ = std::fs::remove_file(&path);
+    let status = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-i", "-x", "-o"])
+        .arg(&path)
+        .status()
+        .context("could not run screencapture")?;
+    if !path.exists() {
+        anyhow::ensure!(status.success(), "screencapture failed: {status}");
+        return Ok(None);
+    }
+    let image = xcap::image::open(&path)
+        .with_context(|| format!("could not read {}", path.display()))?
+        .to_rgba8();
+    let _ = std::fs::remove_file(&path);
+    Ok(Some(image))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn area(_: &Path) -> Result<Option<RgbaImage>> {
+    anyhow::bail!("selecting an area is on macOS only")
+}
+
+/// The image as a screenshot's file, scaled down to `MAX_WIDTH`.
+fn save(data: &Path, mut image: RgbaImage) -> Result<Shot> {
     if image.width() > MAX_WIDTH {
         let height = image.height() * MAX_WIDTH / image.width();
         image = imageops::resize(&image, MAX_WIDTH, height, FilterType::Triangle);
@@ -73,7 +132,7 @@ pub fn take(app: &AppHandle, data: &Path) -> Result<Shot> {
 }
 
 /// The monitor under the pointer, or the main one.
-fn capture(app: &AppHandle) -> Result<xcap::image::RgbaImage> {
+fn capture(app: &AppHandle) -> Result<RgbaImage> {
     let monitor = pointer(app)
         .and_then(|(x, y)| xcap::Monitor::from_point(x, y).ok())
         .or_else(|| {
@@ -103,22 +162,28 @@ fn pointer(app: &AppHandle) -> Option<(i32, i32)> {
     Some(((p.x / scale) as i32, (p.y / scale) as i32))
 }
 
-/// The shortcut's plugin: a screenshot each time it is pressed, told to
+/// The shortcuts' plugin: a screenshot each time one is pressed, told to
 /// the recorder as `screenshot` (or `screenshot-failed`).
 pub fn plugin(
     data: impl Fn(&AppHandle) -> std::path::PathBuf + Send + Sync + 'static,
 ) -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri_plugin_global_shortcut::Builder::new()
-        .with_handler(move |app, _, event| {
+        .with_handler(move |app, shortcut, event| {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
+            let kind = if AREA.parse::<Shortcut>().is_ok_and(|a| &a == shortcut) {
+                Kind::Area
+            } else {
+                Kind::Screen
+            };
             let app = app.clone();
             let data = data(&app);
-            tauri::async_runtime::spawn_blocking(move || match take(&app, &data) {
-                Ok(shot) => {
+            tauri::async_runtime::spawn_blocking(move || match take(&app, &data, kind) {
+                Ok(Some(shot)) => {
                     let _ = app.emit("screenshot", shot);
                 }
+                Ok(None) => {}
                 Err(error) => {
                     tracing::warn!("{error:#}");
                     let _ = app.emit("screenshot-failed", format!("{error:#}"));
@@ -128,12 +193,19 @@ pub fn plugin(
         .build()
 }
 
-/// The shortcut is the app's while a meeting is recorded: it is not taken
-/// from the other apps the rest of the time.
+/// The shortcuts are the app's while a meeting is recorded: they are not
+/// taken from the other apps the rest of the time.
 pub fn listen(app: &AppHandle) {
-    let shortcut: Shortcut = SHORTCUT.parse().expect("a valid shortcut");
-    if let Err(error) = app.global_shortcut().register(shortcut) {
-        tracing::warn!("{SHORTCUT} takes no screenshot: {error}");
+    let keys: &[&str] = if cfg!(target_os = "macos") {
+        &[SCREEN, AREA]
+    } else {
+        &[SCREEN]
+    };
+    for keys in keys {
+        let shortcut: Shortcut = keys.parse().expect("a valid shortcut");
+        if let Err(error) = app.global_shortcut().register(shortcut) {
+            tracing::warn!("{keys} takes no screenshot: {error}");
+        }
     }
 }
 

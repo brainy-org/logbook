@@ -3,8 +3,13 @@
 // `shot` scheme (src-tauri/src/screenshot.rs). `folder` is where the file
 // is: `screenshots` while the meeting is recorded, `meetings/<id>` after.
 
-/** Takes a screenshot while a meeting is recorded, from any app. */
-export const SHORTCUT = /Mac/i.test(navigator.userAgent) ? '⌘⇧2' : 'Ctrl+Shift+2';
+const mac = /Mac/i.test(navigator.userAgent);
+
+/** Take the screen, or an area, while a meeting is recorded, from any app. */
+export const SCREEN_KEYS = mac ? '⌘⇧2' : 'Ctrl+Shift+2';
+export const AREA_KEYS = '⌘⇧1';
+/** Selecting an area is macOS's own tool (src-tauri/src/screenshot.rs). */
+export const AREA = mac;
 
 const LINE = /^\s*!\[([^\]]*)\]\(([A-Za-z0-9_.-]+\.png)\)\s*$/;
 

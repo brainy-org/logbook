@@ -3,10 +3,11 @@
 // the time and the stop button. The notes go to the app as they are typed
 // (`set_notes`), and to the report when the meeting ends. At phone width
 // the live transcript is a panel over the notes, closed at first. On the
-// desktop a screenshot (the button, or the shortcut from any app) goes in
+// desktop a screenshot (the buttons, or the shortcuts from any app: the
+// screen under the pointer, or on macOS an area to select) goes in
 // the notes as a line of its own where the cursor is, shown under them.
 import { useEffect, useRef, useState } from 'react';
-import { Camera, PanelRightClose, PanelRightOpen, Square } from 'lucide-react';
+import { Camera, PanelRightClose, PanelRightOpen, Scan, Square } from 'lucide-react';
 import {
   api,
   clock,
@@ -20,7 +21,8 @@ import {
   type Shot,
 } from '../lib/api.js';
 import { android } from '../lib/platform.js';
-import { SHORTCUT, shotsIn, shotUrl, withShot } from '../lib/shots.js';
+import { AREA, AREA_KEYS, SCREEN_KEYS, shotsIn, withShot } from '../lib/shots.js';
+import { Shots } from './Shots.js';
 import { mutedTextClass } from './form-styles.js';
 import { ModelsProgress } from './ModelsProgress.js';
 
@@ -91,10 +93,11 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
     if (android) return;
     return subscribe(events.screenshot(insert), events.screenshotFailed(failed));
   }, []);
-  const screenshot = async () => {
+  const screenshot = async (kind: 'screen' | 'area') => {
     setShooting(true);
     try {
-      insert(await api.takeScreenshot());
+      const shot = await api.takeScreenshot(kind);
+      if (shot) insert(shot);
     } catch (e) {
       failed(String(e));
     } finally {
@@ -123,12 +126,24 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
             <button
               type="button"
               disabled={shooting}
-              title={`Take a screenshot for the notes (${SHORTCUT}, from any app)`}
-              onClick={() => void screenshot()}
-              className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 disabled:opacity-50 dark:hover:bg-neutral-800"
+              title={`The screen under the pointer, in the notes (${SCREEN_KEYS}, from any app)`}
+              onClick={() => void screenshot('screen')}
+              className={shotButtonClass}
             >
               <Camera className="size-4" />
-              <span className="font-mono text-xs">{SHORTCUT}</span>
+              <span className="font-mono text-xs">{SCREEN_KEYS}</span>
+            </button>
+          )}
+          {!android && AREA && recording && (
+            <button
+              type="button"
+              disabled={shooting}
+              title={`An area of the screen, in the notes (${AREA_KEYS}, from any app; Esc to give up)`}
+              onClick={() => void screenshot('area')}
+              className={shotButtonClass}
+            >
+              <Scan className="size-4" />
+              <span className="font-mono text-xs">{AREA_KEYS}</span>
             </button>
           )}
           <button
@@ -246,29 +261,8 @@ function Pill({
   );
 }
 
-/** The notes' screenshots, small, each with its caption. */
-export function Shots({
-  folder,
-  shots,
-}: {
-  folder: string;
-  shots: { name: string; caption: string }[];
-}) {
-  return (
-    <div className="mt-4 grid grid-cols-3 gap-3 max-sm:grid-cols-2">
-      {shots.map((s) => (
-        <figure key={s.name}>
-          <img
-            src={shotUrl(folder, s.name)}
-            alt={s.caption}
-            className="aspect-video w-full rounded-md border border-neutral-200 object-cover dark:border-neutral-800"
-          />
-          <figcaption className="mt-1 truncate text-xs text-neutral-500">{s.caption}</figcaption>
-        </figure>
-      ))}
-    </div>
-  );
-}
+const shotButtonClass =
+  'flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 disabled:opacity-50 dark:hover:bg-neutral-800';
 
 /** Five bars that follow a channel's level. */
 function Meter({ label, level }: { label: string; level: number }) {

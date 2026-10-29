@@ -249,9 +249,13 @@ fn set_notes(app: State<App>, part: usize, notes: String) {
 /// A screenshot for the notes of the meeting being recorded.
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
-async fn take_screenshot(app: State<'_, App>, handle: AppHandle) -> Answer<screenshot::Shot> {
+async fn take_screenshot(
+    app: State<'_, App>,
+    handle: AppHandle,
+    kind: screenshot::Kind,
+) -> Answer<Option<screenshot::Shot>> {
     let data = app.data.clone();
-    tauri::async_runtime::spawn_blocking(move || screenshot::take(&handle, &data))
+    tauri::async_runtime::spawn_blocking(move || screenshot::take(&handle, &data, kind))
         .await
         .map_err(|e| e.to_string())?
         .map_err(text)

@@ -7,6 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { isShot, shotUrl } from '../lib/shots.js';
+import { Zoomable } from './Shots.js';
 
 export function Markdown({ text, shots }: { text: string; shots?: string }) {
   return (
@@ -27,7 +28,7 @@ export function Markdown({ text, shots }: { text: string; shots?: string }) {
           ),
           img: ({ src, alt }) =>
             shots && typeof src === 'string' && isShot(src) ? (
-              <img
+              <Zoomable
                 src={shotUrl(shots, src)}
                 alt={alt ?? ''}
                 className="rounded-md border border-neutral-200 dark:border-neutral-800"
