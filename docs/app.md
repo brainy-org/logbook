@@ -11,7 +11,7 @@ builds for Android, as a recorder for a server ("Android" below).
 | `src-tauri/src/recorder.rs` | the recording, one at a time: `series::meetings` run with the settings' channels and the default limits (a meeting closes after 15 minutes without a phrase, or at 8 hours), events to the pages (`meeting-state`, whose `part` counts the meetings of the recording; `utterance`, on the recording's clock; `levels`; `meetings-changed` or `meeting-failed` for a meeting that ends while the next records; `meeting-done` or `meeting-failed` at the end) |
 | `src-tauri/src/settings.rs` | `settings.json` in the app's config folder (the meeting's `Mode`, chosen on the home page and saved by `start_meeting`, decides the channels: the call, the microphone diarized); the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
-| `src-tauri/src/screenshot.rs` | the desktop's screenshots for the notes: the screen under the pointer (xcap), the app's window hidden while it is taken when it is in front, or on macOS an area (`screencapture -i`, the system's ⌘⇧4 selection, Esc to give up); the buttons (`take_screenshot`) or `SCREEN` (⌘⇧2, Ctrl+Shift+2) and `AREA` (⌘⇧1), registered only while a meeting is recorded (`screenshot` events); the `shot` scheme the pages load them from |
+| `src-tauri/src/screenshot.rs` | the desktop's screenshots for the notes: the screen under the pointer (xcap), the app's window hidden while it is taken when it is in front, or on macOS an area (`screencapture -i`, the system's ⌘⇧4 selection, Esc to give up); the buttons (`take_screenshot`) or `SCREEN` (⌘⇧1, Ctrl+Shift+1) and `AREA` (⌘⇧2), macOS's order without its keys, registered only while a meeting is recorded (`screenshot` events); the system's shutter sound for both, so a screenshot taken from another app is heard; the `shot` scheme the pages load them from |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views (the live transcript's last 300 phrases: a meeting of hours has tens of thousands) |
 | `src/components/Home.tsx` | before a meeting: its title and mode (Call, In the room, Room + call) with what each records, what will happen to it, the pending meetings |
 | `src/components/Recorder.tsx` | notes, live transcript, the meter and stop; drawn again (`key`: the state's `part`) when the recording's next meeting starts, its notes empty; a screenshot put where the cursor is (or was last) |
@@ -65,7 +65,15 @@ builds for Android, as a recorder for a server ("Android" below).
   (`shots::with_missing`). `<data>/screenshots` is emptied when the next
   recording starts, not when a meeting ends: a meeting of the series
   still finishing copies its screenshots from there.
-- **The shortcut is registered only while a meeting is recorded**
+- **A meeting is deleted at once, with a notice to undo it** (App.tsx,
+  8 s, ⌘Z; ⌘⌫ deletes the one shown, Backspace or Delete a row of the
+  list, the system's menu on a right click): no confirmation, which
+  people learn to click through. It is moved to `<data>/trash`
+  (`history::trash`), back with `restore_meeting`, gone with
+  `purge_meeting` when the notice goes, and the whole trash at the app's
+  next start (`history::empty_trash`): a delete is never left half done
+  by the app closing during the undo. The brainy page stays.
+- **The shortcuts are registered only while a meeting is recorded**
   (`screenshot::listen`, `unlisten`): a global shortcut takes the keys
   from every other app. macOS asks for Screen Recording the first time;
   refused, the capture holds the desktop without the other apps'

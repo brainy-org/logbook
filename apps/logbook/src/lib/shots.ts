@@ -6,8 +6,8 @@
 const mac = /Mac/i.test(navigator.userAgent);
 
 /** Take the screen, or an area, while a meeting is recorded, from any app. */
-export const SCREEN_KEYS = mac ? '⌘⇧2' : 'Ctrl+Shift+2';
-export const AREA_KEYS = '⌘⇧1';
+export const SCREEN_KEYS = mac ? '⌘⇧1' : 'Ctrl+Shift+1';
+export const AREA_KEYS = '⌘⇧2';
 /** Selecting an area is macOS's own tool (src-tauri/src/screenshot.rs). */
 export const AREA = mac;
 

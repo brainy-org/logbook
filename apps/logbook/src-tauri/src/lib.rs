@@ -430,9 +430,21 @@ fn save_meeting_notes(app: State<App>, id: String, notes: String) -> Answer<()> 
     history::save(&app.data, &kept).map_err(text)
 }
 
+/// Takes a meeting out of the list, into the trash until `purge_meeting`
+/// (the undo's time is over) or the app's next start.
 #[tauri::command]
 fn delete_meeting(app: State<App>, id: String) -> Answer<()> {
-    history::delete(&app.data, &id).map_err(text)
+    history::trash(&app.data, &id).map_err(text)
+}
+
+#[tauri::command]
+fn restore_meeting(app: State<App>, id: String) -> Answer<()> {
+    history::restore(&app.data, &id).map_err(text)
+}
+
+#[tauri::command]
+fn purge_meeting(app: State<App>, id: String) -> Answer<()> {
+    history::purge(&app.data, &id).map_err(text)
 }
 
 #[derive(Serialize)]
@@ -600,6 +612,8 @@ pub fn run() {
         .setup(move |tauri_app| {
             logs.attach(tauri_app.handle().clone());
             let data = data_folder(tauri_app)?;
+            // Meetings deleted at the last run, their undo not waited for.
+            history::empty_trash(&data);
             let config = tauri_app.path().app_config_dir()?;
             Secret::open(&config);
             let handle = tauri_app.handle().clone();
@@ -667,6 +681,8 @@ pub fn run() {
             write_report,
             save_meeting_notes,
             delete_meeting,
+            restore_meeting,
+            purge_meeting,
             list_pending,
             finish_pending,
             list_voices,

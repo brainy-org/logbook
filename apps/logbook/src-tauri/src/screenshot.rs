@@ -23,9 +23,15 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use xcap::image::RgbaImage;
 use xcap::image::imageops::{self, FilterType};
 
-/// Take the screen, or an area, while a meeting is recorded, from any app.
-pub const SCREEN: &str = "CmdOrCtrl+Shift+2";
-pub const AREA: &str = "CmdOrCtrl+Shift+1";
+/// Take the screen, or an area, while a meeting is recorded, from any app:
+/// in macOS's order (⌘⇧3 the screen, ⌘⇧4 an area), without its keys.
+pub const SCREEN: &str = "CmdOrCtrl+Shift+1";
+pub const AREA: &str = "CmdOrCtrl+Shift+2";
+
+/// The sound macOS makes for a screenshot: taken from another app, the
+/// person hears it was.
+#[cfg(target_os = "macos")]
+const SHUTTER: &str = "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Screen Capture.aif";
 
 /// What a screenshot takes.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
@@ -56,7 +62,11 @@ pub struct Shot {
 /// area was given up.
 pub fn take(app: &AppHandle, data: &Path, kind: Kind) -> Result<Option<Shot>> {
     let image = match kind {
-        Kind::Screen => screen(app)?,
+        Kind::Screen => {
+            let image = screen(app)?;
+            shutter();
+            image
+        }
         Kind::Area => match area(data)? {
             Some(image) => image,
             None => return Ok(None),
@@ -92,7 +102,8 @@ fn area(_: &Path) -> Result<Option<RgbaImage>> {
     let path = std::env::temp_dir().join(format!("logbook-area-{}.png", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let output = std::process::Command::new("/usr/sbin/screencapture")
-        .args(["-i", "-x", "-o"])
+        // Without -x: its own shutter sound.
+        .args(["-i", "-o"])
         .arg(&path)
         .output()
         .context("could not run screencapture")?;
@@ -115,6 +126,15 @@ fn area(_: &Path) -> Result<Option<RgbaImage>> {
 #[cfg(not(target_os = "macos"))]
 fn area(_: &Path) -> Result<Option<RgbaImage>> {
     anyhow::bail!("selecting an area is on macOS only")
+}
+
+/// The shutter's sound, not waited for. It plays to the speakers: the
+/// microphone may hear it, the call does not.
+fn shutter() {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("/usr/bin/afplay")
+        .arg(SHUTTER)
+        .spawn();
 }
 
 /// The image as a screenshot's file, scaled down to `MAX_WIDTH`.

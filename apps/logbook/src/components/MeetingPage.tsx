@@ -4,7 +4,6 @@
 // next meetings name them by themselves.
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ExternalLink, RefreshCw, Trash2, UserRound } from 'lucide-react';
-import { ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, clock, duration, type MeetingView } from '../lib/api.js';
 import { Markdown } from './Markdown.js';
@@ -21,11 +20,12 @@ type Tab = 'report' | 'notes' | 'transcript';
 
 interface Props {
   id: string;
-  onDeleted: () => void;
+  /** Deleted at once: the app offers to undo it. */
+  onDelete: () => void;
   onChanged: () => void;
 }
 
-export function MeetingPage({ id, onDeleted, onChanged }: Props) {
+export function MeetingPage({ id, onDelete, onChanged }: Props) {
   const [meeting, setMeeting] = useState<MeetingView | null>(null);
   const [tab, setTab] = useState<Tab>('report');
   const [error, setError] = useState<string | null>(null);
@@ -68,17 +68,6 @@ export function MeetingPage({ id, onDeleted, onChanged }: Props) {
     }
   };
 
-  const remove = async () => {
-    const sure = await ask('The meeting is removed from this computer. Its page in brainy stays.', {
-      title: `Delete "${meeting.title}"?`,
-      kind: 'warning',
-      okLabel: 'Delete',
-    });
-    if (!sure) return;
-    await api.deleteMeeting(meeting.id);
-    onDeleted();
-  };
-
   const started = new Date(meeting.started);
 
   return (
@@ -101,9 +90,9 @@ export function MeetingPage({ id, onDeleted, onChanged }: Props) {
         )}
         <button
           type="button"
-          title="Delete"
+          title="Delete (⌘⌫)"
           className={quietDangerButtonClass}
-          onClick={() => void remove()}
+          onClick={onDelete}
         >
           <Trash2 className="size-4" />
         </button>

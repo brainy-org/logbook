@@ -85,9 +85,9 @@ scripts/app.sh android   # the Android app (arm64), a debug APK
 Say what the meeting is (a call, people in the room, or a room on a
 call: the app records the call and tells apart the voices around the
 computer accordingly, and remembers the choice), start it, write your notes while it goes (the live transcript is
-beside them; ⌘⇧2, or Ctrl+Shift+2, from any app, or the camera button,
+beside them; ⌘⇧1, or Ctrl+Shift+1, from any app, or the Screen button,
 puts a screenshot of the screen under the pointer in the notes, and on
-the brainy page; ⌘⇧1 an area you select, on macOS), stop it: the final transcript, the report and the page in
+the brainy page; ⌘⇧2 or Area an area you select, on macOS), stop it: the final transcript, the report and the page in
 brainy follow, and the meeting stays in the list on the left. Click a
 speaker ("Speaker 2") to give them a name: the transcript, the brainy
 page and the voices known by name change with it, and the next meetings

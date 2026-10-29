@@ -1,8 +1,12 @@
 // The meetings, the latest first and grouped by day, the one being
 // recorded on top, and the settings at the bottom. A meeting's right
-// click opens its menu (Delete).
-import { useEffect, useState } from 'react';
-import { Plus, Settings, Trash2 } from 'lucide-react';
+// click opens the system's menu (Delete); Backspace or Delete on its row
+// deletes it too, undone from the app's notice (App.tsx).
+import type { MouseEvent } from 'react';
+import { Plus, Settings } from 'lucide-react';
+import { LogicalPosition } from '@tauri-apps/api/dpi';
+import { Menu } from '@tauri-apps/api/menu';
+import { android } from '../lib/platform.js';
 import type { View } from '../App.js';
 import { duration, type MeetingSummary, type RecorderState } from '../lib/api.js';
 
@@ -11,7 +15,7 @@ interface Props {
   recorder: RecorderState | null;
   meetings: MeetingSummary[];
   onView: (view: View) => void;
-  onDelete: (meeting: MeetingSummary) => void;
+  onDelete: (id: string) => void;
 }
 
 /** "Today", "Yesterday", or the date. */
@@ -28,23 +32,17 @@ const row =
   'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-neutral-200/60 dark:hover:bg-neutral-800';
 const active = 'bg-neutral-200/80 dark:bg-neutral-800';
 
+/** The meeting's menu, the system's own; none on Android (its page deletes it). */
+async function openMenu(e: MouseEvent, onDelete: () => void) {
+  e.preventDefault();
+  if (android) return;
+  const menu = await Menu.new({
+    items: [{ id: 'delete', text: 'Delete', accelerator: 'CmdOrCtrl+Backspace', action: onDelete }],
+  });
+  await menu.popup(new LogicalPosition(e.clientX, e.clientY));
+}
+
 export function Sidebar({ view, recorder, meetings, onView, onDelete }: Props) {
-  const [menu, setMenu] = useState<{ meeting: MeetingSummary; x: number; y: number } | null>(null);
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    const escape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
-    };
-    window.addEventListener('click', close);
-    window.addEventListener('blur', close);
-    window.addEventListener('keydown', escape);
-    return () => {
-      window.removeEventListener('click', close);
-      window.removeEventListener('blur', close);
-      window.removeEventListener('keydown', escape);
-    };
-  }, [menu]);
   const groups: { day: string; meetings: MeetingSummary[] }[] = [];
   for (const m of meetings) {
     const d = day(new Date(m.started));
@@ -100,11 +98,14 @@ export function Sidebar({ view, recorder, meetings, onView, onDelete }: Props) {
                   key={m.id}
                   type="button"
                   onClick={() => onView({ kind: 'meeting', id: m.id })}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setMenu({ meeting: m, x: e.clientX, y: e.clientY });
+                  onContextMenu={(e) => void openMenu(e, () => onDelete(m.id))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Backspace' || e.key === 'Delete') {
+                      e.preventDefault();
+                      onDelete(m.id);
+                    }
                   }}
-                  className={`${row} ${selected ? active : ''} ${menu?.meeting.id === m.id ? active : ''} flex-col !items-start !gap-0 select-none`}
+                  className={`${row} ${selected ? active : ''} flex-col !items-start !gap-0 select-none`}
                 >
                   <span className="w-full truncate">{m.title}</span>
                   <span className="text-xs text-neutral-500">
@@ -116,23 +117,6 @@ export function Sidebar({ view, recorder, meetings, onView, onDelete }: Props) {
           </section>
         ))}
       </nav>
-      {menu && (
-        <div
-          role="menu"
-          style={{ left: menu.x, top: menu.y }}
-          className="fixed z-50 min-w-36 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => onDelete(menu.meeting)}
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-red-700 hover:bg-neutral-100 dark:text-red-400 dark:hover:bg-neutral-800"
-          >
-            <Trash2 className="size-3.5" />
-            Delete
-          </button>
-        </div>
-      )}
       <div className="border-t border-neutral-200 p-2 dark:border-neutral-800">
         <button
           type="button"

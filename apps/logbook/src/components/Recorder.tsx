@@ -44,6 +44,9 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   const [now, setNow] = useState(Date.now());
   const [shotError, setShotError] = useState<string | null>(null);
   const [shooting, setShooting] = useState(false);
+  // "Screenshot added", in the pill for a moment.
+  const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimer = useRef<number | undefined>(undefined);
   const editor = useRef<NotesHandle>(null);
   const timer = useRef<number | undefined>(undefined);
   // Notes typed and not sent yet: sent with this meeting's number, so that
@@ -74,6 +77,9 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   const insert = (shot: Shot) => {
     editor.current?.insertShot(shot);
     setShotError(null);
+    setNotice('Screenshot added');
+    window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 3000);
   };
   const failed = (message: string) => {
     setShotError(message);
@@ -115,24 +121,24 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
             <button
               type="button"
               disabled={shooting}
-              title={`The screen under the pointer, in the notes (${SCREEN_KEYS}, from any app)`}
+              title={`The screen under the pointer, into the notes — ${SCREEN_KEYS}, from any app`}
               onClick={() => void screenshot('screen')}
               className={shotButtonClass}
             >
               <Camera className="size-4" />
-              <span className="font-mono text-xs">{SCREEN_KEYS}</span>
+              Screen
             </button>
           )}
           {!android && AREA && recording && (
             <button
               type="button"
               disabled={shooting}
-              title={`An area of the screen, in the notes (${AREA_KEYS}, from any app; Esc to give up)`}
+              title={`An area of the screen, into the notes — ${AREA_KEYS}, from any app; Esc to give up`}
               onClick={() => void screenshot('area')}
               className={shotButtonClass}
             >
               <Scan className="size-4" />
-              <span className="font-mono text-xs">{AREA_KEYS}</span>
+              Area
             </button>
           )}
           <button
@@ -179,6 +185,7 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
           levels={levels}
           elapsed={elapsed}
           lastLog={logs[logs.length - 1]}
+          notice={notice}
           onStop={() => void stop()}
           canStop={recording || state.phase === 'preparing'}
         />
@@ -203,6 +210,7 @@ function Pill({
   levels,
   elapsed,
   lastLog,
+  notice,
   onStop,
   canStop,
 }: {
@@ -211,6 +219,7 @@ function Pill({
   levels: number[];
   elapsed: number;
   lastLog: LogLine | undefined;
+  notice: string | null;
   onStop: () => void;
   canStop: boolean;
 }) {
@@ -223,6 +232,7 @@ function Pill({
               <Meter key={c} label={c === 'mic' ? 'You' : 'Call'} level={levels[i] ?? 0} />
             ))}
             <span className="font-mono text-sm tabular-nums">{clock(elapsed)}</span>
+            {notice && <span className="text-sm text-accent">{notice}</span>}
           </>
         ) : (
           <span className="max-w-md truncate text-sm text-neutral-600 dark:text-neutral-300">

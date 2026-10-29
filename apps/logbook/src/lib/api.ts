@@ -161,7 +161,10 @@ export const api = {
   writeReport: (id: string) => invoke<MeetingView>('write_report', { id }),
   saveMeetingNotes: (id: string, notes: string) =>
     invoke<void>('save_meeting_notes', { id, notes }),
+  /** Into the trash: `restoreMeeting` undoes it, `purgeMeeting` makes it final. */
   deleteMeeting: (id: string) => invoke<void>('delete_meeting', { id }),
+  restoreMeeting: (id: string) => invoke<void>('restore_meeting', { id }),
+  purgeMeeting: (id: string) => invoke<void>('purge_meeting', { id }),
   listPending: () => invoke<PendingMeeting[]>('list_pending'),
   finishPending: () => invoke<void>('finish_pending'),
   listVoices: () => invoke<Voice[]>('list_voices'),

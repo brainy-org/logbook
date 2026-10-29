@@ -131,17 +131,52 @@ pub fn list(data: &Path) -> Result<Vec<Summary>> {
     Ok(out)
 }
 
-/// Forgets a meeting here, with its screenshots; its page in brainy stays.
-pub fn delete(data: &Path, id: &str) -> Result<()> {
-    let path = path(data, id)?;
-    std::fs::remove_file(&path).with_context(|| format!("could not remove {}", path.display()))?;
-    let images = images(data, id)?;
-    match std::fs::remove_dir_all(&images) {
+/// A data folder of its own for trashed meetings: `trash/meetings/…`.
+fn trash_dir(data: &Path) -> PathBuf {
+    data.join("trash")
+}
+
+/// Moves `from`'s meeting `id` (its file and its screenshots) to `to`.
+fn move_meeting(from: &Path, to: &Path, id: &str) -> Result<()> {
+    let file = path(from, id)?;
+    let shots = images(from, id)?;
+    std::fs::create_dir_all(dir(to))?;
+    std::fs::rename(&file, path(to, id)?)
+        .with_context(|| format!("could not move {}", file.display()))?;
+    match std::fs::rename(&shots, images(to, id)?) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            Err(e).with_context(|| format!("could not remove {}", images.display()))
+            Err(e).with_context(|| format!("could not move {}", shots.display()))
         }
         _ => Ok(()),
     }
+}
+
+/// Forgets a meeting here, with its screenshots, as the app does: into
+/// `<data>/trash` first, from where `restore` puts it back until `purge`
+/// (or `empty_trash`, at the app's next start) removes it. Its page in
+/// brainy stays.
+pub fn trash(data: &Path, id: &str) -> Result<()> {
+    move_meeting(data, &trash_dir(data), id)
+}
+
+/// A meeting `trash` took, back in the list.
+pub fn restore(data: &Path, id: &str) -> Result<()> {
+    move_meeting(&trash_dir(data), data, id)
+}
+
+/// Removes a trashed meeting for good.
+pub fn purge(data: &Path, id: &str) -> Result<()> {
+    let trash = trash_dir(data);
+    let _ = std::fs::remove_dir_all(images(&trash, id)?);
+    match std::fs::remove_file(path(&trash, id)?) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+/// Removes every trashed meeting: those whose undo was not waited for.
+pub fn empty_trash(data: &Path) {
+    let _ = std::fs::remove_dir_all(trash_dir(data));
 }
 
 #[cfg(test)]
@@ -184,8 +219,13 @@ mod tests {
         assert!(loaded.writer.rename("Speaker 1", "Luca"));
         assert!(loaded.transcript().starts_with("**Luca** · 00:04"));
         assert!(load(&data, "../x").is_err());
-        delete(&data, &kept.id).unwrap();
+        trash(&data, &kept.id).unwrap();
         assert!(list(&data).unwrap().is_empty());
+        restore(&data, &kept.id).unwrap();
+        assert_eq!(list(&data).unwrap().len(), 1);
+        trash(&data, &kept.id).unwrap();
+        purge(&data, &kept.id).unwrap();
+        assert!(restore(&data, &kept.id).is_err());
         let _ = std::fs::remove_dir_all(&data);
     }
 }
