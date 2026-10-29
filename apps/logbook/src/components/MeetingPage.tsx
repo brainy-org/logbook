@@ -7,7 +7,9 @@ import { ExternalLink, RefreshCw, Trash2, UserRound } from 'lucide-react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, clock, duration, type MeetingView } from '../lib/api.js';
+import { shotsIn } from '../lib/shots.js';
 import { Markdown } from './Markdown.js';
+import { Shots } from './Recorder.js';
 import {
   compactFieldClass,
   mutedTextClass,
@@ -180,7 +182,7 @@ export function MeetingPage({ id, onDeleted, onChanged }: Props) {
           {tab === 'report' && (
             <section>
               {meeting.report ? (
-                <Markdown text={meeting.report} />
+                <Markdown text={meeting.report} shots={`meetings/${meeting.id}`} />
               ) : (
                 <p className={`text-sm ${mutedTextClass}`}>
                   {meeting.reportError
@@ -305,14 +307,18 @@ function Notes({ meeting, onSaved }: { meeting: MeetingView; onSaved: (notes: st
     saved.current = text;
     onSaved(text);
   };
+  const shots = shotsIn(text);
   return (
-    <textarea
-      value={text}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => void save()}
-      placeholder="No notes were written during this meeting."
-      className="min-h-[40vh] w-full resize-none border-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-neutral-400"
-    />
+    <>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => void save()}
+        placeholder="No notes were written during this meeting."
+        className="min-h-[40vh] w-full resize-none border-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-neutral-400"
+      />
+      {shots.length > 0 && <Shots folder={`meetings/${meeting.id}`} shots={shots} />}
+    </>
   );
 }
 

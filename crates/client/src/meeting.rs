@@ -22,7 +22,7 @@ use crate::finishing::Transient;
 use crate::local;
 use crate::pending::{self, Meeting, Pending, Saved, Spool};
 use crate::remote::{self, Audio, Finalized, KeptChannel, Live, Pass, Server};
-use crate::{history, transcript, voices};
+use crate::{history, shots, transcript, voices};
 #[cfg(feature = "local")]
 use logbook_engine::final_pass::Recorded;
 use logbook_engine::protocol::SAMPLE_RATE;
@@ -516,7 +516,13 @@ pub async fn finish(
     };
     if saved.report {
         info!("writing the report…");
-        write_report(backend, page_brainy.as_ref(), &mut kept_meeting).await;
+        write_report(
+            backend,
+            page_brainy.as_ref(),
+            &mut kept_meeting,
+            &pending.dir,
+        )
+        .await;
     }
     if kept_meeting.report.is_none()
         && !kept_meeting.notes.trim().is_empty()
@@ -527,13 +533,15 @@ pub async fn finish(
         // replaces them, since it holds them).
         let page = kept_meeting.page.clone().expect("checked above");
         let notes = format!("## Notes\n\n{}", kept_meeting.notes.trim());
-        match insert_under_header(b, &page, &notes).await {
+        match insert_under_header(b, &page, &notes, &pending.dir).await {
             Ok(blocks) => kept_meeting.report_blocks = blocks,
             Err(error) => warn!("the notes were not written to the page: {error:#}"),
         }
     }
     if saved.keep {
         history::save(pending.data(), &kept_meeting)?;
+        let images = history::images(pending.data(), &kept_meeting.id)?;
+        shots::keep(&pending.dir, &images, &kept_meeting.notes)?;
     }
     pending.remove()?;
     Ok(Outcome {
@@ -546,28 +554,42 @@ pub async fn finish(
     })
 }
 
-async fn insert_under_header(b: &Brainy, page: &Page, markdown: &str) -> Result<Vec<String>> {
+/// `markdown` right under the page's header, its screenshots from
+/// `images`.
+async fn insert_under_header(
+    b: &Brainy,
+    page: &Page,
+    markdown: &str,
+    images: &Path,
+) -> Result<Vec<String>> {
     let header = b.first_block(&page.id).await?;
-    b.insert_after(&header, markdown).await
+    b.insert_with_images(&header, markdown, images).await
 }
 
 /// Writes the meeting's report, and puts it on its page under the header
 /// in place of the last one. A failure is kept in `report_error`: the
 /// meeting is published without it, and the report can be asked again.
-pub async fn write_report(backend: &Backend, brainy: Option<&Brainy>, kept: &mut history::Kept) {
+/// The screenshots of the notes are in `images`; one the report leaves
+/// out is added at its end.
+pub async fn write_report(
+    backend: &Backend,
+    brainy: Option<&Brainy>,
+    kept: &mut history::Kept,
+    images: &Path,
+) {
     let request = ReportRequest {
         title: kept.title.clone(),
         notes: kept.notes.clone(),
         transcript: kept.transcript(),
     };
     let written = async {
-        let markdown = backend.report(request).await?;
+        let markdown = shots::with_missing(&backend.report(request).await?, &kept.notes);
         if let (Some(b), Some(page)) = (brainy, &kept.page) {
             if !kept.report_blocks.is_empty() {
                 b.delete_blocks(&page.id, &kept.report_blocks).await?;
                 kept.report_blocks.clear();
             }
-            kept.report_blocks = insert_under_header(b, page, &markdown).await?;
+            kept.report_blocks = insert_under_header(b, page, &markdown, images).await?;
         }
         anyhow::Ok(markdown)
     }
@@ -899,6 +921,9 @@ pub(crate) async fn meeting_at(
     let written = notes.lock().unwrap().clone();
     if !written.trim().is_empty() {
         pending.save_notes(&written)?;
+        if let Err(error) = shots::keep(&shots::staging(data), &pending.dir, &written) {
+            warn!("the notes' screenshots were not kept: {error:#}");
+        }
     }
     if let Some(warnings) = live.finalized {
         let utterances = pending.segments()?;

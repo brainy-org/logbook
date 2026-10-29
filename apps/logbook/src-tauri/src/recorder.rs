@@ -122,6 +122,10 @@ impl Recorder {
             });
             state
         };
+        // The screenshots of the last recording no meeting took.
+        logbook_client::shots::clear(&data);
+        #[cfg(not(target_os = "android"))]
+        crate::screenshot::listen(&app);
         let running = self.running.clone();
         tauri::async_runtime::spawn(async move {
             let result = run(
@@ -132,6 +136,8 @@ impl Recorder {
             #[cfg(target_os = "android")]
             crate::android::end(&app);
             running.lock().unwrap().take();
+            #[cfg(not(target_os = "android"))]
+            crate::screenshot::unlisten(&app);
             let _ = app.emit("meeting-state", None::<State>);
             match result {
                 Ok(outcome) => {

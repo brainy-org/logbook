@@ -121,6 +121,12 @@ export interface PendingMeeting {
   title: string | null;
 }
 
+/** A screenshot taken: its file, and the caption of its line in the notes. */
+export interface Shot {
+  name: string;
+  caption: string;
+}
+
 export const api = {
   getSettings: () => invoke<SettingsView>('get_settings'),
   /** A secret left undefined stays as it is; an empty one is removed. */
@@ -144,6 +150,8 @@ export const api = {
   stopMeeting: () => invoke<void>('stop_meeting'),
   /** The notes of meeting `part` of the recording (`RecorderState.part`). */
   setNotes: (part: number, notes: string) => invoke<void>('set_notes', { part, notes }),
+  /** The screen under the pointer, for the notes (desktop only). */
+  takeScreenshot: () => invoke<Shot>('take_screenshot'),
   meetingState: () => invoke<RecorderState | null>('meeting_state'),
   getLogs: () => invoke<LogLine[]>('get_logs'),
   listMeetings: () => invoke<MeetingSummary[]>('list_meetings'),
@@ -177,6 +185,10 @@ export const events = {
     listen<Outcome | null>('meeting-done', (e) => f(e.payload)),
   failed: (f: (m: string) => void) => listen<string>('meeting-failed', (e) => f(e.payload)),
   meetingsChanged: (f: () => void) => listen('meetings-changed', () => f()),
+  /** A screenshot taken by the shortcut while a meeting is recorded. */
+  screenshot: (f: (s: Shot) => void) => listen<Shot>('screenshot', (e) => f(e.payload)),
+  screenshotFailed: (f: (m: string) => void) =>
+    listen<string>('screenshot-failed', (e) => f(e.payload)),
 };
 
 /** Subscribes in an effect: the returned function unsubscribes, even before `listen` resolved. */

@@ -15,6 +15,8 @@
 mod android;
 mod logs;
 mod recorder;
+#[cfg(not(target_os = "android"))]
+mod screenshot;
 mod settings;
 
 use std::path::PathBuf;
@@ -244,6 +246,24 @@ fn set_notes(app: State<App>, part: usize, notes: String) {
     app.recorder.set_notes(part, notes);
 }
 
+/// A screenshot for the notes of the meeting being recorded.
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+async fn take_screenshot(app: State<'_, App>, handle: AppHandle) -> Answer<screenshot::Shot> {
+    let data = app.data.clone();
+    tauri::async_runtime::spawn_blocking(move || screenshot::take(&handle, &data))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(text)
+}
+
+/// Android takes no screenshots.
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn take_screenshot() -> Answer<()> {
+    Err("no screenshots on Android".into())
+}
+
 #[tauri::command]
 fn meeting_state(app: State<App>) -> Option<recorder::State> {
     app.recorder.state()
@@ -392,7 +412,8 @@ async fn write_report(app: State<'_, App>, id: String) -> Answer<MeetingView> {
         Some(_) => Some(settings.credentials().any(None).map_err(text)?),
         None => None,
     };
-    meeting::write_report(&backend, brainy.as_ref(), &mut kept).await;
+    let images = history::images(&app.data, &id).map_err(text)?;
+    meeting::write_report(&backend, brainy.as_ref(), &mut kept, &images).await;
     history::save(&app.data, &kept).map_err(text)?;
     Ok(view(kept))
 }
@@ -561,6 +582,12 @@ pub fn run() {
             let _ = window.set_focus();
         }
     }));
+    #[cfg(not(target_os = "android"))]
+    let builder = builder
+        .plugin(screenshot::plugin(|app| app.state::<App>().data.clone()))
+        .register_uri_scheme_protocol("shot", |ctx, request| {
+            screenshot::serve(&ctx.app_handle().state::<App>().data, &request)
+        });
     #[cfg(target_os = "android")]
     let builder = builder.plugin(tauri_plugin_recording::init());
     builder
@@ -627,6 +654,7 @@ pub fn run() {
             start_meeting,
             stop_meeting,
             set_notes,
+            take_screenshot,
             meeting_state,
             get_logs,
             list_meetings,

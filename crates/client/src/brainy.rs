@@ -3,12 +3,16 @@
 //! is written by the person's own token, so it lands only where they can
 //! write; logbook-server never holds brainy credentials.
 
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
+use base64::Engine;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::finishing::HttpStatus;
+use crate::shots::{self, Piece};
 use crate::transcript::escape;
 
 /// brainy refuses Markdown longer than 200 000 characters in one call
@@ -61,6 +65,11 @@ struct Block {
 #[derive(Deserialize)]
 struct Inserted {
     block_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Uploaded {
+    block_id: String,
 }
 
 impl Brainy {
@@ -216,6 +225,57 @@ impl Brainy {
             ids.extend(inserted.block_ids);
         }
         Ok(ids)
+    }
+
+    /// `insert_after`, with the screenshots the Markdown shows (shots.rs)
+    /// uploaded from `images` as image blocks in their places. One whose
+    /// file is gone is left out with a warning.
+    pub async fn insert_with_images(
+        &self,
+        block: &str,
+        markdown: &str,
+        images: &Path,
+    ) -> Result<Vec<String>> {
+        let mut after = block.to_string();
+        let mut ids = Vec::new();
+        for piece in shots::pieces(markdown) {
+            let added = match piece {
+                Piece::Text(text) => self.insert_after(&after, &text).await?,
+                Piece::Image { name, caption } => {
+                    let path = images.join(&name);
+                    let Ok(data) = std::fs::read(&path) else {
+                        tracing::warn!("the screenshot {} is gone", path.display());
+                        continue;
+                    };
+                    vec![self.upload_image(&after, &data, &name, &caption).await?]
+                }
+            };
+            if let Some(last) = added.last() {
+                after = last.clone();
+            }
+            ids.extend(added);
+        }
+        Ok(ids)
+    }
+
+    /// Uploads a PNG as an image block right after a block; its id.
+    pub async fn upload_image(
+        &self,
+        after: &str,
+        png: &[u8],
+        name: &str,
+        caption: &str,
+    ) -> Result<String> {
+        let mut body = json!({
+            "data": base64::engine::general_purpose::STANDARD.encode(png),
+            "name": name,
+            "after_block_id": after,
+        });
+        if !caption.is_empty() {
+            body["caption"] = json!(caption);
+        }
+        let uploaded: Uploaded = self.send(Method::POST, "/api/v1/images", &body).await?;
+        Ok(uploaded.block_id)
     }
 
     /// Deletes blocks (they stay in the page's history); those already

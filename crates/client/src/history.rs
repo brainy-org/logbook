@@ -2,8 +2,9 @@
 //! transcript, the notes and the report, so that they can be read again,
 //! their speakers renamed and their report written again
 //! (`<data>/meetings/<id>.json`, the id of the pending folder they came
-//! from). Text only: the audio is gone by then (pending.rs), and the
-//! voices stay in voices.rs, which keeps them for the last meetings only.
+//! from; the notes' screenshots in `<data>/meetings/<id>/`). No audio: it
+//! is gone by then (pending.rs), and the voices stay in voices.rs, which
+//! keeps them for the last meetings only.
 //! The CLI keeps nothing here (`Saved::keep`).
 
 use std::path::{Path, PathBuf};
@@ -76,6 +77,11 @@ fn dir(data: &Path) -> PathBuf {
     data.join("meetings")
 }
 
+/// The screenshots of meeting `id`'s notes (shots.rs).
+pub fn images(data: &Path, id: &str) -> Result<PathBuf> {
+    Ok(path(data, id)?.with_extension(""))
+}
+
 fn path(data: &Path, id: &str) -> Result<PathBuf> {
     // The id names a file: nothing that walks out of the folder.
     anyhow::ensure!(
@@ -125,10 +131,17 @@ pub fn list(data: &Path) -> Result<Vec<Summary>> {
     Ok(out)
 }
 
-/// Forgets a meeting here; its page in brainy stays.
+/// Forgets a meeting here, with its screenshots; its page in brainy stays.
 pub fn delete(data: &Path, id: &str) -> Result<()> {
     let path = path(data, id)?;
-    std::fs::remove_file(&path).with_context(|| format!("could not remove {}", path.display()))
+    std::fs::remove_file(&path).with_context(|| format!("could not remove {}", path.display()))?;
+    let images = images(data, id)?;
+    match std::fs::remove_dir_all(&images) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("could not remove {}", images.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

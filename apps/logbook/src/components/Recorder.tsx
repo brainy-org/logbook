@@ -2,19 +2,25 @@
 // the live transcript beside it, and a pill at the bottom with the levels,
 // the time and the stop button. The notes go to the app as they are typed
 // (`set_notes`), and to the report when the meeting ends. At phone width
-// the live transcript is a panel over the notes, closed at first.
+// the live transcript is a panel over the notes, closed at first. On the
+// desktop a screenshot (the button, or the shortcut from any app) goes in
+// the notes as a line of its own where the cursor is, shown under them.
 import { useEffect, useRef, useState } from 'react';
-import { PanelRightClose, PanelRightOpen, Square } from 'lucide-react';
+import { Camera, PanelRightClose, PanelRightOpen, Square } from 'lucide-react';
 import {
   api,
   clock,
+  events,
   liveLabel,
+  subscribe,
   type LiveUtterance,
   type LogLine,
   type ModelsStatus,
   type RecorderState,
+  type Shot,
 } from '../lib/api.js';
 import { android } from '../lib/platform.js';
+import { SHORTCUT, shotsIn, shotUrl, withShot } from '../lib/shots.js';
 import { mutedTextClass } from './form-styles.js';
 import { ModelsProgress } from './ModelsProgress.js';
 
@@ -35,6 +41,11 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
     () => !window.matchMedia('(max-width: 639px)').matches,
   );
   const [now, setNow] = useState(Date.now());
+  const [shotError, setShotError] = useState<string | null>(null);
+  const [shooting, setShooting] = useState(false);
+  const area = useRef<HTMLTextAreaElement>(null);
+  // The notes as last typed, for a screenshot that comes by an event.
+  const current = useRef(state.notes);
   const timer = useRef<number | undefined>(undefined);
   // Notes typed and not sent yet: sent with this meeting's number, so that
   // a cut between typing and sending leaves them with this meeting.
@@ -56,11 +67,42 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   useEffect(() => () => void send(), []);
 
   const edit = (text: string) => {
+    current.current = text;
     setNotes(text);
     unsent.current = text;
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => void send(), NOTES_DELAY_MS);
   };
+  // The screenshot's line where the cursor is, or at the end.
+  const insert = (shot: Shot) => {
+    const el = area.current;
+    const text = current.current;
+    const at = el && document.activeElement === el ? el.selectionStart : text.length;
+    const next = withShot(text, at, shot);
+    edit(next.text);
+    window.requestAnimationFrame(() => el?.setSelectionRange(next.caret, next.caret));
+    setShotError(null);
+  };
+  const failed = (message: string) => {
+    setShotError(message);
+    window.setTimeout(() => setShotError(null), 8000);
+  };
+  useEffect(() => {
+    if (android) return;
+    return subscribe(events.screenshot(insert), events.screenshotFailed(failed));
+  }, []);
+  const screenshot = async () => {
+    setShooting(true);
+    try {
+      insert(await api.takeScreenshot());
+    } catch (e) {
+      failed(String(e));
+    } finally {
+      setShooting(false);
+    }
+  };
+  const shots = shotsIn(notes);
+
   // The last keystrokes are not lost when the meeting stops.
   const stop = async () => {
     await send();
@@ -77,6 +119,18 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
           data-tauri-drag-region
           className="flex h-11 shrink-0 items-center justify-end gap-2 px-4"
         >
+          {!android && recording && (
+            <button
+              type="button"
+              disabled={shooting}
+              title={`Take a screenshot for the notes (${SHORTCUT}, from any app)`}
+              onClick={() => void screenshot()}
+              className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 disabled:opacity-50 dark:hover:bg-neutral-800"
+            >
+              <Camera className="size-4" />
+              <span className="font-mono text-xs">{SHORTCUT}</span>
+            </button>
+          )}
           <button
             type="button"
             title={showTranscript ? 'Hide the transcript' : 'Show the transcript'}
@@ -103,7 +157,9 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
                 })
               : 'Getting ready…'}
           </p>
+          {shotError && <p className="mb-3 text-sm text-red-600">{shotError}</p>}
           <textarea
+            ref={area}
             autoFocus={!android}
             readOnly={state.phase === 'finishing'}
             value={notes}
@@ -113,6 +169,7 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
             }
             className="min-h-[50vh] w-full flex-1 resize-none border-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-neutral-400"
           />
+          {shots.length > 0 && <Shots folder="screenshots" shots={shots} />}
         </div>
 
         <Pill
@@ -185,6 +242,30 @@ function Pill({
           <span className="mr-3 size-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
         )}
       </div>
+    </div>
+  );
+}
+
+/** The notes' screenshots, small, each with its caption. */
+export function Shots({
+  folder,
+  shots,
+}: {
+  folder: string;
+  shots: { name: string; caption: string }[];
+}) {
+  return (
+    <div className="mt-4 grid grid-cols-3 gap-3 max-sm:grid-cols-2">
+      {shots.map((s) => (
+        <figure key={s.name}>
+          <img
+            src={shotUrl(folder, s.name)}
+            alt={s.caption}
+            className="aspect-video w-full rounded-md border border-neutral-200 object-cover dark:border-neutral-800"
+          />
+          <figcaption className="mt-1 truncate text-xs text-neutral-500">{s.caption}</figcaption>
+        </figure>
+      ))}
     </div>
   );
 }

@@ -13,6 +13,7 @@ local = ["logbook-engine/models"]
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.22.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 cpal = "0.18.2"
 futures-util = "0.3.34"

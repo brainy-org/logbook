@@ -11,9 +11,11 @@ builds for Android, as a recorder for a server ("Android" below).
 | `src-tauri/src/recorder.rs` | the recording, one at a time: `series::meetings` run with the settings' channels and the default limits (a meeting closes after 15 minutes without a phrase, or at 8 hours), events to the pages (`meeting-state`, whose `part` counts the meetings of the recording; `utterance`, on the recording's clock; `levels`; `meetings-changed` or `meeting-failed` for a meeting that ends while the next records; `meeting-done` or `meeting-failed` at the end) |
 | `src-tauri/src/settings.rs` | `settings.json` in the app's config folder (the meeting's `Mode`, chosen on the home page and saved by `start_meeting`, decides the channels: the call, the microphone diarized); the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
+| `src-tauri/src/screenshot.rs` | the desktop's screenshots for the notes: the screen under the pointer (xcap), the app's window hidden while it is taken when it is in front; the button (`take_screenshot`) or `SHORTCUT` (⌘⇧2, Ctrl+Shift+2), registered only while a meeting is recorded (`screenshot` events); the `shot` scheme the pages load them from |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views (the live transcript's last 300 phrases: a meeting of hours has tens of thousands) |
 | `src/components/Home.tsx` | before a meeting: its title and mode (Call, In the room, Room + call) with what each records, what will happen to it, the pending meetings |
-| `src/components/Recorder.tsx` | notes, live transcript, the meter and stop; drawn again (`key`: the state's `part`) when the recording's next meeting starts, its notes empty |
+| `src/components/Recorder.tsx` | notes, live transcript, the meter and stop; drawn again (`key`: the state's `part`) when the recording's next meeting starts, its notes empty; a screenshot's line put where the cursor is, the notes' screenshots shown under them |
+| `src/lib/shots.ts` | the screenshots' lines in the notes (`![Screenshot 10:32](screenshot-….png)`, crates/client `shots.rs`) and their `shot` addresses |
 | `src/components/ModelsProgress.tsx` | the models' download and loading as a bar, on the home page and in the live transcript until they are ready |
 | `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
 | `src/lib/platform.ts` | `android`: what the pages hide or say otherwise on a phone |
@@ -45,7 +47,27 @@ builds for Android, as a recorder for a server ("Android" below).
 - **The report and the notes are rendered as React elements**
   (`Markdown.tsx`, react-markdown without raw HTML). A model's output in
   `dangerouslySetInnerHTML` is markup in a window that can call the
-  app's commands.
+  app's commands. Its images are the meeting's screenshots only, by
+  file name through the `shot` scheme, which serves
+  `screenshots/<name>` and `meetings/<id>/<name>` and nothing else of
+  the data folder: an image from anywhere else is not loaded, so a
+  report cannot make the window fetch an address.
+- **A screenshot is a line of the notes, the file kept beside the
+  meeting** (crates/client `shots.rs`): taken into `<data>/screenshots`,
+  copied into the pending folder when the meeting ends (the notes name
+  the files), into `<data>/meetings/<id>/` once it is published, and
+  uploaded to brainy as an image block in its line's place
+  (`Brainy::insert_with_images`: brainy's Markdown drops any image that
+  is not an http(s) address). The report's model is asked to copy the
+  lines where they belong; one it drops is added at the report's end
+  (`shots::with_missing`). `<data>/screenshots` is emptied when the next
+  recording starts, not when a meeting ends: a meeting of the series
+  still finishing copies its screenshots from there.
+- **The shortcut is registered only while a meeting is recorded**
+  (`screenshot::listen`, `unlisten`): a global shortcut takes the keys
+  from every other app. macOS asks for Screen Recording the first time;
+  refused, the capture holds the desktop without the other apps'
+  windows.
 - **The bundle needs its plists**: `Info.plist` (merged by Tauri) has the
   microphone's and the call's usage strings, without which macOS refuses
   them silently; `Entitlements.plist` the microphone under the hardened

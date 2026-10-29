@@ -1,11 +1,14 @@
 // Markdown from a language model or the person, rendered as React
 // elements: react-markdown never renders the HTML in it, so a report
 // cannot inject markup into the app's window. Links open in the browser.
+// Images are the meeting's screenshots only, from `shots` (lib/shots.ts):
+// nothing is loaded from elsewhere.
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { isShot, shotUrl } from '../lib/shots.js';
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, shots }: { text: string; shots?: string }) {
   return (
     <div className="prose-report">
       <ReactMarkdown
@@ -22,6 +25,14 @@ export function Markdown({ text }: { text: string }) {
               {children}
             </a>
           ),
+          img: ({ src, alt }) =>
+            shots && typeof src === 'string' && isShot(src) ? (
+              <img
+                src={shotUrl(shots, src)}
+                alt={alt ?? ''}
+                className="rounded-md border border-neutral-200 dark:border-neutral-800"
+              />
+            ) : null,
         }}
       >
         {text}

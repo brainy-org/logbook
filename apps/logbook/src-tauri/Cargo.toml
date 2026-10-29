@@ -29,12 +29,16 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # The desktop: the local backend and its models, the keychain (secrets
-# kept there by an earlier version), one window.
+# kept there by an earlier version), one window, screenshots for the notes
+# (screenshot.rs) and their shortcut.
 [target.'cfg(not(target_os = "android"))'.dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 logbook-client = { version = "0.1.0", path = "../../../crates/client", features = ["local"] }
 logbook-engine = { version = "0.1.0", path = "../../../crates/engine", features = ["models"] }
+tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2.5.4"
+xcap = "0.9.8"
 
 # Android: records and sends to a server; the foreground service that keeps
 # it recording with the screen off.

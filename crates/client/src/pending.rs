@@ -8,7 +8,8 @@
 //! meeting's clock, written as it is captured, in files of 5 minutes
 //! (`<channel>-<n>.pcm`, engine recording.rs's layout), `segments.jsonl`
 //! (the final segments as they come during the meeting), `notes.md` (what
-//! the person wrote during it, for the report) and `final.json` once the
+//! the person wrote during it, for the report) with the screenshots it
+//! names (shots.rs), and `final.json` once the
 //! final pass is complete. The audio is kept only from where the final
 //! segments have come (`trim`): a final pass taken up again starts there,
 //! and a meeting of days keeps minutes of it; all of it goes with

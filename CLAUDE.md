@@ -40,14 +40,16 @@ crates/client/   the client, a library the CLI and the app share: the audio (aud
                  the server if need be (finishing.rs), the final transcript as Markdown a
                  part at a time (transcript.rs) into brainy as it comes (brainy.rs),
                  the report, speakers named from voices known on this computer
-                 (voices.rs), and for the app the meetings kept (history.rs); a
+                 (voices.rs), and for the app the meetings kept (history.rs) and the
+                 screenshots in their notes (shots.rs); a
                  recording cut into meetings at a long pause or a meeting's length
                  (series.rs: every channel cut at one sample)
 crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
                  with --system, the call), finish (pending meetings), speakers,
                  devices, bench: options and printing only
 apps/logbook/    the app, macOS, Windows and Android: pages (React, brainy's look) and src-tauri/
-                 (recorder, settings and their secrets, logs; android.rs and the
+                 (recorder, settings and their secrets, logs, screenshots for the
+                 notes; android.rs and the
                  Android project in gen/android); plugins/recording: the Android
                  foreground service, wake lock and permissions (Kotlin)  → docs/app.md
 scripts/         server.sh (builds and runs the server), client.sh, app.sh (the app:

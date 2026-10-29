@@ -5,9 +5,9 @@
 //! finished later if it could not be then (finishing.rs),
 //! written as Markdown (transcript.rs) into brainy (brainy.rs), its
 //! speakers named from voices known on this computer (voices.rs), and,
-//! for the app, kept once published (history.rs). Messages for the person
-//! go through `tracing` at info and warn: the CLI prints them, the app
-//! shows them.
+//! for the app, kept once published (history.rs), with the screenshots
+//! in its notes (shots.rs). Messages for the person go through
+//! `tracing` at info and warn: the CLI prints them, the app shows them.
 //!
 //! The `local` feature (default) is the backend in this process, with the
 //! engine's models; without it the client streams to a server only, and
@@ -24,5 +24,6 @@ pub mod meeting;
 pub mod pending;
 pub mod remote;
 pub mod series;
+pub mod shots;
 pub mod transcript;
 pub mod voices;
