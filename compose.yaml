@@ -9,9 +9,9 @@
 #
 #   docker compose exec server cat /data/admin.token
 #
-# Or set LOGBOOK_ADMIN_TOKEN in .env. The language model for the clean-up
-# and the reports: LOGBOOK_POLISH_URL, LOGBOOK_POLISH_MODEL and
-# LOGBOOK_POLISH_KEY in .env (README.md, "Docker").
+# Or set LOGBOOK_ADMIN_TOKEN in .env. The language model for the reports:
+# LOGBOOK_LLM_URL, LOGBOOK_LLM_MODEL and LOGBOOK_LLM_KEY in .env
+# (README.md, "Docker").
 
 services:
   server:
@@ -22,9 +22,9 @@ services:
       - "127.0.0.1:3300:3300"
     environment:
       LOGBOOK_ADMIN_TOKEN: ${LOGBOOK_ADMIN_TOKEN:-}
-      LOGBOOK_POLISH_URL: ${LOGBOOK_POLISH_URL:-}
-      LOGBOOK_POLISH_MODEL: ${LOGBOOK_POLISH_MODEL:-}
-      LOGBOOK_POLISH_KEY: ${LOGBOOK_POLISH_KEY:-}
+      LOGBOOK_LLM_URL: ${LOGBOOK_LLM_URL:-}
+      LOGBOOK_LLM_MODEL: ${LOGBOOK_LLM_MODEL:-}
+      LOGBOOK_LLM_KEY: ${LOGBOOK_LLM_KEY:-}
     volumes:
       - cache:/home/logbook/.cache/brainy-org
       - data:/data

@@ -72,6 +72,35 @@ struct Uploaded {
     block_id: String,
 }
 
+/// A collection's properties, as `query_collection` describes them.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Collection {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub properties: Vec<Property>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Property {
+    pub name: String,
+    /// brainy's type: `title`, `text`, `date`, `status`, `select`, `url`…
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Queried {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    properties: Vec<Property>,
+    #[serde(default)]
+    rows: Vec<Created>,
+}
+
 impl Brainy {
     pub fn new(url: &str, token: &str) -> Result<Self> {
         Ok(Self {
@@ -184,6 +213,93 @@ impl Brainy {
             .next()
             .context("the page has no blocks")?;
         Ok(first.block_id)
+    }
+
+    /// A turn's heading block on the page ("**Luca** · 12:34"), by its time
+    /// in seconds: the moments a row of the meeting's tasks links to.
+    pub async fn turns(&self, page: &str) -> Result<Vec<(String, f64)>> {
+        Ok(self
+            .blocks(page)
+            .await?
+            .into_iter()
+            .filter(|b| b.depth == 0)
+            .filter_map(|b| Some((b.block_id, turn_time(&b.markdown)?)))
+            .collect())
+    }
+
+    /// The collection `id` (its page or inline block): its properties.
+    /// An error if it is not a collection.
+    pub async fn collection(&self, id: &str) -> Result<Collection> {
+        let queried: Queried = self
+            .send(
+                Method::POST,
+                &format!("/api/v1/collections/{id}/query"),
+                &json!({ "limit": 1 }),
+            )
+            .await?;
+        Ok(Collection {
+            name: queried.name,
+            properties: queried.properties,
+        })
+    }
+
+    /// Adds properties (brainy's specs: name, type, options) and options of
+    /// existing ones to a collection; names already there are skipped.
+    pub async fn extend_collection(
+        &self,
+        id: &str,
+        properties: &[serde_json::Value],
+        options: &serde_json::Value,
+    ) -> Result<()> {
+        let _: serde_json::Value = self
+            .send(
+                Method::POST,
+                &format!("/api/v1/collections/{id}/extend"),
+                &json!({ "properties": properties, "options": options }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// The address of the first row of collection `id` that `filters`
+    /// (brainy's: property, operator, value) keep, if any.
+    pub async fn find_row(
+        &self,
+        id: &str,
+        filters: &[serde_json::Value],
+    ) -> Result<Option<String>> {
+        let queried: Queried = self
+            .send(
+                Method::POST,
+                &format!("/api/v1/collections/{id}/query"),
+                &json!({ "filters": filters, "match": "all", "limit": 1 }),
+            )
+            .await?;
+        Ok(queried.rows.into_iter().next().map(|r| r.url))
+    }
+
+    /// A row of collection `id`: its title, its properties by name, and
+    /// Markdown in it; its address.
+    pub async fn create_row(
+        &self,
+        id: &str,
+        title: &str,
+        properties: &serde_json::Map<String, serde_json::Value>,
+        markdown: &str,
+    ) -> Result<String> {
+        let created: Created = self
+            .send(
+                Method::POST,
+                "/api/v1/pages",
+                &json!({
+                    "title": title,
+                    "parent_id": id,
+                    "properties": properties,
+                    "content": markdown,
+                }),
+            )
+            .await?;
+        Ok(created.url)
     }
 
     /// Rewrites the page's first block (one block of Markdown): the
@@ -357,6 +473,25 @@ impl Brainy {
     }
 }
 
+/// The time of a turn's heading line ("**Luca** · 1:02:03"), in seconds.
+fn turn_time(markdown: &str) -> Option<f64> {
+    let line = markdown.trim();
+    let rest = line.strip_prefix("**")?;
+    let (_, time) = rest.rsplit_once("** · ")?;
+    let mut total = 0u64;
+    let fields: Vec<&str> = time.split(':').collect();
+    if !(2..=3).contains(&fields.len()) {
+        return None;
+    }
+    for field in fields {
+        if field.is_empty() || !field.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        total = total * 60 + field.parse::<u64>().ok()?;
+    }
+    Some(total as f64)
+}
+
 /// A turn's heading line with the speaker's new label, if it is `from`'s.
 fn renamed_turn(markdown: &str, from: &str, to: &str) -> Option<String> {
     let prefix = format!("**{}** · ", escape(from));
@@ -493,6 +628,20 @@ mod tests {
             renamed_header("Recorded … · 1 min · Marco", "Anna", "Bo"),
             None
         );
+    }
+
+    #[test]
+    fn a_turn_heading_gives_its_time() {
+        assert_eq!(turn_time("**Luca** · 12:34"), Some(754.0));
+        assert_eq!(
+            turn_time("**Speaker 2 \\(Luca?\\)** · 1:02:03"),
+            Some(3723.0)
+        );
+        assert_eq!(
+            turn_time("Recorded 2026-10-29 09:00 · 12 min · Marco"),
+            None
+        );
+        assert_eq!(turn_time("**bold** text"), None);
     }
 
     #[test]

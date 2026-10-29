@@ -8,7 +8,7 @@ publish.workspace = true
 [features]
 # The models: libparakeet, the mirror, the pipeline and the session. Off,
 # the crate is what a client streaming to a server needs (the protocol,
-# the codec, the language model's clean-up and report): the Android app.
+# the codec, the language model's report): the Android app.
 default = ["models"]
 models = ["dep:flate2", "dep:libloading", "dep:sha2", "dep:tar", "dep:zip", "dep:tokio"]
 

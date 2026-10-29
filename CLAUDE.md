@@ -17,19 +17,18 @@ crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet
                  as the meeting goes (progressive.rs) or over an upload (final_pass.rs),
                  the wire protocol (protocol.rs), Opus for the live socket and
                  the upload (codec.rs),
-                 the final transcript cleaned up by a language model (polish.rs),
-                 the meeting's report written by it (report.rs),
+                 the meeting's report written by a language model (report.rs,
+                 its endpoint: llm.rs) and its tasks found by it as JSON (tasks.rs),
                  libparakeet and the models from the mirror (mirror.rs),
                  files replaced whole in a folder replicas share (store.rs);
                  a meeting's session, one thread each (session.rs), and what sessions
                  share: the batcher thread for every transcription (batcher.rs), the
                  finalizer thread for final passes (finalizer.rs), their audio
-                 (recording.rs) and results by id (finals.rs), the threads that ask
-                 the clean-up model (polisher.rs)
+                 (recording.rs) and results by id (finals.rs)
                  examples/diarize.rs: diarization strategies scored with
                  scripts/der.py                                    → docs/pipeline.md
 crates/server/   logbook-server: the engine's sessions over WebSocket /live, final
-                 passes over HTTP /finals, reports /reports (axum), each behind a
+                 passes over HTTP /finals, reports /reports, tasks /tasks (axum), each behind a
                  person's token made on the admin page at / (auth.rs)
                                                                    → docs/protocol.md
 crates/client/   the client, a library the CLI and the app share: the audio (audio.rs,
@@ -39,7 +38,8 @@ crates/client/   the client, a library the CLI and the app share: the audio (aud
                  kept until published (pending.rs) and finished later, waiting for
                  the server if need be (finishing.rs), the final transcript as Markdown a
                  part at a time (transcript.rs) into brainy as it comes (brainy.rs),
-                 the report, speakers named from voices known on this computer
+                 the report, the tasks as rows "To confirm" of a brainy collection
+                 (tasks.rs), speakers named from voices known on this computer
                  (voices.rs), and for the app the meetings kept (history.rs) and the
                  screenshots in their notes (shots.rs); a
                  recording cut into meetings at a long pause or a meeting's length
@@ -145,11 +145,6 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   the audio transcribes for a client long gone, or never yields to its
   live transcript
   (`docs/decisions/2026-10-29-a-server-on-a-cpu-falls-behind.md`).
-- **A session has one part with the clean-up model at a time**
-  (`Final::polishing`, engine `session.rs`): final segments leave in the
-  order they were ready. Two parts out at once can come back swapped and
-  be appended to the page out of order, and the second misses the first
-  as context (`docs/pipeline.md`, "Final pass", step 6).
 - **Times that go out as JSON are never infinite**: serde_json writes
   infinity as `null`, which does not read back as a number. "To the end"
   is `f64::MAX` (`until`, `published_until`).
@@ -174,9 +169,15 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   finish it; `open` only reads). A `finish` that skipped the lock would
   upload and publish a meeting still being recorded, or publish one
   twice (client `finishing.rs`).
+- **A meeting's task rows are written once**: the tasks found are saved
+  in the pending meeting before any row, each row recorded when brainy
+  answers, `writing` saved before it is asked (client `tasks.rs`,
+  `write_rows`). A row written without that bookkeeping, or the model
+  asked again, puts a meeting's tasks twice in a team's collection after
+  any retry of `finish`; nothing fails to say so (docs/pipeline.md, "Tasks").
 - **logbook-server holds no brainy credentials.** It returns the final
-  transcript and the report; the client writes the page with the person's
-  own token (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).
+  transcript, the report and the tasks; the client writes the page and
+  the rows with the person's own token (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).
 - **The desktop app is built for macOS 11.0** (`minimumSystemVersion`):
   Tauri exports it as `MACOSX_DEPLOYMENT_TARGET`, and 14 or more makes
   macOS 27's linker write proc-macro dylibs rustc cannot load (E0463).

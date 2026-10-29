@@ -1,9 +1,11 @@
-// A past meeting: its report, your notes and the final transcript, and its
+// A past meeting: its report, your notes and the final transcript, the
+// tasks proposed in brainy (to confirm there, each a click from its
+// moment on the page), and its
 // speakers, each of which can be given a name ("Speaker 2" → "Luca"):
 // here, on the brainy page, and in the voices known by name, so that the
 // next meetings name them by themselves.
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ExternalLink, RefreshCw, Trash2, UserRound } from 'lucide-react';
+import { ExternalLink, ListChecks, RefreshCw, Trash2, UserRound } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, clock, duration, type MeetingView } from '../lib/api.js';
 import { Markdown } from './Markdown.js';
@@ -150,6 +152,8 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
             </p>
           ))}
 
+          {meeting.tasks.length > 0 && <Tasks meeting={meeting} onError={setError} />}
+
           <nav className="mt-8 mb-5 flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
             {(['report', 'notes', 'transcript'] as const).map((t) => (
               <button
@@ -198,6 +202,45 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** The tasks proposed as rows "To confirm": each opens its row or its moment on the page. */
+function Tasks({ meeting, onError }: { meeting: MeetingView; onError: (e: string) => void }) {
+  const open = (url: string) => openUrl(url).catch((e) => onError(String(e)));
+  return (
+    <section className="mt-6 rounded-md border border-neutral-200 px-4 py-3 dark:border-neutral-800">
+      <h2 className="flex items-center gap-1.5 text-sm font-medium">
+        <ListChecks className="size-4" />
+        {meeting.tasks.length === 1 ? '1 task' : `${meeting.tasks.length} tasks`} to confirm in
+        brainy
+      </h2>
+      <ul className="mt-2 space-y-1.5 text-sm">
+        {meeting.tasks.map((t) => (
+          <li key={t.row} className="flex items-baseline gap-2">
+            <button
+              type="button"
+              title="Where it was said"
+              onClick={() => void open(t.moment)}
+              className="shrink-0 font-mono text-xs text-neutral-500 hover:text-accent"
+            >
+              {clock(t.at)}
+            </button>
+            <button
+              type="button"
+              title="Open the row in brainy"
+              onClick={() => void open(t.row)}
+              className="text-left hover:text-accent"
+            >
+              {t.task}
+            </button>
+            <span className={`ml-auto shrink-0 text-xs ${mutedTextClass}`}>
+              {[t.owner, t.due].filter(Boolean).join(' · ')}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

@@ -7,9 +7,7 @@
 //! live sessions' GPU to one call at a time, and keeps them off the
 //! sessions' threads. A whole meeting is an upload, or one a client kept
 //! and reads again in its own process (client local.rs), from where its
-//! final segments stopped. An upload's result goes through the model that
-//! cleans the transcript up, when there is one and the client did not
-//! decline it (polisher.rs).
+//! final segments stopped.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
@@ -22,7 +20,6 @@ use crate::protocol::{FinalState, SpeakerVoice};
 use tracing::{info, warn};
 
 use crate::finals::Finals;
-use crate::polisher::PolishJob;
 use crate::recording::{RangeReader, RecordedFile};
 use crate::session::Input;
 
@@ -43,16 +40,10 @@ pub enum FinalJob {
         offset: f64,
         /// The meeting's speakers before it.
         voices: Vec<SpeakerVoice>,
-        /// Through the clean-up model, if there is one.
-        polish: bool,
     },
 }
 
-pub fn spawn(
-    engine: Arc<Engine>,
-    finals: Arc<Finals>,
-    polisher: Option<Sender<PolishJob>>,
-) -> Sender<FinalJob> {
+pub fn spawn(engine: Arc<Engine>, finals: Arc<Finals>) -> Sender<FinalJob> {
     let (tx, rx) = channel::<FinalJob>();
     std::thread::Builder::new()
         .name("finalizer".into())
@@ -70,12 +61,10 @@ pub fn spawn(
                         files,
                         offset,
                         voices,
-                        polish,
                     } => {
-                        let polisher = polisher.as_ref().filter(|_| polish);
                         let state = engine.final_pass(channels, offset, &voices);
                         drop(files);
-                        whole_done(&finals, polisher, id, state)
+                        whole_done(&finals, id, state)
                     }
                 }
             }
@@ -113,51 +102,13 @@ fn run_ranges(
     }
 }
 
-fn whole_done(
-    finals: &Finals,
-    polisher: Option<&Sender<PolishJob>>,
-    id: String,
-    result: anyhow::Result<crate::final_pass::Final>,
-) {
+fn whole_done(finals: &Finals, id: String, result: anyhow::Result<crate::final_pass::Final>) {
     let state = match result {
         Ok(result) => {
             info!(
                 utterances = result.utterances.len(),
                 "final pass of a whole meeting"
             );
-            if let Some(polisher) = polisher {
-                let job = PolishJob::Whole {
-                    id: id.clone(),
-                    utterances: result.utterances,
-                    warnings: result.warnings,
-                    voices: result.voices,
-                    from: result.from,
-                };
-                match polisher.send(job) {
-                    Ok(()) => return,
-                    Err(std::sync::mpsc::SendError(job)) => {
-                        if let PolishJob::Whole {
-                            utterances,
-                            warnings,
-                            voices,
-                            from,
-                            ..
-                        } = job
-                        {
-                            finals.finish(
-                                &id,
-                                FinalState::Done {
-                                    utterances,
-                                    warnings,
-                                    voices,
-                                    from,
-                                },
-                            );
-                        }
-                        return;
-                    }
-                }
-            }
             FinalState::Done {
                 utterances: result.utterances,
                 warnings: result.warnings,

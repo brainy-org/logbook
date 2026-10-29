@@ -20,9 +20,6 @@ token ("Tokens", below).
    the speakers): its echoed words are dropped (docs/pipeline.md, "Echo").
    `"final_pass": true`, optional, asks for the final pass after `stop`:
    the server records the audio for it and deletes it afterwards.
-   `"polish": true`, optional, has the final transcript cleaned up on a
-   server with a model for it (`--polish-url`), which then reads the
-   meeting's text. Default `false`: as heard, and nothing sent to it.
    `"offset"`, optional (default 0): where on the meeting's clock the
    session's first sample is, in seconds; every time the server sends is
    moved by it. `"voices"`, optional: the meeting's speakers so far, as
@@ -67,11 +64,7 @@ token ("Tokens", below).
   the shape of `utterance` without the `type`. Never sent again, never
   changed: the next ones start at `until` or later. The final pass's
   speakers are numbered once for the whole meeting (not as the live ones).
-  The last ones have `until` 1.8e308 (JSON has no infinity). On a server
-  that cleans the transcript up (`--polish-url`), when `start` said
-  `"polish": true`, `text` is the cleaned
-  text and `words` stay as heard: the two may differ, and a segment of
-  fillers alone may be missing. `voices` (absent when there is none): every
+  The last ones have `until` 1.8e308 (JSON has no infinity). `voices` (absent when there is none): every
   speaker of the diarized channels so far, as
   `{"channel","speaker","embedding":[256 floats, L2-normalized],"seconds"}`,
   the mean of its WeSpeaker embeddings over `seconds` of audio where it
@@ -152,7 +145,7 @@ the client moves its times by where it started
 ## Final passes over HTTP
 
 - `POST /finals`, multipart: a part `meeting` first, JSON
-  `{"channels":[...],"polish":true,"offset":1834.2,"voices":[...]}` as in
+  `{"channels":[...],"offset":1834.2,"voices":[...]}` as in
   `start` (all but `channels` optional), then one part `audio` per
   channel in the same order, starting at `offset` on the meeting's clock:
   the client uploads from where the final segments it has stopped. Its
@@ -165,8 +158,8 @@ the client moves its times by where it started
   `{"state":"failed","message":"…"}`. `from` (seconds, on the meeting's
   clock): every segment starting at or after it is in `utterances`, none
   before. An upload's result starts at its `offset`; a live session's
-  keeps only the last ten minutes or so of what it sent (and at least
-  the last three segments: engine session.rs, `KEEP_SENT`), so a client
+  keeps only the last ten minutes or so of what it sent (engine
+  session.rs, `KEEP_SENT`), so a client
   whose final segments stop before `from` has a gap and uploads its
   audio from where they stop, as for a `404`. Missing (a server older
   than it) is 0: everything. `404` if the server does not know
@@ -180,10 +173,23 @@ the client moves its times by where it started
   model (docs/pipeline.md, "Report"). `transcript` is the final
   transcript as the client writes it, Markdown with the speakers' names.
   Answers `200 {"markdown":"…"}`; `501` on a server without a model
-  (`--polish-url`); `502` with the reason when the model fails. At most
+  (`--llm-url`); `502` with the reason when the model fails. At most
   64 MB (a long meeting is reported in steps, one request to the model
   each, and holds its place for all of them); as many at once as
-  `--polish-parallel`, the others wait.
+  `--report-parallel`, the others wait.
+
+- `POST /tasks`, JSON `{"title":"…","notes":"…","transcript":"…","date":"2026-10-29"}`
+  (`title` and `notes` optional; `date` the meeting's day, from which
+  a due date is resolved): the tasks agreed in the meeting, found by the
+  server's model (docs/pipeline.md, "Tasks"). Answers `200 {"tasks":
+  [{"task":"…","owner":"Luca"|null,"due":"2026-11-06"|null,"at":754}]}`
+  (`at`, seconds from the meeting's start of the turn where it was
+  agreed; `owner` a speaker's label in the transcript), in order; an
+  answer of the model that could not be read is `{"tasks": []}`. `501`
+  without a model, `502` when it cannot be reached; same limits as
+  `/reports`, and it takes one of its `--report-parallel` places. A
+  server older than it answers `404`: the client publishes without
+  tasks.
 
 An `audio` part is the channel in Opus (`crates/engine/src/codec.rs`):
 `LBO1`, the number of samples (u64 LE), the encoder's lookahead in
@@ -193,7 +199,7 @@ samples, so that sample i is the meeting's sample i.
 
 ## Tokens
 
-`/live`, `/finals`, `/finals/{id}` and `/reports` need
+`/live`, `/finals`, `/finals/{id}`, `/reports` and `/tasks` need
 `Authorization: Bearer <token>`, the token of a person (`lbk_` and 64
 hex digits), on the WebSocket's upgrade request as on every other; `401`
 without one the server knows, `503` if it cannot read its tokens. The client sends it from `--server-token`

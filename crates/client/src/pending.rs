@@ -9,8 +9,11 @@
 //! (`<channel>-<n>.pcm`, engine recording.rs's layout), `segments.jsonl`
 //! (the final segments as they come during the meeting), `notes.md` (what
 //! the person wrote during it, for the report) with the screenshots it
-//! names (shots.rs), and `final.json` once the
-//! final pass is complete. The audio is kept only from where the final
+//! names (shots.rs), `final.json` once the
+//! final pass is complete, and `report.md` once the report is written,
+//! until it is on the page. `meeting.json` also records the tasks found
+//! and how many are rows in brainy (tasks.rs), so that none is written
+//! twice. The audio is kept only from where the final
 //! segments have come (`trim`): a final pass taken up again starts there,
 //! and a meeting of days keeps minutes of it; all of it goes with
 //! `final.json`. The folder goes away once the transcript is published;
@@ -34,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::brainy::Page;
 use crate::remote::Finalized;
+use crate::tasks::TaskLog;
 use crate::transcript::Writer;
 use logbook_engine::protocol::{SpeakerVoice, Utterance};
 
@@ -42,9 +46,6 @@ pub struct Meeting {
     /// RFC 3339, local time.
     pub started: String,
     pub channels: Vec<ChannelConfig>,
-    /// The server's model may clean the transcript up (--polish).
-    #[serde(default)]
-    pub polish: bool,
     pub publish: Saved,
     /// The server's final pass for it, once one is known to be running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +67,11 @@ pub struct Meeting {
     /// The speakers' voices as last sent: their names come from them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub voices: Vec<SpeakerVoice>,
+    /// The tasks the model found, once it has, and how many of them are
+    /// rows of the collection: what a later `finish` takes up, so that no
+    /// row is written twice (tasks.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<TaskLog>,
 }
 
 /// How to publish the transcript, as asked when the meeting started.
@@ -83,6 +89,10 @@ pub struct Saved {
     /// (history.rs) once published: the app does, the CLI does not.
     #[serde(default)]
     pub keep: bool,
+    /// The brainy collection (its id) the meeting's tasks go to as rows
+    /// (tasks.rs); none: no tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<String>,
 }
 
 pub struct Pending {
@@ -175,6 +185,12 @@ impl Pending {
         };
         dirs.sort();
         Ok(dirs)
+    }
+
+    /// Whether this process holds the meeting's `.lock`: only then may it
+    /// change it.
+    pub fn held(&self) -> bool {
+        self.lock.is_some()
     }
 
     pub fn set_final_id(&mut self, id: Option<String>) -> Result<()> {
@@ -320,6 +336,21 @@ impl Pending {
     /// The notes, empty if none were written.
     pub fn notes(&self) -> String {
         std::fs::read_to_string(self.dir.join("notes.md")).unwrap_or_default()
+    }
+
+    /// The report written, kept until it is on the page: a meeting
+    /// finished again does not ask the model for it again.
+    pub fn save_report(&self, markdown: &str) -> Result<()> {
+        let path = self.dir.join("report.md");
+        std::fs::write(&path, markdown)
+            .with_context(|| format!("could not write {}", path.display()))
+    }
+
+    /// The report kept by `save_report`, if any.
+    pub fn report(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join("report.md"))
+            .ok()
+            .filter(|r| !r.trim().is_empty())
     }
 
     /// The transcript as a file to read while it waits to be published.
@@ -518,7 +549,6 @@ mod tests {
                 diarize: false,
                 echo_of: None,
             }],
-            polish: false,
             publish: Saved {
                 brainy: false,
                 brainy_url: None,
@@ -527,6 +557,7 @@ mod tests {
                 me: "Me".into(),
                 report: false,
                 keep: false,
+                tasks: None,
             },
             final_id: None,
             page: None,
@@ -534,6 +565,7 @@ mod tests {
             published_until: 0.0,
             final_until: 0.0,
             voices: Vec::new(),
+            tasks: None,
         };
         let (mut pending, mut spool) = Pending::create(&root, "m", meeting.clone()).unwrap();
         let (mut second, _) = Pending::create(&root, "m", meeting).unwrap();

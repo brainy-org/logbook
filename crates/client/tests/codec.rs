@@ -111,7 +111,7 @@ async fn run(client: Codec, takes_opus: bool) -> (Heard, [Vec<i16>; 2]) {
         })
         .to_vec();
     let server_address = Server::new(&format!("http://{address}")).with_codec(client);
-    let live = remote::live(&server_address, channels, None, rx, None, &mut Quiet).await;
+    let live = remote::live(&server_address, channels, false, rx, None, &mut Quiet).await;
     assert!(live.intact);
     server.await.unwrap();
     let heard = std::mem::take(&mut *heard.lock().unwrap());

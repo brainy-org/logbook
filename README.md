@@ -63,11 +63,11 @@ setting from `.env` in the checkout (not committed).
 current folder.
 
 For now, with a [Groq](https://groq.com) API key in
-`~/.config/logbook/groq.key` (or `LOGBOOK_POLISH_KEY`), `scripts/server.sh`
-also has the final transcript cleaned up by `qwen/qwen3.8-27b` there
-(`--polish-url`, below). Groq then reads every meeting's text: it is for
-testing, not for meetings that must stay on your servers: only meetings
-started with `--polish` go there.
+`~/.config/logbook/groq.key` (or `LOGBOOK_LLM_KEY`), `scripts/server.sh`
+also has reports written by `qwen/qwen3.8-27b` there (`--llm-url`,
+below). Groq then reads the text of every meeting whose report is asked
+(`--report`): it is for testing, not for meetings that must stay on your
+servers.
 `play` and `bench` need ffmpeg on the PATH.
 
 ## The app
@@ -93,8 +93,9 @@ speaker ("Speaker 2") to give them a name: the transcript, the brainy
 page and the voices known by name change with it, and the next meetings
 name them by themselves. In the settings: on this computer or on a
 logbook-server (with your token on it), the microphone and the output to record, brainy on or off (its token is
-kept on this computer, readable by you only), and the language model for the clean-up and the
-report (a provider, Groq, OpenAI, Mistral or any OpenAI-compatible API,
+kept on this computer, readable by you only) and the collection the tasks are
+proposed in (rows "To confirm", listed on the meeting's page in the app too), and the language model for the
+report and the tasks (a provider, Groq, OpenAI, Mistral or any OpenAI-compatible API,
 and one of the models it lists; with a server, the server's). The app and the CLI share the data folder: the
 pending meetings and the voices.
 
@@ -172,8 +173,8 @@ along it means the server does not keep up.
 export BRAINY_URL=https://brainy.example.com BRAINY_TOKEN=brainy_…   # a personal token with write access
 scripts/client.sh live --system --brainy --me Marco                  # Ctrl-C at the end of the meeting
 scripts/client.sh live --system --brainy --parent "Engineering/Meetings" --title "Weekly sync"
-scripts/client.sh live --system --brainy --polish                    # cleaned up by the server's model
 scripts/client.sh live --system --brainy --report                    # and a report on the page
+scripts/client.sh live --system --brainy --tasks "Engineering/Tasks" # and the tasks proposed in a collection
 scripts/client.sh play meeting.m4a --final                           # the final transcript, printed
 ```
 
@@ -218,15 +219,28 @@ matches no page, or more than one, stops there and lists what it found
 (for two pages with one title, pass the address of one). A title with a
 `/` in it can be named only by its address.
 
-With a language model (the server's `--polish-url`, below, or the same
-`LOGBOOK_POLISH_URL`, `LOGBOOK_POLISH_MODEL` and `LOGBOOK_POLISH_KEY`
-given to the CLI without a server), `--polish` has the final transcript
-cleaned up there: fillers, false starts,
-punctuation. Without it the transcript stays as heard and the meeting's
-text never reaches the model; a pending meeting keeps the choice for
-`finish`. `--report` has the same model write the meeting's report
-(summary, decisions, action items, in the meeting's language): on the
-brainy page under its first line, or printed after the transcript.
+The final transcript is as heard. With a language model (the server's
+`--llm-url`, below, or the same `LOGBOOK_LLM_URL`, `LOGBOOK_LLM_MODEL`
+and `LOGBOOK_LLM_KEY` given to the CLI without a server), `--report` has
+it write the meeting's report (summary, decisions, action items, in the
+meeting's language): on the brainy page under its first line, or printed
+after the transcript. Without it the meeting's text never reaches the
+model.
+
+`--tasks` (or `LOGBOOK_TASKS`) names a brainy collection, as `--parent`
+names a page: its address, id or path of titles; with `--brainy` only.
+The same model then lists the tasks people committed to in the meeting,
+and each becomes a row of that collection: the task as its title,
+Owner (the speaker, as labelled on the page), Due (only when a date was
+said), Status "To confirm", and Meeting and Moment, links to the page
+and to the turn where it was said. They are proposals: a model misses
+tasks and invents some, so confirm each one (set it to Open, assign it)
+or delete it in brainy; one click on Moment shows what was said. Any
+collection will do, a team's board too: the columns it lacks are added
+(none is removed or changed; one with another type, a person Owner say,
+is left empty), and "To confirm" is added to its Status. Without
+`--tasks`, no tasks are looked for. A meeting whose rows brainy could not
+take stays pending until `finish` writes the rest, never one twice.
 
 ### Speakers by name
 
@@ -331,11 +345,11 @@ models.
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--voice` / `LOGBOOK_VOICE` | `wespeaker-resnet34-lm.gguf` in the models folder | speaker encoder of the final pass (required): links each minute's speakers to the meeting's, with no limit of eight |
 | `--voice-threshold` | 0.45 | voice similarity above which two minutes' voices are one speaker |
-| `--polish-url` / `LOGBOOK_POLISH_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model cleans the final transcript up (fillers, false starts, punctuation) and writes reports (`POST /reports`). The meeting's text goes there: a hosted provider reads every meeting whose client asks for it (`--polish`, `--report`) |
-| `--polish-model` / `LOGBOOK_POLISH_MODEL` | none | its model; required with `--polish-url` |
-| `--polish-key` / `LOGBOOK_POLISH_KEY` | none | its API key, if it asks for one |
-| `--polish-parallel` | 4 | parts the model is asked to clean at once (one per meeting at most), and reports written at once |
-| `--polish-timeout` | 120 | seconds a request may take; a part that takes longer stays as heard |
+| `--llm-url` / `LOGBOOK_LLM_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model writes reports (`POST /reports`) and finds tasks (`POST /tasks`). The meeting's text goes there: a hosted provider reads every meeting whose client asks for a report or tasks (`--report`, `--tasks`) |
+| `--llm-model` / `LOGBOOK_LLM_MODEL` | none | its model; required with `--llm-url` |
+| `--llm-key` / `LOGBOOK_LLM_KEY` | none | its API key, if it asks for one |
+| `--report-parallel` | 4 | reports and task lists written at once |
+| `--llm-timeout` | 120 | seconds a request to the model may take |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes
 the first GPU.

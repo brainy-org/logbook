@@ -2,6 +2,7 @@
 //! (logbook-server or this process) and, with a final pass, to a pending
 //! folder (pending.rs); the final segments to the brainy page as they come;
 //! at the end the final transcript completed, the report written, the
+//! tasks proposed as rows of a collection (tasks.rs), the
 //! meeting kept in the history (history.rs) and the folder removed. On any
 //! failure the folder stays, with whatever was reached, for `finish`.
 //! The CLI and the desktop app both run meetings through here, one
@@ -12,17 +13,20 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Local};
-use logbook_engine::protocol::{ChannelConfig, ReportRequest, SpeakerVoice, Utterance};
+use logbook_engine::protocol::{
+    ChannelConfig, ReportRequest, SpeakerVoice, Task, TasksRequest, Utterance,
+};
 use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::brainy::{Brainy, Page};
-use crate::finishing::Transient;
+use crate::finishing::{self, Transient};
 #[cfg(feature = "local")]
 use crate::local;
 use crate::pending::{self, Meeting, Pending, Saved, Spool};
 use crate::remote::{self, Audio, Finalized, KeptChannel, Live, Pass, Server};
-use crate::{history, shots, transcript, voices};
+use crate::tasks::{BrainyRows, TaskLog, Written};
+use crate::{history, shots, tasks, transcript, voices};
 #[cfg(feature = "local")]
 use logbook_engine::final_pass::Recorded;
 use logbook_engine::protocol::SAMPLE_RATE;
@@ -46,7 +50,7 @@ pub enum Backend {
 impl Backend {
     /// Here, the models loaded before any audio is taken (on Linux the
     /// process may start again to find the CUDA libraries), for
-    /// `sessions` at once; a clean-up or a report refused without a model.
+    /// `sessions` at once; a report refused without a model.
     /// On a server, a token it refuses.
     #[cfg_attr(not(feature = "local"), allow(unused_variables))]
     pub async fn prepare(&self, model: bool, sessions: usize) -> Result<()> {
@@ -58,7 +62,7 @@ impl Backend {
         }
     }
 
-    /// A clean-up or a report refused here without a model, before any
+    /// A report refused here without a model, before any
     /// audio is taken; the models are not loaded.
     #[cfg_attr(not(feature = "local"), allow(unused_variables))]
     pub fn check(&self, model: bool) -> Result<()> {
@@ -75,7 +79,7 @@ impl Backend {
     pub async fn live(
         &self,
         channels: Vec<ChannelConfig>,
-        final_pass: Option<bool>,
+        final_pass: bool,
         audio: Audio,
         dir: Option<&Path>,
         events: &mut impl remote::Events,
@@ -107,6 +111,16 @@ impl Backend {
             Backend::Local(local) => local.report(request).await,
         }
     }
+
+    /// The meeting's tasks: by the server's model, or here by the one
+    /// configured.
+    pub async fn tasks(&self, request: TasksRequest) -> Result<Vec<Task>> {
+        match self {
+            Backend::Server(server) => remote::tasks(server, &request).await,
+            #[cfg(feature = "local")]
+            Backend::Local(local) => local.tasks(request).await,
+        }
+    }
 }
 
 /// What happens once the meeting ends.
@@ -115,8 +129,6 @@ pub struct Publish {
     /// Read the whole meeting again once it ends (better speakers and
     /// phrases): implied by everything below.
     pub final_pass: bool,
-    /// Have the final transcript cleaned up by the language model.
-    pub polish: bool,
     /// Have the language model write the report.
     pub report: bool,
     /// Keep the meeting in the history once published.
@@ -127,6 +139,10 @@ pub struct Publish {
     pub brainy_token: Option<String>,
     /// The page the meeting goes under: its address, id or path of titles.
     pub parent: Option<String>,
+    /// The brainy collection the meeting's tasks are proposed in, as rows
+    /// "To confirm" (tasks.rs): its address, id or path of titles. None:
+    /// no tasks are looked for. Only with `brainy`: a row links to the page.
+    pub tasks: Option<String>,
     pub title: Option<String>,
     /// The person behind the microphone.
     pub me: String,
@@ -135,6 +151,12 @@ pub struct Publish {
 impl Publish {
     pub fn final_pass(&self) -> bool {
         self.final_pass || self.brainy || self.report || self.keep
+    }
+
+    /// Whether a language model is needed at the end: the report, or the
+    /// tasks.
+    pub fn model(&self) -> bool {
+        self.report || (self.brainy && self.tasks.is_some())
     }
 
     /// What is kept with a pending meeting: everything but the token.
@@ -147,6 +169,7 @@ impl Publish {
             me: self.me.clone(),
             report: self.report,
             keep: self.keep,
+            tasks: self.tasks.clone().filter(|_| self.brainy),
         }
     }
 
@@ -201,6 +224,10 @@ pub struct Outcome {
     pub report: Option<String>,
     /// Why the report could not be written; the meeting is published anyway.
     pub report_error: Option<String>,
+    /// The tasks proposed as rows of the collection.
+    pub tasks: Vec<Written>,
+    /// Why they were not (all) written; the meeting is published anyway.
+    pub tasks_error: Option<String>,
     /// Nothing was said in it, and no note written: nothing was published
     /// and nothing kept (a stretch of silence a long recording was cut
     /// into, `meetings`).
@@ -508,21 +535,109 @@ pub async fn finish(
         report: None,
         report_blocks: Vec::new(),
         report_error: None,
+        tasks: Vec::new(),
     };
     let saved = pending.meeting.publish.clone();
     let page_brainy = match (&kept_meeting.page, saved.brainy) {
         (Some(_), true) => brainy.brainy(&saved)?,
         _ => None,
     };
-    if saved.report {
-        info!("writing the report…");
-        write_report(
-            backend,
-            page_brainy.as_ref(),
-            &mut kept_meeting,
-            &pending.dir,
-        )
+    // The report and the tasks are asked of the model at once; neither is
+    // asked again of a meeting finished again (`report.md`, `tasks`).
+    let collection = saved.tasks.clone().filter(|_| page_brainy.is_some());
+    let find_tasks = collection.is_some() && pending.meeting.tasks.is_none();
+    let kept_report = pending.report();
+    if saved.report || find_tasks {
+        info!("writing the report and finding the tasks…");
+    }
+    let (report, found) = tokio::join!(
+        async {
+            match (saved.report, kept_report) {
+                (false, _) => None,
+                (true, Some(markdown)) => Some(Ok(markdown)),
+                (true, None) => Some(report_markdown(backend, &kept_meeting).await),
+            }
+        },
+        async {
+            if !find_tasks {
+                return None;
+            }
+            let request = TasksRequest {
+                title: kept_meeting.title.clone(),
+                notes: kept_meeting.notes.clone(),
+                transcript: kept_meeting.transcript(),
+                date: started(pending).ok()?.format("%Y-%m-%d").to_string(),
+            };
+            Some(backend.tasks(request).await)
+        }
+    );
+    if let Some(Ok(markdown)) = &report
+        && let Err(error) = pending.save_report(markdown)
+    {
+        warn!("the report was not kept: {error:#}");
+    }
+    match found {
+        Some(Ok(found)) => {
+            info!("{} task(s) found", found.len());
+            pending.meeting.tasks = Some(TaskLog::new(found));
+            pending.save()?;
+        }
+        Some(Err(error)) => warn!("no tasks: they could not be found: {error:#}"),
+        None => {}
+    }
+    let mut tasks_error = None;
+    if let (Some(collection), Some(b), Some(page)) = (&collection, &page_brainy, &kept_meeting.page)
+        && pending
+            .meeting
+            .tasks
+            .as_ref()
+            .is_some_and(|t| t.rows.len() < t.found.len())
+    {
+        let written = async {
+            let rows = BrainyRows::open(b, collection, page, &kept_meeting.title).await?;
+            tasks::write_rows(pending, &rows).await
+        }
         .await;
+        match written {
+            Ok(()) => {}
+            // brainy not answering: the meeting stays pending, the rows
+            // written recorded; `finish` writes the rest.
+            Err(error) if finishing::is_transient(&error) => {
+                return Err(kept(
+                    error.context("the tasks were not all written to brainy"),
+                    &pending.dir,
+                ));
+            }
+            Err(error) => {
+                warn!("the tasks were not all written to brainy: {error:#}");
+                tasks_error = Some(format!("{error:#}"));
+            }
+        }
+    }
+    if let Some(log) = &pending.meeting.tasks {
+        kept_meeting.tasks = log.written();
+        if !kept_meeting.tasks.is_empty() {
+            info!(
+                "{} task(s) proposed in brainy, to confirm",
+                kept_meeting.tasks.len()
+            );
+        }
+    }
+    match report {
+        Some(Ok(markdown)) => {
+            put_report(
+                page_brainy.as_ref(),
+                &mut kept_meeting,
+                markdown,
+                &pending.dir,
+            )
+            .await
+        }
+        Some(Err(error)) => {
+            warn!("the report was not written: {error:#}");
+            kept_meeting.report_error = Some(format!("{error:#}"));
+        }
+        None => {}
     }
     if kept_meeting.report.is_none()
         && !kept_meeting.notes.trim().is_empty()
@@ -550,6 +665,8 @@ pub async fn finish(
         transcript,
         report: kept_meeting.report,
         report_error: kept_meeting.report_error,
+        tasks: kept_meeting.tasks,
+        tasks_error,
         silent: false,
     })
 }
@@ -577,13 +694,37 @@ pub async fn write_report(
     kept: &mut history::Kept,
     images: &Path,
 ) {
+    match report_markdown(backend, kept).await {
+        Ok(markdown) => put_report(brainy, kept, markdown, images).await,
+        Err(error) => {
+            warn!("the report was not written: {error:#}");
+            kept.report_error = Some(format!("{error:#}"));
+        }
+    }
+}
+
+/// The report the model writes of `kept`, with the screenshots of its
+/// notes it left out.
+async fn report_markdown(backend: &Backend, kept: &history::Kept) -> Result<String> {
     let request = ReportRequest {
         title: kept.title.clone(),
         notes: kept.notes.clone(),
         transcript: kept.transcript(),
     };
+    Ok(shots::with_missing(
+        &backend.report(request).await?,
+        &kept.notes,
+    ))
+}
+
+/// The report on the page, in place of the last one, and in `kept`.
+async fn put_report(
+    brainy: Option<&Brainy>,
+    kept: &mut history::Kept,
+    markdown: String,
+    images: &Path,
+) {
     let written = async {
-        let markdown = shots::with_missing(&backend.report(request).await?, &kept.notes);
         if let (Some(b), Some(page)) = (brainy, &kept.page) {
             if !kept.report_blocks.is_empty() {
                 b.delete_blocks(&page.id, &kept.report_blocks).await?;
@@ -591,11 +732,11 @@ pub async fn write_report(
             }
             kept.report_blocks = insert_under_header(b, page, &markdown, images).await?;
         }
-        anyhow::Ok(markdown)
+        anyhow::Ok(())
     }
     .await;
     match written {
-        Ok(markdown) => {
+        Ok(()) => {
             kept.report = Some(markdown);
             kept.report_error = None;
         }
@@ -718,7 +859,7 @@ async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalize
                 })
                 .collect();
             let result = local
-                .final_pass(channels, offset, meeting.voices.clone(), meeting.polish)
+                .final_pass(channels, offset, meeting.voices.clone())
                 .await?;
             return merged(pending, result)?.context("the final pass started after the audio kept");
         }
@@ -754,7 +895,6 @@ async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalize
     let id = remote::upload(
         server,
         meeting.channels.clone(),
-        meeting.polish,
         offset,
         meeting.voices.clone(),
         audio,
@@ -862,10 +1002,20 @@ pub(crate) async fn meeting_at(
         if let (Some(b), Some(parent)) = (&brainy, &publish.parent) {
             publish.parent = Some(b.resolve_page(parent).await.context("the parent page")?);
         }
+        // The tasks' collection likewise, and checked to be one.
+        if let (Some(b), Some(collection)) = (&brainy, &publish.tasks) {
+            let id = b
+                .resolve_page(collection)
+                .await
+                .context("the tasks' collection")?;
+            b.collection(&id)
+                .await
+                .context("the tasks' collection is not a collection")?;
+            publish.tasks = Some(id);
+        }
         let meeting = Meeting {
             started: started.to_rfc3339(),
             channels: channels.clone(),
-            polish: p.polish,
             publish,
             final_id: None,
             page: None,
@@ -873,6 +1023,7 @@ pub(crate) async fn meeting_at(
             published_until: 0.0,
             final_until: 0.0,
             voices: Vec::new(),
+            tasks: None,
         };
         let (created, writer) =
             Pending::create(data, &started.format("%Y%m%d-%H%M%S").to_string(), meeting)?;
@@ -905,7 +1056,7 @@ pub(crate) async fn meeting_at(
             (None, None) => Ok(()),
         }
     });
-    let final_pass = p.final_pass().then_some(p.polish);
+    let final_pass = p.final_pass();
     let live = backend
         .live(channels, final_pass, rx, recordings.as_deref(), &mut tee)
         .await;

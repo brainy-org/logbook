@@ -5,7 +5,8 @@
 //! files at once to find how many meetings a machine keeps up with.
 //! With `--final` the meeting is read again as it goes and once it ends;
 //! with `--brainy` the result becomes a page in brainy, with `--report`
-//! a language model writes its report. A meeting with a final pass is
+//! a language model writes its report, with `--tasks` it proposes the
+//! tasks agreed as rows of a brainy collection. A meeting with a final pass is
 //! also kept here until it is published (client pending.rs), and
 //! `finish` publishes the ones a lost server left behind. A recording is
 //! cut into meetings at a long pause or a meeting's length (client
@@ -74,12 +75,7 @@ struct Publish {
     /// phrases) and print the final transcript as Markdown.
     #[arg(long = "final")]
     final_pass: bool,
-    /// Have the final transcript cleaned up by the server's language model,
-    /// if it has one (fillers, false starts, punctuation). The model reads
-    /// the meeting's text; without this it stays as heard.
-    #[arg(long)]
-    polish: bool,
-    /// Have the language model (the server's, or LOGBOOK_POLISH_URL without
+    /// Have the language model (the server's, or LOGBOOK_LLM_URL without
     /// one) write the meeting's report: summary, decisions, action items
     /// (implies --final). It reads the meeting's text.
     #[arg(long)]
@@ -103,6 +99,12 @@ struct Publish {
     /// by default the top of your default workspace.
     #[arg(long, env = "LOGBOOK_PARENT", requires = "brainy")]
     parent: Option<String>,
+    /// Propose the tasks agreed in the meeting as rows of this brainy
+    /// collection, "To confirm", each linked to its moment on the page:
+    /// its address, id or path of titles. The language model (as for
+    /// --report) finds them; columns it lacks are added. Without it, no tasks.
+    #[arg(long, env = "LOGBOOK_TASKS", requires = "brainy")]
+    tasks: Option<String>,
     /// The page's title; by default "Meeting" and the date.
     #[arg(long)]
     title: Option<String>,
@@ -115,13 +117,13 @@ impl Publish {
     fn publish(&self) -> meeting::Publish {
         meeting::Publish {
             final_pass: self.final_pass,
-            polish: self.polish,
             report: self.report,
             keep: false,
             brainy: self.brainy,
             brainy_url: self.brainy_url.clone(),
             brainy_token: self.brainy_token.clone(),
             parent: self.parent.clone(),
+            tasks: self.tasks.clone(),
             title: self.title.clone(),
             me: self.me.clone(),
         }
@@ -161,20 +163,14 @@ struct LocalArgs {
     /// ones in ~/.cache/brainy-org, fetched from the mirror when missing.
     #[arg(long, global = true, env = "LOGBOOK_MODELS")]
     models: Option<PathBuf>,
-    /// An OpenAI-compatible API, up to `/v1`, whose model cleans the final
-    /// transcript up with --polish and writes the --report. The meeting's
-    /// text goes there.
-    #[arg(long, global = true, env = "LOGBOOK_POLISH_URL")]
-    polish_url: Option<String>,
-    #[arg(long, global = true, env = "LOGBOOK_POLISH_MODEL")]
-    polish_model: Option<String>,
-    #[arg(
-        long,
-        global = true,
-        env = "LOGBOOK_POLISH_KEY",
-        hide_env_values = true
-    )]
-    polish_key: Option<String>,
+    /// An OpenAI-compatible API, up to `/v1`, whose model writes the
+    /// --report. The meeting's text goes there.
+    #[arg(long, global = true, env = "LOGBOOK_LLM_URL")]
+    llm_url: Option<String>,
+    #[arg(long, global = true, env = "LOGBOOK_LLM_MODEL")]
+    llm_model: Option<String>,
+    #[arg(long, global = true, env = "LOGBOOK_LLM_KEY", hide_env_values = true)]
+    llm_key: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -319,9 +315,9 @@ async fn run(cli: Cli) -> Result<()> {
         ),
         None => Backend::Local(Arc::new(local::Local::new(local::Config {
             models: cli.local.models,
-            polish_url: cli.local.polish_url,
-            polish_model: cli.local.polish_model,
-            polish_key: cli.local.polish_key,
+            llm_url: cli.local.llm_url,
+            llm_model: cli.local.llm_model,
+            llm_key: cli.local.llm_key,
         }))),
     };
     let server = &backend;
@@ -339,7 +335,7 @@ async fn run(cli: Cli) -> Result<()> {
             publish,
             split,
         } => {
-            server.prepare(publish.polish || publish.report, 1).await?;
+            server.prepare(publish.publish().model(), 1).await?;
             let limits = split.limits();
             play(server, &data, &file, speed, !no_diarize, &publish, limits).await
         }
@@ -368,7 +364,7 @@ async fn run(cli: Cli) -> Result<()> {
                 (true, false) => audio::Echo::Cancel,
             };
             let gain = if no_mic { aec::Gain::Off } else { mic_gain };
-            server.prepare(publish.polish || publish.report, 1).await?;
+            server.prepare(publish.publish().model(), 1).await?;
             live(server, &data, sources, echo, gain, &publish, split.limits()).await
         }
         Command::Finish {
@@ -507,6 +503,30 @@ fn print_outcome(outcome: &Outcome) {
         && let Some(report) = &outcome.report
     {
         println!("\n{report}");
+    }
+    if !outcome.tasks.is_empty() {
+        eprintln!(
+            "{} task(s) proposed in brainy, to confirm:",
+            outcome.tasks.len()
+        );
+        for t in &outcome.tasks {
+            let owner = t
+                .task
+                .owner
+                .as_deref()
+                .map(|o| format!(" — {o}"))
+                .unwrap_or_default();
+            let due = t
+                .task
+                .due
+                .as_deref()
+                .map(|d| format!(" (due {d})"))
+                .unwrap_or_default();
+            eprintln!("  {}{owner}{due}  {}", t.task.task, t.row.url);
+        }
+    }
+    if let Some(error) = &outcome.tasks_error {
+        eprintln!("the tasks were not all written: {error}");
     }
 }
 
@@ -692,7 +712,7 @@ async fn bench(
             let start = Instant::now();
             tokio::spawn(audio::play(samples, 1.0, start, tx));
             let mut events = Latencies { start, results };
-            let live = server.live(channels, None, rx, None, &mut events).await;
+            let live = server.live(channels, false, rx, None, &mut events).await;
             if !live.intact {
                 bail!("the connection was lost");
             }

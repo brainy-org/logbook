@@ -183,7 +183,7 @@ async fn run(
         "meeting-state",
         running.lock().unwrap().as_ref().map(|r| &r.state),
     );
-    backend.check(publish.polish || publish.report)?;
+    backend.check(publish.model())?;
     // Android: the permissions, and the service that keeps the process
     // recording with the screen off, started before the microphone opens.
     #[cfg(target_os = "android")]
@@ -218,7 +218,7 @@ async fn run(
     }
     let audio = meter(app.clone(), recording.audio, channels.len());
     // Usually done at the app's start (`lib.rs`, `preload`).
-    backend.prepare(publish.polish || publish.report, 1).await?;
+    backend.prepare(publish.model(), 1).await?;
     {
         let mut guard = running.lock().unwrap();
         if let Some(r) = guard.as_mut() {

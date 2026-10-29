@@ -3,8 +3,8 @@
 //! Granola does: a summary, the notes completed from what was said, the
 //! decisions and the action items (docs/pipeline.md, "Report").
 //!
-//! One request to the same OpenAI-compatible endpoint as the clean-up
-//! (polish.rs), with the whole transcript, when it is up to
+//! One request to an OpenAI-compatible endpoint (llm.rs), with the whole
+//! transcript, when it is up to
 //! `ONE_REQUEST`: six to nine hours. A longer meeting is reported in
 //! steps: the model takes detailed notes of each part of the transcript
 //! (`PART`, two to three hours), in order, and writes the report from
@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use tracing::info;
 
-use crate::polish::{self, Options};
+use crate::llm::{self, Options};
 use crate::protocol::ReportRequest;
 
 /// The longest transcript sent in one request, in characters: some
@@ -27,7 +27,7 @@ use crate::protocol::ReportRequest;
 pub const ONE_REQUEST: usize = 320_000;
 /// A part of a long transcript the model takes notes of: some 22 000
 /// tokens, two to three hours, within the context of small models too.
-const PART: usize = 80_000;
+pub(crate) const PART: usize = 80_000;
 /// The longest notes sent.
 pub const MAX_NOTES: usize = 40_000;
 
@@ -97,7 +97,7 @@ Rules:
 /// The report's Markdown, from the model at `options`. Blocks for one
 /// request, or one per part of a long meeting: run it off the async
 /// threads.
-pub fn write(agent: &polish::Agent, options: &Options, request: &ReportRequest) -> Result<String> {
+pub fn write(agent: &llm::Agent, options: &Options, request: &ReportRequest) -> Result<String> {
     if request.transcript.trim().is_empty() {
         bail!("the meeting has no transcript to report on");
     }
@@ -121,7 +121,7 @@ pub fn write(agent: &polish::Agent, options: &Options, request: &ReportRequest) 
                 header(request),
                 i + 1
             );
-            let answer = polish::complete(
+            let answer = llm::complete(
                 agent,
                 options,
                 chat(&options.model, PART_INSTRUCTIONS, user),
@@ -154,7 +154,7 @@ pub fn write(agent: &polish::Agent, options: &Options, request: &ReportRequest) 
             header(request)
         ),
     };
-    let answer = polish::complete(agent, options, chat(&options.model, INSTRUCTIONS, user))?;
+    let answer = llm::complete(agent, options, chat(&options.model, INSTRUCTIONS, user))?;
     let markdown = clean(&answer);
     if markdown.is_empty() {
         bail!("the model wrote an empty report");
@@ -178,7 +178,7 @@ impl Source {
 
 /// `text` in parts of at most `max` characters, cut between paragraphs
 /// (a paragraph longer than that, between words).
-fn parts(text: &str, max: usize) -> Vec<String> {
+pub(crate) fn parts(text: &str, max: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut length = 0;
@@ -234,7 +234,7 @@ fn header(request: &ReportRequest) -> String {
     user
 }
 
-fn chat(model: &str, instructions: &str, user: String) -> Value {
+pub(crate) fn chat(model: &str, instructions: &str, user: String) -> Value {
     json!({
         "model": model,
         "temperature": 0.2,
@@ -247,7 +247,7 @@ fn chat(model: &str, instructions: &str, user: String) -> Value {
 
 /// The Markdown past what models put around it: a `<think>` block, a
 /// code fence around the whole answer.
-fn clean(answer: &str) -> String {
+pub(crate) fn clean(answer: &str) -> String {
     let answer = match answer.rfind("</think>") {
         Some(i) => &answer[i + "</think>".len()..],
         None => answer,
@@ -346,7 +346,7 @@ mod tests {
             notes: "- budget".into(),
             transcript: "**Luca** · 00:04\n\nIl budget è approvato.".into(),
         };
-        let report = write(&polish::agent(&options), &options, &request).unwrap();
+        let report = write(&llm::agent(&options), &options, &request).unwrap();
         assert_eq!(report, "## Summary\nDone.");
         let sent = server.join().unwrap();
         assert!(sent[0].contains("- budget"));
@@ -355,7 +355,7 @@ mod tests {
             transcript: " ".into(),
             ..request
         };
-        assert!(write(&polish::agent(&options), &options, &empty).is_err());
+        assert!(write(&llm::agent(&options), &options, &empty).is_err());
     }
 
     #[test]
@@ -378,7 +378,7 @@ mod tests {
             notes: "- hiring".into(),
             transcript,
         };
-        let report = write(&polish::agent(&options), &options, &request).unwrap();
+        let report = write(&llm::agent(&options), &options, &request).unwrap();
         assert_eq!(report, "## Summary\nLong.");
         let sent = server.join().unwrap();
         assert!(sent[0].contains("Part 1 of 5") && sent[0].contains("- hiring"));

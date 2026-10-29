@@ -18,8 +18,8 @@ export interface Settings {
     headphones: boolean;
     micGainAuto: boolean;
   };
-  brainy: { enabled: boolean; url: string; parent: string };
-  model: { polish: boolean; report: boolean; url: string; name: string };
+  brainy: { enabled: boolean; url: string; parent: string; tasks: string };
+  model: { report: boolean; url: string; name: string };
 }
 
 export interface SettingsView {
@@ -87,6 +87,15 @@ export interface MeetingView {
   notes: string;
   report: string | null;
   reportError: string | null;
+  /** Proposed in brainy as rows to confirm, each linked to its moment on the page. */
+  tasks: {
+    task: string;
+    owner: string | null;
+    due: string | null;
+    at: number;
+    row: string;
+    moment: string;
+  }[];
   warnings: string[];
   speakers: { label: string; nameable: boolean }[];
   turns: {

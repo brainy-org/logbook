@@ -4,6 +4,7 @@
 //! sample to its page (meeting.rs): kept until published (pending.rs) and
 //! finished later if it could not be then (finishing.rs),
 //! written as Markdown (transcript.rs) into brainy (brainy.rs), its
+//! tasks as rows of a brainy collection (tasks.rs), its
 //! speakers named from voices known on this computer (voices.rs), and,
 //! for the app, kept once published (history.rs), with the screenshots
 //! in its notes (shots.rs). Messages for the person go through
@@ -25,5 +26,6 @@ pub mod pending;
 pub mod remote;
 pub mod series;
 pub mod shots;
+pub mod tasks;
 pub mod transcript;
 pub mod voices;

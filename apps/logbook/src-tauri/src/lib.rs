@@ -29,7 +29,7 @@ use logbook_client::local;
 use logbook_client::meeting::{self, Backend, Renamed};
 use logbook_client::pending::Pending;
 use logbook_client::{audio, history, remote, voices};
-use logbook_engine::polish;
+use logbook_engine::llm;
 use serde::Serialize;
 #[cfg(not(target_os = "android"))]
 use tauri::Emitter;
@@ -182,19 +182,20 @@ async fn check_server(url: String, token: Option<String>) -> Answer<()> {
 /// yet, else the one kept.
 #[tauri::command]
 async fn list_models(url: String, key: Option<String>) -> Answer<Vec<String>> {
-    let options = polish::Options {
+    let options = llm::Options {
         url: url.trim().to_string(),
         model: String::new(),
         key: key.or_else(|| Secret::ModelKey.get()),
         timeout: std::time::Duration::from_secs(15),
     };
-    tokio::task::spawn_blocking(move || polish::models(&options))
+    tokio::task::spawn_blocking(move || llm::models(&options))
         .await
         .map_err(|e| e.to_string())?
         .map_err(text)
 }
 
-/// Whether brainy answers with the token, and the parent page exists.
+/// Whether brainy answers with the token, the parent page exists, and so
+/// does the tasks' collection.
 #[tauri::command]
 async fn check_brainy(app: State<'_, App>) -> Answer<()> {
     let settings = app.settings();
@@ -203,6 +204,17 @@ async fn check_brainy(app: State<'_, App>) -> Answer<()> {
     let parent = settings.brainy.parent.trim();
     if !parent.is_empty() {
         brainy.resolve_page(parent).await.map_err(text)?;
+    }
+    let tasks = settings.brainy.tasks.trim();
+    if !tasks.is_empty() {
+        let id = brainy
+            .resolve_page(tasks)
+            .await
+            .map_err(|e| format!("the tasks' collection: {e:#}"))?;
+        brainy
+            .collection(&id)
+            .await
+            .map_err(|e| format!("the tasks' collection is not a collection: {e:#}"))?;
     }
     Ok(())
 }
@@ -295,9 +307,23 @@ struct MeetingView {
     notes: String,
     report: Option<String>,
     report_error: Option<String>,
+    /// The tasks proposed in brainy, to confirm there.
+    tasks: Vec<TaskView>,
     warnings: Vec<String>,
     speakers: Vec<Speaker>,
     turns: Vec<Turn>,
+}
+
+/// A task proposed as a row, with where it was said.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskView {
+    task: String,
+    owner: Option<String>,
+    due: Option<String>,
+    at: f64,
+    row: String,
+    moment: String,
 }
 
 #[derive(Serialize)]
@@ -367,6 +393,18 @@ fn view(kept: history::Kept) -> MeetingView {
         notes: kept.notes,
         report: kept.report,
         report_error: kept.report_error,
+        tasks: kept
+            .tasks
+            .into_iter()
+            .map(|t| TaskView {
+                task: t.task.task,
+                owner: t.task.owner,
+                due: t.task.due,
+                at: t.task.at,
+                row: t.row.url,
+                moment: t.row.moment,
+            })
+            .collect(),
         warnings: kept.warnings,
     }
 }

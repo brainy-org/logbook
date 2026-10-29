@@ -1,6 +1,7 @@
 //! logbook-server: live transcription and diarization over a WebSocket
 //! (`/live`), final passes over HTTP (`/finals`), and with a language
-//! model the meeting's report (`/reports`): docs/protocol.md. The
+//! model the meeting's report (`/reports`) and its tasks (`/tasks`):
+//! docs/protocol.md. The
 //! models are loaded once and stay loaded; every session shares them.
 //! Each of those routes needs a person's token, made on the admin page
 //! (`/`, auth.rs).
@@ -25,18 +26,18 @@ use logbook_engine::codec::StreamDecoder;
 use logbook_engine::final_pass::Recorded;
 use logbook_engine::finalizer::{self, FinalJob};
 use logbook_engine::finals::Finals;
+use logbook_engine::llm;
 use logbook_engine::mirror::Mirror;
 use logbook_engine::parakeet::Latency;
 use logbook_engine::parakeet::SAMPLE_RATE;
-use logbook_engine::polish::{self, Polisher};
 use logbook_engine::protocol::{
     AudioIn, ClientMessage, Codec, FinalState, Report, ReportRequest, ServerMessage, Started,
-    Upload,
+    Tasks, TasksRequest, Upload,
 };
 use logbook_engine::recording::{self, Recording};
-use logbook_engine::report;
 use logbook_engine::session::{self, Feed, Input, Resume, Shared};
-use logbook_engine::{Engine, Options, batcher, polisher};
+use logbook_engine::{Engine, Options, batcher};
+use logbook_engine::{report, tasks};
 use tracing::{info, warn};
 
 /// The largest upload: 14 MB an hour a channel (`codec`), so about 140
@@ -109,23 +110,23 @@ struct Args {
     /// server only this computer reaches (tests, `logbook bench`).
     #[arg(long, env = "LOGBOOK_NO_AUTH")]
     no_auth: bool,
-    /// An OpenAI-compatible API, up to `/v1`, whose model cleans the final
-    /// transcript up (fillers, false starts, punctuation):
-    /// `http://localhost:11434/v1` for Ollama. The text goes there: a
-    /// hosted one reads every meeting. None: the transcript as heard.
-    #[arg(long, env = "LOGBOOK_POLISH_URL", requires = "polish_model")]
-    polish_url: Option<String>,
-    #[arg(long, env = "LOGBOOK_POLISH_MODEL")]
-    polish_model: Option<String>,
+    /// An OpenAI-compatible API, up to `/v1`, whose model writes the
+    /// meetings' reports: `http://localhost:11434/v1` for Ollama. The text
+    /// of a meeting whose report is asked goes there: a hosted one reads
+    /// it. None: no reports.
+    #[arg(long, env = "LOGBOOK_LLM_URL", requires = "llm_model")]
+    llm_url: Option<String>,
+    #[arg(long, env = "LOGBOOK_LLM_MODEL")]
+    llm_model: Option<String>,
     /// Its API key, if it asks for one.
-    #[arg(long, env = "LOGBOOK_POLISH_KEY", hide_env_values = true)]
-    polish_key: Option<String>,
-    /// Parts the model is asked to clean at once (one per session at most).
+    #[arg(long, env = "LOGBOOK_LLM_KEY", hide_env_values = true)]
+    llm_key: Option<String>,
+    /// Reports written at once.
     #[arg(long, default_value_t = 4)]
-    polish_parallel: usize,
-    /// Seconds a request may take; a part that takes longer stays as heard.
-    #[arg(long, default_value_t = polish::TIMEOUT)]
-    polish_timeout: u64,
+    report_parallel: usize,
+    /// Seconds a request to the model may take.
+    #[arg(long, default_value_t = llm::TIMEOUT)]
+    llm_timeout: u64,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -151,13 +152,13 @@ impl From<LatencyArg> for Latency {
 struct AppState {
     shared: Shared,
     sessions: AtomicU64,
-    /// The language model's reports, with the clean-up's model.
+    /// The language model's reports.
     reporter: Option<Reporter>,
 }
 
 struct Reporter {
-    agent: polish::Agent,
-    options: polish::Options,
+    agent: llm::Agent,
+    options: llm::Options,
     /// Reports asked at once: each holds a blocking thread for a minute
     /// or so, and the model's provider limits requests.
     slots: tokio::sync::Semaphore,
@@ -215,34 +216,27 @@ async fn main() -> Result<()> {
     // In the data folder: with replicas sharing it, any of them answers
     // for a pass another one runs.
     let finals = Arc::new(Finals::on_disk(&data)?);
-    let model = match (args.polish_url, args.polish_model) {
+    let model = match (args.llm_url, args.llm_model) {
         (Some(url), Some(model)) => {
-            info!(
-                url,
-                model, "the final transcript is cleaned up and reported on"
-            );
-            Some(polish::Options {
+            info!(url, model, "meetings are reported on");
+            Some(llm::Options {
                 url,
                 model,
-                key: args.polish_key,
-                timeout: Duration::from_secs(args.polish_timeout),
+                key: args.llm_key,
+                timeout: Duration::from_secs(args.llm_timeout),
             })
         }
         _ => None,
     };
-    let polisher = model.clone().map(|options| {
-        polisher::spawn(Polisher::new(options), finals.clone(), args.polish_parallel)
-    });
     let reporter = model.map(|options| Reporter {
-        agent: polish::agent(&options),
+        agent: llm::agent(&options),
         options,
-        slots: tokio::sync::Semaphore::new(args.polish_parallel.max(1)),
+        slots: tokio::sync::Semaphore::new(args.report_parallel.max(1)),
     });
     let shared = Shared {
         batcher: batcher::spawn(engine.asr.clone(), args.max_batch),
-        finalizer: finalizer::spawn(engine.clone(), finals.clone(), polisher.clone()),
+        finalizer: finalizer::spawn(engine.clone(), finals.clone()),
         finals,
-        polisher,
         engine,
         recordings,
     };
@@ -263,6 +257,10 @@ async fn main() -> Result<()> {
         .route(
             "/reports",
             post(write_report).layer(DefaultBodyLimit::max(MAX_REPORT)),
+        )
+        .route(
+            "/tasks",
+            post(find_tasks).layer(DefaultBodyLimit::max(MAX_REPORT)),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             auth.clone(),
@@ -411,7 +409,6 @@ async fn start_upload(shared: &Shared, mut multipart: Multipart) -> Result<Strin
         files,
         offset: upload.offset,
         voices: upload.voices,
-        polish: upload.polish,
     });
     Ok(id)
 }
@@ -426,7 +423,7 @@ async fn write_report(
     let Some(reporter) = &state.reporter else {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "this server has no language model (--polish-url)",
+            "this server has no language model (--llm-url)",
         )
             .into_response();
     };
@@ -443,6 +440,41 @@ async fn write_report(
         Ok(Ok(markdown)) => Json(Report { markdown }).into_response(),
         Ok(Err(error)) => {
             warn!("report failed: {error:#}");
+            (StatusCode::BAD_GATEWAY, format!("{error:#}")).into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// The tasks agreed in the meeting, by the server's model; 501 without
+/// one. An answer the model gave that could not be read is no tasks, not
+/// an error (engine tasks.rs). It takes a report's slot.
+async fn find_tasks(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<auth::Caller>,
+    Json(request): Json<TasksRequest>,
+) -> Response {
+    info!(caller = caller.0, "tasks");
+    let Some(reporter) = &state.reporter else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "this server has no language model (--llm-url)",
+        )
+            .into_response();
+    };
+    let Ok(_slot) = reporter.slots.acquire().await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let state = state.clone();
+    let found = tokio::task::spawn_blocking(move || {
+        let reporter = state.reporter.as_ref().expect("checked above");
+        tasks::find(&reporter.agent, &reporter.options, &request)
+    })
+    .await;
+    match found {
+        Ok(Ok(tasks)) => Json(Tasks { tasks }).into_response(),
+        Ok(Err(error)) => {
+            warn!("tasks failed: {error:#}");
             (StatusCode::BAD_GATEWAY, format!("{error:#}")).into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -477,13 +509,12 @@ async fn live(
 
 async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
     let (mut sink, mut stream) = socket.split();
-    let (configs, final_pass, polish, resume, codec, lookahead) = loop {
+    let (configs, final_pass, resume, codec, lookahead) = loop {
         match stream.next().await {
             Some(Ok(Message::Text(text))) => match serde_json::from_str(text.as_str()) {
                 Ok(ClientMessage::Start {
                     channels,
                     final_pass,
-                    polish,
                     offset,
                     voices,
                     codec,
@@ -492,7 +523,6 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
                     break (
                         channels,
                         final_pass,
-                        polish,
                         Resume { offset, voices },
                         Codec::answer(codec, lookahead),
                         lookahead,
@@ -537,7 +567,7 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
             &thread_state.shared,
             session,
             configs,
-            final_pass.then_some(polish),
+            final_pass,
             resume,
             session_feed,
             in_rx,

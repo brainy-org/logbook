@@ -10,7 +10,8 @@
 //! final passes over HTTP, the audio streamed from where the final
 //! segments stopped; both try again for a while when the server does not
 //! answer, then give up, and the caller keeps the meeting pending.
-//! `report`: the meeting's report by the server's model.
+//! `report`: the meeting's report by the server's model; `tasks`, its
+//! tasks.
 //!
 //! The live audio goes in Opus when the server takes it (`ready` says so),
 //! in PCM otherwise: each session has its own encoder per channel, flushed
@@ -24,7 +25,7 @@ use logbook_engine::codec::{LiveEncoder, StreamEncoder};
 use logbook_engine::protocol::SAMPLE_RATE;
 use logbook_engine::protocol::{
     ChannelConfig, ClientMessage, Codec, FinalState, Report, ReportRequest, ServerMessage,
-    SpeakerVoice, Started, Upload, Utterance, encode_audio,
+    SpeakerVoice, Started, Task, Tasks, TasksRequest, Upload, Utterance, encode_audio,
 };
 use logbook_engine::recording::RangeReader;
 use serde::{Deserialize, Serialize};
@@ -190,15 +191,14 @@ pub trait Events {
 }
 
 /// With `final_pass`, the session asks for the final pass, which follows
-/// the meeting (`Events::final_segments`); its value is whether the
-/// server's model may clean it up. After a lost connection, a new session
+/// the meeting (`Events::final_segments`). After a lost connection, a new session
 /// takes the final pass up where its segments stopped when the audio is
 /// `kept` (it is sent again from there); without, it has none: it would
 /// not hear the whole meeting.
 pub async fn live(
     server: &Server,
     channels: Vec<ChannelConfig>,
-    final_pass: Option<bool>,
+    final_pass: bool,
     mut audio: Audio,
     kept: Option<Kept>,
     events: &mut impl Events,
@@ -217,8 +217,8 @@ pub async fn live(
     let mut unreadable = false;
     let mut retry = RETRY_MIN;
     loop {
-        let resume = !first && final_pass.is_some() && kept.is_some() && !unreadable;
-        let asked = final_pass.filter(|_| first || resume);
+        let resume = !first && final_pass && kept.is_some() && !unreadable;
+        let asked = final_pass && (first || resume);
         // A session taking the final pass up starts where its segments
         // stopped, on a sample, every channel there: the server puts its
         // times on the meeting's clock. Otherwise it starts now, and its
@@ -282,7 +282,7 @@ pub async fn live(
                     &mut position,
                     &mut ended,
                     &mut out,
-                    asked.is_some(),
+                    asked,
                     |u: Utterance| {
                         let u = shift(u);
                         let i = names.iter().position(|&n| n == u.channel)?;
@@ -326,8 +326,7 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 /// What a session is opened with.
 struct Start<'a> {
     channels: &'a [ChannelConfig],
-    /// Whether the server's model may clean the final pass up, if asked.
-    final_pass: Option<bool>,
+    final_pass: bool,
     offset: f64,
     voices: Vec<SpeakerVoice>,
 }
@@ -438,8 +437,7 @@ async fn connect(server: &Server, url: &str, start: &Start<'_>) -> Result<(Socke
         .map(LiveEncoder::lookahead);
     let start = serde_json::to_string(&ClientMessage::Start {
         channels: start.channels.to_vec(),
-        final_pass: start.final_pass.is_some(),
-        polish: start.final_pass.unwrap_or(false),
+        final_pass: start.final_pass,
         offset: start.offset,
         voices: start.voices.clone(),
         codec: if lookahead.is_some() {
@@ -650,7 +648,6 @@ pub struct KeptChannel {
 pub async fn upload(
     server: &Server,
     channels: Vec<ChannelConfig>,
-    polish: bool,
     offset: f64,
     voices: Vec<SpeakerVoice>,
     audio: Vec<KeptChannel>,
@@ -664,7 +661,6 @@ pub async fn upload(
     );
     let meeting = serde_json::to_vec(&Upload {
         channels,
-        polish,
         offset,
         voices,
     })?;
@@ -823,6 +819,34 @@ pub async fn report(server: &Server, request: &ReportRequest) -> Result<String> 
     }
     let report: Report = response.json().await?;
     Ok(report.markdown)
+}
+
+/// The tasks agreed in the meeting, found by the server's model
+/// (`POST /tasks`).
+pub async fn tasks(server: &Server, request: &TasksRequest) -> Result<Vec<Task>> {
+    let url = format!("{}/tasks", server.http);
+    let response = server
+        .authorized(http()?.post(&url))
+        .json(request)
+        .send()
+        .await
+        .with_context(|| format!("could not reach {url}"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_IMPLEMENTED {
+        bail!("the server has no language model to find the tasks");
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        bail!("the server is older than the tasks (no /tasks)");
+    }
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        bail!(
+            "the server could not find the tasks ({status}): {}",
+            text.trim()
+        );
+    }
+    let tasks: Tasks = response.json().await?;
+    Ok(tasks.tasks)
 }
 
 pub enum Pass {

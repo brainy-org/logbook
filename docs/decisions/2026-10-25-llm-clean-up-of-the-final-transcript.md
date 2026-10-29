@@ -1,5 +1,7 @@
 # The final transcript cleaned up by a language model, off by default
 
+*Removed on 2026-10-29: docs/decisions/2026-10-29-the-transcript-as-heard.md.*
+
 **Verdict.** logbook-server can send the final segments to an
 OpenAI-compatible `/chat/completions` endpoint, whose model removes
 fillers, false starts and the words a speaker took back, and punctuates,

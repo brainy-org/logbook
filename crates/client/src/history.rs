@@ -1,5 +1,6 @@
 //! The meetings the app keeps once they are published: the final
-//! transcript, the notes and the report, so that they can be read again,
+//! transcript, the notes, the report and the tasks proposed in brainy,
+//! so that they can be read again,
 //! their speakers renamed and their report written again
 //! (`<data>/meetings/<id>.json`, the id of the pending folder they came
 //! from; the notes' screenshots in `<data>/meetings/<id>/`). No audio: it
@@ -14,6 +15,7 @@ use logbook_engine::protocol::Utterance;
 use serde::{Deserialize, Serialize};
 
 use crate::brainy::Page;
+use crate::tasks::Written;
 use crate::transcript::Writer;
 use crate::voices::Library;
 
@@ -42,6 +44,9 @@ pub struct Kept {
     /// Why the last report could not be written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_error: Option<String>,
+    /// The tasks proposed in brainy as rows to confirm (tasks.rs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<Written>,
 }
 
 /// A kept meeting as the list shows it.
@@ -210,6 +215,7 @@ mod tests {
             report: None,
             report_blocks: Vec::new(),
             report_error: None,
+            tasks: Vec::new(),
         };
         save(&data, &kept).unwrap();
         let listed = list(&data).unwrap();

@@ -154,19 +154,6 @@ model's eight
    (docs/protocol.md, `GET /finals/{id}`). A session holds minutes of
    segments, not hours, on a server with tens of meetings.
 
-6. **Clean-up** (with `--polish-url` and `--polish-model`, for a meeting
-   that asks for it: `"polish": true`, the CLI's `--polish`): before they
-   are sent, the segments go to a language model that removes fillers,
-   false starts and the words a speaker took back, and punctuates
-   (`crates/engine/src/polish.rs`). A pool of threads asks it
-   (`crates/engine/src/polisher.rs`), never the finalizer; a session has
-   one part out at a time, so segments still leave in order, each part
-   with the last three cleaned as context. Only `text` changes; `words`
-   stay as heard. A text that grew, shrank past what fillers explain, or
-   is mostly words not heard in its segment keeps the heard text: a small
-   model copied a neighbour's text into a segment
-   (`docs/decisions/2026-10-25-llm-clean-up-of-the-final-transcript.md`).
-
 A meeting read whole (uploaded with `POST /finals`, or kept by a client
 without a server) goes through the same steps (`final_pass.rs`): each
 channel is read once for its pauses (Silero VAD, ten minutes at a time; a
@@ -206,8 +193,8 @@ Once the meeting is published, a language model can write its report
 (`crates/engine/src/report.rs`), as Granola does: a summary, the notes
 the person took during the meeting completed from what was said (nested
 under each of their points, in their order), the decisions and the
-action items with their owners. One request to the same
-OpenAI-compatible model as the clean-up, with the whole transcript, up to
+action items with their owners. One request to an
+OpenAI-compatible model (`crates/engine/src/llm.rs`), with the whole transcript, up to
 320 000 characters (six to nine hours). A longer meeting is reported in
 steps, never cut (a report of part of a meeting reads as one of all of
 it): the transcript is split between paragraphs into parts of 80 000
@@ -221,8 +208,8 @@ cost six requests instead of one. The transcript is the one
 on the page, with the names the client gave the speakers: the server
 never sees the client's voices, so the client sends the Markdown
 (`POST /reports`, docs/protocol.md), not the segments. The server answers
-it only with `--polish-url`; without a server the client asks the model
-itself (`LOGBOOK_POLISH_URL`, the app's settings).
+it only with `--llm-url`; without a server the client asks the model
+itself (`LOGBOOK_LLM_URL`, the app's settings).
 
 The report goes on the page under its header line, and holds the notes.
 Without one (not asked for, or the model failed: a wrong key, a model
@@ -241,7 +228,54 @@ German text.
 On the page the report goes right under the header line, above the
 transcript (`meeting.rs`, `insert_under_header`); asked again, it
 replaces the blocks of the last one (`history::Kept::report_blocks`). A
-report that fails leaves the meeting published without it.
+report that fails leaves the meeting published without it. A report
+written is kept in the pending folder (`report.md`) until it is on the
+page: a meeting finished again (its tasks' rows not all written) does
+not ask the model again.
+
+## Tasks
+
+With a collection set (`--tasks`, the app's "Tasks to the collection"),
+the tasks agreed in the meeting are proposed in brainy as rows of that
+collection, "To confirm", each linked to the moment of the page where it
+was said. The model's tasks are proposals, not facts: the person
+promotes or deletes each row in brainy
+(`docs/decisions/2026-10-29-tasks-as-collection-rows.md`). Decisions
+stay in the report.
+
+1. **Found** (`crates/engine/src/tasks.rs`, `POST /tasks` or the model
+   here) at the same time as the report, from the same transcript and
+   notes, with the meeting's date (`YYYY-MM-DD`, its weekday named in
+   the request). The transcript goes in parts of 80 000 characters (the
+   report's `PART`, two to three hours), one request each, whatever the
+   meeting's length; each part is told the tasks found before it (at
+   most 100 in all). The prompt asks for explicit commitments only, an
+   owner only when named or self-assigned (the doer, not the speaker),
+   a due date only when said and resolvable, and the turn's time.
+2. **Checked**: the answer is JSON found wherever it is in the text (a
+   `<think>` block, a fence, a sentence around it); an item without a
+   task, or without a time of the transcript, is dropped (no moment to
+   link to); an owner that is not a speaker's label is none, a due date
+   that is not a real date is none; repeats (case and punctuation
+   aside) are one. An answer that holds no list is no tasks from that
+   part and a warning; only a model that cannot be reached is an error,
+   and that is no tasks and a warning too: the page and the report go
+   on.
+3. **Recorded** in the pending meeting (`meeting.json`, `tasks`: what
+   was found, the rows written, `writing`) before any row is written.
+4. **Written** with the person's token (`crates/client/src/tasks.rs`):
+   the collection gets the columns it lacks (`extend_collection`: Owner
+   text, Due date, Status with Open, Done and "To confirm", Meeting and
+   Moment URLs), each row is created (`create_page` in the collection)
+   with Status "To confirm", the page's address in Meeting and the turn's
+   (`<page>#block-<id>`, the last turn heading at or before the task's
+   time) in Moment, and its text mentions the meeting's page (a
+   backlink there). Each row is recorded once brainy answers; `writing`
+   is saved before it is asked for, and a row asked for whose answer was
+   lost is looked up (title and Meeting) before it is written again.
+   brainy not answering keeps the meeting pending (before the report
+   goes on the page): `finish` writes the rows left. A refusal (4xx)
+   gives up the rest, with a warning.
 
 ## Measured
 

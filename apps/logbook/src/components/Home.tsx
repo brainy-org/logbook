@@ -10,6 +10,7 @@ import {
   Cloud,
   FileText,
   Laptop,
+  ListChecks,
   Mic,
   Monitor,
   MonitorSpeaker,
@@ -104,7 +105,7 @@ export function Home({
   const s = settings?.settings;
   const local = !android && s?.transcription === 'local';
   const here = android ? 'this phone' : 'this computer';
-  const model = s && (s.model.polish || s.model.report);
+  const report = s?.model.report;
   const lastWarning = [...logs].reverse().find((l) => l.warning);
   const current = MODES.find((m) => m.mode === mode)!;
 
@@ -206,11 +207,17 @@ export function Home({
                 ? `Written to brainy${s.brainy.parent ? `, under ${s.brainy.parent}` : ''}`
                 : `Kept on ${here} only (brainy is off)`}
             </li>
+            {s.brainy.enabled && s.brainy.tasks.trim() && (
+              <li className="flex items-center gap-2">
+                <ListChecks className="size-4" />
+                {`Tasks proposed in ${s.brainy.tasks.trim()}, to confirm there`}
+              </li>
+            )}
             <li className="flex items-center gap-2">
               <FileText className="size-4" />
-              {!model
-                ? 'No language model: the transcript stays as heard, no report'
-                : `${s.model.report ? 'Report' : ''}${s.model.report && s.model.polish ? ' and ' : ''}${s.model.polish ? 'clean-up' : ''} by ${local ? s.model.name || 'the model in settings' : "the server's model"}`}
+              {!report
+                ? 'No report'
+                : `Report by ${local ? s.model.name || 'the model in settings' : "the server's model"}`}
             </li>
             <li className="flex items-center gap-2">
               <NotebookPen className="size-4" />

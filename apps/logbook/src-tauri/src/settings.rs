@@ -94,13 +94,14 @@ pub struct BrainySettings {
     pub url: String,
     /// The page the meetings go under: address, id or path of titles.
     pub parent: String,
+    /// The collection the meetings' tasks are proposed in, as rows to
+    /// confirm: address, id or path of titles; empty for no tasks.
+    pub tasks: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelSettings {
-    /// Clean the final transcript up (fillers, false starts).
-    pub polish: bool,
     /// Write the report at the end (summary, notes, decisions, actions).
     pub report: bool,
     /// The model used without a server (with one, the server's is): an
@@ -143,7 +144,6 @@ impl Default for AudioSettings {
 impl Default for ModelSettings {
     fn default() -> Self {
         Self {
-            polish: false,
             report: true,
             url: "https://api.groq.com/openai/v1".into(),
             name: "qwen/qwen3.8-27b".into(),
@@ -177,9 +177,9 @@ impl Settings {
         let set = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
         local::Config {
             models: None,
-            polish_url: set(&self.model.url),
-            polish_model: set(&self.model.name),
-            polish_key: Secret::ModelKey.get(),
+            llm_url: set(&self.model.url),
+            llm_model: set(&self.model.name),
+            llm_key: Secret::ModelKey.get(),
         }
     }
 
@@ -202,13 +202,13 @@ impl Settings {
         let credentials = self.credentials();
         Publish {
             final_pass: true,
-            polish: self.model.polish,
             report: self.model.report,
             keep: true,
             brainy: self.brainy.enabled,
             brainy_url: credentials.url,
             brainy_token: credentials.token,
             parent: Some(self.brainy.parent.trim().to_string()).filter(|p| !p.is_empty()),
+            tasks: Some(self.brainy.tasks.trim().to_string()).filter(|t| !t.is_empty()),
             title,
             me: Some(self.me.trim().to_string())
                 .filter(|m| !m.is_empty())
@@ -420,9 +420,9 @@ impl Backends {
         let config = settings.local_config();
         let key = format!(
             "{:?}|{:?}|{}",
-            config.polish_url,
-            config.polish_model,
-            config.polish_key.is_some()
+            config.llm_url,
+            config.llm_model,
+            config.llm_key.is_some()
         );
         match &self.local {
             Some((k, backend)) if *k == key => Ok(backend.clone()),
