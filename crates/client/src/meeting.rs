@@ -616,12 +616,6 @@ pub async fn finish(
     }
     if let Some(log) = &pending.meeting.tasks {
         kept_meeting.tasks = log.written();
-        if !kept_meeting.tasks.is_empty() {
-            info!(
-                "{} task(s) proposed in brainy, to confirm",
-                kept_meeting.tasks.len()
-            );
-        }
     }
     match report {
         Some(Ok(markdown)) => {

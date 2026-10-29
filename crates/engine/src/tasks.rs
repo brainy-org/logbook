@@ -33,6 +33,9 @@ use crate::report::{self, MAX_NOTES, PART};
 pub const MAX_TASKS: usize = 100;
 /// The longest task kept, in characters.
 const MAX_TASK: usize = 300;
+/// The days listed after the meeting's date: to the end of next month
+/// (about 600 tokens a request).
+const CALENDAR_DAYS: usize = 62;
 
 const INSTRUCTIONS: &str = "\
 You list the tasks people committed to in a meeting, from its transcript (and the notes the \
@@ -57,8 +60,9 @@ says \"Luca will do it\", the owner is Luca. Write them exactly as the transcrip
 that speaker (the bold name before a turn's time, \"Speaker 2\" included). null when no one \
 is named, or when the person does not speak in the transcript.
 - due: only when the meeting says when it is due and the date follows from the meeting's \
-date given below, as YYYY-MM-DD (\"Friday\" is the first Friday after the meeting; \"end of \
-the month\" its last day). null otherwise (\"soon\", \"next sprint\"): never guess one.
+date given below, as YYYY-MM-DD, copied from the list of the days after it, never counted \
+(\"Friday\" and \"next Tuesday\" are the first Friday and Tuesday in that list; \"end of the \
+month\" its last day). null otherwise (\"soon\", \"next sprint\"): never guess one.
 - time: the time printed at the start of the turn where it was committed to (MM:SS or \
 H:MM:SS), exactly as in the transcript. A task must have one: one that is only in the notes \
 is not listed.
@@ -134,9 +138,15 @@ fn message(
     if !request.title.trim().is_empty() {
         user.push_str(&format!("Meeting: {}\n", request.title.trim()));
     }
-    match weekday(&request.date) {
-        Some(day) => user.push_str(&format!("Date: {} ({day})\n\n", request.date)),
-        None => user.push_str("Date: unknown: give no due date\n\n"),
+    match (
+        weekday(&request.date),
+        calendar(&request.date, CALENDAR_DAYS),
+    ) {
+        (Some(day), Some(days)) => user.push_str(&format!(
+            "Date: {} ({day})\n\nThe days after it:\n{days}\n",
+            request.date
+        )),
+        _ => user.push_str("Date: unknown: give no due date\n\n"),
     }
     if notes.is_empty() {
         user.push_str("Notes: none.\n\n");
@@ -308,21 +318,29 @@ fn date(text: &str) -> Option<String> {
     weekday(day).map(|_| day.to_string())
 }
 
-/// The day of the week of `YYYY-MM-DD`; None if it is not a date.
-fn weekday(date: &str) -> Option<&'static str> {
-    let b = date.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
-        return None;
+/// The days after `date` with their names, one a line, for the model to
+/// read a due date off: models of the size used here get "next Tuesday"
+/// a day wrong when they count it themselves.
+fn calendar(date: &str, days: usize) -> Option<String> {
+    let (mut y, mut m, mut d) = ymd(date)?;
+    let mut lines = String::new();
+    for _ in 0..days {
+        d += 1;
+        if d > month_length(y, m) {
+            (d, m) = (1, m + 1);
+            if m > 12 {
+                (m, y) = (1, y + 1);
+            }
+        }
+        let day = format!("{y:04}-{m:02}-{d:02}");
+        lines.push_str(&format!("{day} {}\n", weekday(&day)?));
     }
-    let number = |range: std::ops::Range<usize>| -> Option<i64> {
-        let s = date.get(range)?;
-        s.bytes()
-            .all(|c| c.is_ascii_digit())
-            .then(|| s.parse().ok())?
-    };
-    let (y, m, d) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    Some(lines)
+}
+
+fn month_length(y: i64, m: i64) -> i64 {
     let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let days = [
+    [
         31,
         if leap { 29 } else { 28 },
         31,
@@ -335,10 +353,31 @@ fn weekday(date: &str) -> Option<&'static str> {
         31,
         30,
         31,
-    ];
-    if !(1..=12).contains(&m) || d < 1 || d > days[(m - 1) as usize] {
+    ][(m - 1) as usize]
+}
+
+/// Year, month and day of `YYYY-MM-DD`; None if it is not a date.
+fn ymd(date: &str) -> Option<(i64, i64, i64)> {
+    let b = date.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
         return None;
     }
+    let number = |range: std::ops::Range<usize>| -> Option<i64> {
+        let s = date.get(range)?;
+        s.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| s.parse().ok())?
+    };
+    let (y, m, d) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    if !(1..=12).contains(&m) || d < 1 || d > month_length(y, m) {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+/// The day of the week of `YYYY-MM-DD`; None if it is not a date.
+fn weekday(date: &str) -> Option<&'static str> {
+    let (y, m, d) = ymd(date)?;
     // Sakamoto's: 0 is Sunday.
     let t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let y = if m < 3 { y - 1 } else { y };
@@ -472,6 +511,12 @@ mod tests {
         assert_eq!(weekday("2026-13-01"), None);
         assert_eq!(weekday("29/10/2026"), None);
         assert_eq!(date("2026-11-06T17:00:00").as_deref(), Some("2026-11-06"));
+        let days = calendar("2026-12-30", 3).unwrap();
+        assert_eq!(
+            days,
+            "2026-12-31 Thursday\n2027-01-01 Friday\n2027-01-02 Saturday\n"
+        );
+        assert_eq!(calendar("2026-02-30", 3), None);
         assert_eq!(seconds("1:02:03"), Some(3723.0));
         assert_eq!(seconds("12:30"), Some(750.0));
         assert_eq!(seconds("12"), None);
@@ -547,6 +592,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         let sent = server.join().unwrap();
         assert!(sent[0].contains("2026-10-29 (Thursday)"), "{}", sent[0]);
+        assert!(sent[0].contains(r"2026-11-03 Tuesday\n"), "{}", sent[0]);
         assert!(sent[0].contains("- quote"));
     }
 
