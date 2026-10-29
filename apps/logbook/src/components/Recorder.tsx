@@ -7,7 +7,7 @@
 // screen under the pointer, or on macOS an area to select) goes in
 // the notes as a line of its own where the cursor is, shown under them.
 import { useEffect, useRef, useState } from 'react';
-import { Camera, PanelRightClose, PanelRightOpen, Scan, Square } from 'lucide-react';
+import { Camera, Info, PanelRightClose, PanelRightOpen, Scan, Square } from 'lucide-react';
 import {
   api,
   clock,
@@ -350,9 +350,8 @@ function LiveTranscript({
         })}
         <div ref={end} />
       </div>
-      <p
-        className={`border-t border-neutral-200 px-4 py-3 text-sm max-sm:hidden dark:border-neutral-800 ${mutedTextClass}`}
-      >
+      <p className="flex items-start gap-1.5 border-t border-neutral-200 px-4 py-2 text-xs text-neutral-500 max-sm:hidden dark:border-neutral-800">
+        <Info size={12} className="mt-0.5 shrink-0" aria-hidden />
         Speakers are numbered as heard live; the final transcript names them once for the whole
         meeting.
       </p>

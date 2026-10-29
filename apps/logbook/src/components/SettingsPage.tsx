@@ -145,7 +145,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
           <Section title="Transcription">
             {android ? (
               <p className={`text-sm ${mutedTextClass}`}>
-                This phone records and sends the audio to logbook-server, which transcribes it.
+                This phone records and streams the audio to a server, which transcribes it.
               </p>
             ) : (
               <div className="grid grid-cols-2 gap-3">
@@ -154,14 +154,14 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                   onClick={() => update((n) => (n.transcription = 'local'))}
                   icon={<Laptop className="size-5" />}
                   title="On this computer"
-                  text="The models (about 1 GB) are fetched once and run here. Nothing leaves the computer for the transcript."
+                  text="The audio stays on this computer. The models (about 1 GB) download once; a laptop without a GPU may fall behind."
                 />
                 <Choice
                   selected={!local}
                   onClick={() => update((n) => (n.transcription = 'server'))}
                   icon={<Server className="size-5" />}
-                  title="logbook-server"
-                  text="A server holds the models for everyone: for computers that cannot keep up."
+                  title="On a server"
+                  text="The audio is streamed to a server, which transcribes it and keeps it only until the meeting ends. Needs its address and your token."
                 />
               </div>
             )}
@@ -355,7 +355,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
               decisions, action items) and, with a collection set under brainy, to find the tasks.{' '}
               {local
                 ? 'Without a server, the model below is used.'
-                : "With logbook-server, the server's model is used (its --llm-url): nothing below."}
+                : "On a server, the server's model is used (its --llm-url): nothing below."}
             </p>
             <Toggle
               checked={s.model.report}
@@ -454,8 +454,8 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 </Field>
                 {provider.id !== 'other' && (
                   <p className="rounded-md bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/30">
-                    {provider.label} reads the text of every meeting it cleans up or reports on:
-                    fine for testing, not for meetings that must stay in the company.
+                    {provider.label} reads the text of every meeting it reports on or finds tasks
+                    in: fine for testing, not for meetings that must stay in the company.
                   </p>
                 )}
               </>
@@ -595,7 +595,7 @@ function Choice({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-lg border p-4 text-left transition-colors ${
+      className={`flex flex-col items-start rounded-lg border p-4 text-left transition-colors ${
         selected
           ? 'border-accent bg-accent/5 ring-1 ring-accent'
           : 'border-neutral-200 hover:border-neutral-400 dark:border-neutral-700'

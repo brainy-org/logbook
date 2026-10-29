@@ -199,7 +199,7 @@ export function Home({
               {local ? <Laptop className="size-4" /> : <Server className="size-4" />}
               {local
                 ? 'Transcribed on this computer'
-                : `Transcribed by logbook-server at ${s.serverUrl}`}
+                : `Transcribed on the server at ${s.serverUrl}`}
             </li>
             <li className="flex items-center gap-2">
               <Cloud className="size-4" />

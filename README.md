@@ -92,7 +92,7 @@ brainy follow, and the meeting stays in the list on the left. Click a
 speaker ("Speaker 2") to give them a name: the transcript, the brainy
 page and the voices known by name change with it, and the next meetings
 name them by themselves. In the settings: on this computer or on a
-logbook-server (with your token on it), the microphone and the output to record, brainy on or off (its token is
+server (a logbook-server, with your token on it), the microphone and the output to record, brainy on or off (its token is
 kept on this computer, readable by you only) and the collection the tasks are
 proposed in (rows "To confirm", listed on the meeting's page in the app too), and the language model for the
 report and the tasks (a provider, Groq, OpenAI, Mistral or any OpenAI-compatible API,
