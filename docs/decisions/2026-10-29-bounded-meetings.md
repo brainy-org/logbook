@@ -179,3 +179,12 @@ lasted as long as `live` ran:
 | Cut each channel where it is when the decision is taken | channels fall out of step in the new meeting, and the echo filter compares them by time |
 | End the run at `max_length` and let the user start again | months unattended is the point; a stopped recording loses what follows |
 | A meeting closes when the live transcript is silent, online or not | offline every 15 minutes would make a meeting, each kept pending |
+
+## Tried, 2026-10-29
+
+The desktop app on a Mac, `LOGBOOK_PAUSE=0.25` (15 s), "In the room":
+speech, then typing through the silence until the notes emptied, then
+speech again and stop. Two meetings were kept, "Prova taglio" and
+"Prova taglio (2)", 33 s apart, each with its own phrases; the first
+one's notes ended with the last letter typed before the cut, and the
+second's held none of them. No meeting was left pending.
