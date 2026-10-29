@@ -238,7 +238,7 @@ impl Progressive {
         track.cut = track.cut.max(range.to);
         // The range's slots are its own: only voices make them the
         // meeting's speakers.
-        let map = track.linker.link(&result.voices);
+        let map = track.linker.link(&result.voices, range.to);
         track.speakers.extend(
             result
                 .turns

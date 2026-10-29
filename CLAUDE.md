@@ -37,7 +37,9 @@ crates/client/   the client, a library the CLI and the app share: the audio (aud
                  kept until published (pending.rs), the final transcript as Markdown a
                  part at a time (transcript.rs) into brainy as it comes (brainy.rs),
                  the report, speakers named from voices known on this computer
-                 (voices.rs), and for the app the meetings kept (history.rs)
+                 (voices.rs), and for the app the meetings kept (history.rs); a
+                 recording cut into meetings at a long pause or a meeting's length
+                 (series.rs: every channel cut at one sample)
 crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
                  with --system, the call), finish (pending meetings), speakers,
                  devices, bench: options and printing only
@@ -64,10 +66,11 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
 - **The pipeline is `crates/engine`; the server and the client only drive
   it.** Pipeline logic in `crates/server` is logic the CLI without
   `--server` lacks (local.rs runs the engine's session, as the server does).
-- **A meeting's run is `crates/client` (`meeting.rs`); the CLI and the app
-  only choose its options.** A step added in the CLI's `main.rs` or the
-  app's `recorder.rs` is missing from the other, and from `finish` for a
-  meeting left pending (`docs/desktop.md`).
+- **A meeting's run is `crates/client` (`meeting.rs`; a recording's
+  meetings, `series.rs`); the CLI and the app only choose its options.**
+  A step added in the CLI's `main.rs` or the app's `recorder.rs` is
+  missing from the other, and from `finish` for a meeting left pending
+  (`docs/desktop.md`).
 - **libparakeet is loaded at run time and its ABI is checked at open**
   (`ABI` in `parakeet.rs`, v0.6.1). A function declared with the wrong
   signature does not fail to build: it corrupts memory. Declare from
@@ -120,6 +123,14 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
   voices (`speakers::Linker`) make them the meeting's speakers. Carrying a
   slot number across ranges mixes people up silently
   (`docs/decisions/2026-10-24-speakers-across-a-long-meeting.md`).
+- **What a meeting or a session keeps is bounded, never the whole
+  meeting**: the final segments a session keeps (`KEEP_SENT`, the
+  result's `from`), the speakers a linker keeps (`MAX_SPEAKERS`), what
+  the publisher holds while brainy fails (none: `segments.jsonl`), and a
+  meeting's length (`live` is cut into meetings, client `series.rs`).
+  State that grows with the meeting fails only after hours or months, on
+  a server with tens of meetings or a client left running
+  (`docs/decisions/2026-10-29-bounded-meetings.md`).
 - **A session has one part with the clean-up model at a time**
   (`Final::polishing`, engine `session.rs`): final segments leave in the
   order they were ready. Two parts out at once can come back swapped and

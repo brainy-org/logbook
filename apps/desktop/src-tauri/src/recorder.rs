@@ -1,8 +1,11 @@
 //! The meeting being recorded: one at a time, run by crates/client
-//! (`meeting::meeting`) as the CLI's `live` is, and told to the pages as
+//! (`series::meetings`) as the CLI's `live` is, and told to the pages as
 //! events: `meeting-state` (its phase), `utterance` (the live
 //! transcript), `levels` (how loud each channel is, for the meter) and,
-//! at its end, `meeting-done` or `meeting-failed`.
+//! at its end, `meeting-done` or `meeting-failed`. A recording left
+//! running is cut into meetings (a long pause, eight hours): each one
+//! that ends while the next records is `meetings-changed` (or
+//! `meeting-failed`), and the state's `part` counts them.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -12,6 +15,7 @@ use anyhow::{Result, bail};
 use logbook_client::audio::{Recording, Stop};
 use logbook_client::meeting::{self, Backend, Notes, Publish};
 use logbook_client::remote::{self, Audio};
+use logbook_client::series::{self, Limits};
 use logbook_engine::protocol::{ChannelConfig, Utterance};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -45,6 +49,9 @@ pub struct State {
     /// The person behind the microphone.
     pub me: String,
     pub notes: String,
+    /// Which meeting of the recording this is, from 0: the notes start
+    /// empty in each.
+    pub part: usize,
 }
 
 struct Running {
@@ -109,6 +116,7 @@ impl Recorder {
                 channels: Vec::new(),
                 me: publish.me.clone(),
                 notes: String::new(),
+                part: 0,
             };
             *running = Some(Running {
                 state: state.clone(),
@@ -127,6 +135,8 @@ impl Recorder {
             let _ = app.emit("meeting-state", None::<State>);
             match result {
                 Ok(outcome) => {
+                    // Nothing said: nothing kept to show.
+                    let outcome = outcome.filter(|o| !o.silent);
                     let _ = app.emit("meeting-done", outcome);
                 }
                 Err(error) => {
@@ -190,14 +200,18 @@ async fn run(
             let _ = app.emit("meeting-state", Some(&r.state));
         }
     }
-    let mut events = Events { app: app.clone() };
-    meeting::meeting(
+    let mut events = Events {
+        app: app.clone(),
+        running: running.clone(),
+    };
+    series::meetings(
         &backend,
         data,
         channels,
         &publish,
         audio,
         notes,
+        Limits::default(),
         &mut events,
     )
     .await
@@ -213,6 +227,32 @@ fn now_ms() -> u64 {
 /// The live session's events, to the pages.
 struct Events {
     app: AppHandle,
+    running: Arc<Mutex<Option<Running>>>,
+}
+
+impl series::Series for Events {
+    fn meeting_started(&mut self, n: usize, at: f64) {
+        tracing::info!("a new meeting starts at {:.0} s of the recording", at);
+        let mut guard = self.running.lock().unwrap();
+        if let Some(r) = guard.as_mut() {
+            // `meetings` has taken the notes for the meeting that closed.
+            r.state.part = n;
+            r.state.notes = String::new();
+            let _ = self.app.emit("meeting-state", Some(&r.state));
+        }
+    }
+
+    fn meeting_ended(&mut self, _n: usize, outcome: &Result<Option<meeting::Outcome>>) {
+        match outcome {
+            Ok(_) => {
+                let _ = self.app.emit("meetings-changed", ());
+            }
+            Err(error) => {
+                tracing::warn!("{error:#}");
+                let _ = self.app.emit("meeting-failed", format!("{error:#}"));
+            }
+        }
+    }
 }
 
 impl remote::Events for Events {

@@ -7,12 +7,12 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 | File | What it does |
 |---|---|
 | `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's); how the local models get ready (`models`: fetched with their bytes, all files together, loaded, ready, failed; `models_state`, `load_models` to try again) |
-| `src-tauri/src/recorder.rs` | the meeting being recorded, one at a time: `meeting::meeting` run with the settings' channels, events to the pages (`meeting-state`, `utterance`, `levels`, `meeting-done`, `meeting-failed`) |
+| `src-tauri/src/recorder.rs` | the recording, one at a time: `series::meetings` run with the settings' channels and the default limits (a meeting closes after 15 minutes without a phrase, or at 8 hours), events to the pages (`meeting-state`, whose `part` counts the meetings of the recording; `utterance`, on the recording's clock; `levels`; `meetings-changed` or `meeting-failed` for a meeting that ends while the next records; `meeting-done` or `meeting-failed` at the end) |
 | `src-tauri/src/settings.rs` | `settings.json` in the app's config folder (the meeting's `Mode`, chosen on the home page and saved by `start_meeting`, decides the channels: the call, the microphone diarized); the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views (the live transcript's last 300 phrases: a meeting of hours has tens of thousands) |
 | `src/components/Home.tsx` | before a meeting: its title and mode (Call, In the room, Room + call) with what each records, what will happen to it, the pending meetings |
-| `src/components/Recorder.tsx` | notes, live transcript, the meter and stop |
+| `src/components/Recorder.tsx` | notes, live transcript, the meter and stop; drawn again (`key`: the state's `part`) when the recording's next meeting starts, its notes empty |
 | `src/components/ModelsProgress.tsx` | the models' download and loading as a bar, on the home page and in the live transcript until they are ready |
 | `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
 | `src/components/SettingsPage.tsx` | the settings (the language model: a provider, its address kept and the provider read back from it, then one of the models it lists at `/models`: `list_models`, engine `polish::models`), the voices known by name |
@@ -74,6 +74,13 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   (`docs/decisions/2026-10-27-windows-exit-without-teardown.md`).
 
 ## Not yet
+
+- A recording cut into meetings shows one recorder: the clock counts the
+  whole recording, the live transcript runs on across meetings, and
+  nothing on the page says a new one started but the notes emptying
+  (the meeting that closed took them; what was typed in the last 400 ms
+  before is lost). A meeting that ends meanwhile only refreshes the list.
+  The limits are the defaults, not settings.
 
 - Run on a real meeting through the app (the CLI's flow is the same, and
   was run; the app's pages were only built, not clicked through).

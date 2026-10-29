@@ -98,13 +98,18 @@ impl Server {
 
 /// The final pass's result: every channel's segments by start, and what
 /// was left out.
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Deserialize, Serialize)]
 pub struct Finalized {
     pub utterances: Vec<Utterance>,
     pub warnings: Vec<String>,
     /// The speakers' voices at the end (voices.rs).
     #[serde(default)]
     pub voices: Vec<SpeakerVoice>,
+    /// Every segment starting at or after this is in `utterances`, none
+    /// before (`FinalState::Done`): a server's result holds only the last
+    /// minutes of a live session. 0 once merged with the segments kept.
+    #[serde(default)]
+    pub from: f64,
 }
 
 pub struct Live {
@@ -160,6 +165,10 @@ pub trait Events {
     }
     /// The meeting has ended; the rest of the final pass runs as `id`.
     fn finalizing(&mut self, _audio_s: f64, _id: &str) {}
+    /// The live transcript runs (a session is open), or has stopped (the
+    /// connection is lost): a pause in it is a pause in the meeting only
+    /// while it runs (meeting.rs, `Closer`).
+    fn connected(&mut self, _up: bool) {}
 }
 
 /// With `final_pass`, the session asks for the final pass, which follows
@@ -220,6 +229,7 @@ pub async fn live(
                 if resume {
                     tracing::info!("live: the final pass goes on from {:.0} s", start.offset);
                 }
+                events.connected(true);
                 retry = RETRY_MIN;
                 let base: Vec<f64> = if first || resume {
                     vec![0.0; channels.len()]
@@ -275,6 +285,7 @@ pub async fn live(
         };
         first = false;
         out.intact = false;
+        events.connected(false);
         if ended {
             tracing::warn!("live: {lost:#}");
             return out;
@@ -742,11 +753,13 @@ pub async fn poll(server: &Server, id: &str) -> Result<Pass> {
                 utterances,
                 warnings,
                 voices,
+                from,
             })) => {
                 return Ok(Pass::Done(Finalized {
                     utterances,
                     warnings,
                     voices,
+                    from,
                 }));
             }
             Ok(Some(FinalState::Failed { message })) => return Ok(Pass::Failed(message)),

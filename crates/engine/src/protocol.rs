@@ -125,10 +125,18 @@ pub enum FinalState {
         audio_s: f64,
     },
     Done {
+        /// Every segment starting at or after `from`, none before.
         utterances: Vec<Utterance>,
         warnings: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         voices: Vec<SpeakerVoice>,
+        /// On the meeting's clock. A live session keeps the last minutes
+        /// of what it sent (engine session.rs, `KEEP_SENT`): a client
+        /// whose final segments stopped before `from` has a gap, and
+        /// uploads its audio from there instead. 0, everything, from a
+        /// server older than it.
+        #[serde(default)]
+        from: f64,
     },
     Failed {
         message: String,

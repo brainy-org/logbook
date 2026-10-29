@@ -44,6 +44,8 @@ export interface RecorderState {
   channels: string[];
   me: string;
   notes: string;
+  /** Which meeting of the recording, from 0: a recording left running is cut into meetings. */
+  part: number;
 }
 
 /** How the models of a local backend get ready; null with a server. */

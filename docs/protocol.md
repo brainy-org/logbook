@@ -74,8 +74,9 @@ token ("Tokens", below).
   voiceprints, not kept past the meeting's result.
 - `{"type":"finalizing","audio_s":1834.2,"id":"9f3c…"}` with a final
   pass: the live transcript is complete; the final pass finishes the last
-  minute or so (seconds). The whole result is also at `GET /finals/{id}`
-  for an hour after it is ready.
+  minute or so (seconds). Its result is also at `GET /finals/{id}` for an
+  hour after it is ready: the segments of its last ten minutes or so
+  (`from`), not the whole meeting's.
 - `{"type":"final","utterances":[],"warnings":[...],"voices":[...]}` with a final pass:
   it is complete (`utterances`: any segment not sent as `final_segments`;
   the server sends them all there); `warnings` says what was left out
@@ -116,8 +117,15 @@ the client moves its times by where it started
   the client encodes it and the server decodes it a part at a time, to
   its recordings folder.
 - `GET /finals/{id}`: `{"state":"running","audio_s":…}`,
-  `{"state":"done","utterances":[...],"warnings":[...]}` or
-  `{"state":"failed","message":"…"}`; `404` if the server does not know
+  `{"state":"done","utterances":[...],"warnings":[...],"voices":[...],"from":5400.0}` or
+  `{"state":"failed","message":"…"}`. `from` (seconds, on the meeting's
+  clock): every segment starting at or after it is in `utterances`, none
+  before. An upload's result starts at its `offset`; a live session's
+  keeps only the last ten minutes or so of what it sent (and at least
+  the last three segments: engine session.rs, `KEEP_SENT`), so a client
+  whose final segments stop before `from` has a gap and uploads its
+  audio from where they stop, as for a `404`. Missing (a server older
+  than it) is 0: everything. `404` if the server does not know
   the id (the server that ran it stopped, or the result expired an hour
   after it was ready): the client uploads again. Any replica answers
   (`docs/decisions/2026-10-29-replicas-share-the-data-folder.md`); `503`

@@ -104,17 +104,37 @@ fn alone(t: &Turn, all: &[Turn]) -> Vec<(f64, f64)> {
     parts
 }
 
+/// The most speakers a channel's linker keeps: past it, the one heard
+/// least recently is forgotten (docs/decisions/2026-10-29-bounded-meetings.md).
+/// Each is compared with every voice of every range, sent with every
+/// `final_segments` and saved with the meeting: a meeting of days on a
+/// channel that founds a speaker now and then would otherwise grow all
+/// three without end.
+pub const MAX_SPEAKERS: usize = 64;
+
 /// The meeting's speakers as voices, matched range by range. A range's
 /// slots are its own (it was diarized alone): slot 0 of one range and of
 /// the next are unrelated, and only voices link them.
 pub struct Linker {
     threshold: f32,
     share: f32,
-    /// Per speaker, the sum of its matched embeddings weighted by seconds:
-    /// its direction is the speaker's voice.
-    centroids: Vec<Vec<f32>>,
-    /// Per speaker, the seconds of audio behind its centroid.
-    seconds: Vec<f64>,
+    /// The speakers kept, by id (increasing): at most `cap`.
+    speakers: Vec<Speaker>,
+    /// The id the next new speaker takes: ids are never given twice in a
+    /// meeting, so a forgotten speaker's number is not someone else's.
+    next: u32,
+    cap: usize,
+}
+
+struct Speaker {
+    id: u32,
+    /// The sum of its matched embeddings weighted by seconds: its
+    /// direction is the speaker's voice.
+    centroid: Vec<f32>,
+    /// Seconds of audio behind the centroid.
+    seconds: f64,
+    /// When it was last heard, on the clock `link` is given.
+    heard: f64,
 }
 
 /// The least audio of a voice that may found a new speaker: shorter
@@ -134,25 +154,37 @@ impl Linker {
         Self {
             threshold,
             share: SHARE,
-            centroids: Vec::new(),
-            seconds: Vec::new(),
+            speakers: Vec::new(),
+            next: 0,
+            cap: MAX_SPEAKERS,
         }
     }
 
     /// Starts from a meeting's speakers so far (`voices`: speaker, voice,
     /// seconds, as `voices` gives them), so that a pass taken up again
-    /// keeps their numbers. A speaker missing from them stays one with no
-    /// voice: nobody joins it.
+    /// keeps their numbers. A speaker missing from them (forgotten, or
+    /// never given a voice) is not found again: its number is not given
+    /// to anyone. Past the cap, the highest numbers (the latest found)
+    /// are kept.
     pub fn seeded(mut self, voices: &[(u32, Vec<f32>, f64)]) -> Self {
-        let count = voices.iter().map(|v| v.0 as usize + 1).max().unwrap_or(0);
-        let width = voices.first().map_or(0, |v| v.1.len());
-        self.centroids = vec![vec![0.0; width]; count];
-        self.seconds = vec![0.0; count];
-        for (speaker, embedding, seconds) in voices {
-            let i = *speaker as usize;
-            self.centroids[i] = embedding.iter().map(|x| x * *seconds as f32).collect();
-            self.seconds[i] = *seconds;
-        }
+        let mut voices: Vec<&(u32, Vec<f32>, f64)> = voices.iter().collect();
+        voices.sort_by_key(|v| v.0);
+        voices.dedup_by_key(|v| v.0);
+        self.next = voices.last().map_or(0, |v| v.0 + 1);
+        let skip = voices.len().saturating_sub(self.cap);
+        // Seeded speakers were heard before this pass: before its 0, in
+        // the order they were found.
+        let count = voices.len() - skip;
+        self.speakers = voices[skip..]
+            .iter()
+            .enumerate()
+            .map(|(k, (id, embedding, seconds))| Speaker {
+                id: *id,
+                centroid: embedding.iter().map(|x| x * *seconds as f32).collect(),
+                seconds: *seconds,
+                heard: (k as f64) - (count as f64),
+            })
+            .collect();
         self
     }
 
@@ -162,87 +194,121 @@ impl Linker {
         self
     }
 
-    /// The meeting's speakers found so far.
-    pub fn speakers(&self) -> usize {
-        self.centroids.len()
+    /// The most speakers kept (`MAX_SPEAKERS` by default).
+    pub fn with_cap(mut self, cap: usize) -> Self {
+        self.cap = cap.max(1);
+        self
     }
 
-    /// Each speaker's voice so far, L2-normalized, and the seconds of audio
-    /// behind it: what the client matches against the voices it knows by
-    /// name (cli voices.rs).
+    /// The meeting's speakers numbered so far, forgotten ones included.
+    pub fn speakers(&self) -> usize {
+        self.next as usize
+    }
+
+    /// Each speaker kept, its voice so far, L2-normalized, and the seconds
+    /// of audio behind it: what the client matches against the voices it
+    /// knows by name (cli voices.rs). By number; numbers may skip the
+    /// forgotten.
     pub fn voices(&self) -> Vec<(u32, Vec<f32>, f64)> {
-        self.centroids
+        self.speakers
             .iter()
-            .zip(&self.seconds)
-            .enumerate()
-            .map(|(i, (c, &s))| {
-                let n = c
+            .map(|s| {
+                let n = s
+                    .centroid
                     .iter()
                     .map(|x| x * x)
                     .sum::<f32>()
                     .sqrt()
                     .max(f32::MIN_POSITIVE);
-                (i as u32, c.iter().map(|x| x / n).collect(), s)
+                (s.id, s.centroid.iter().map(|x| x / n).collect(), s.seconds)
             })
             .collect()
     }
 
     /// The meeting speaker of the range's slots that can be told: a slot
     /// with no voice (too little audio alone), or a short voice like no
-    /// one, has none, and its words go to the nearest turn.
-    pub fn link(&mut self, voices: &[Voice]) -> HashMap<u32, u32> {
+    /// one, has none, and its words go to the nearest turn. `at`: when the
+    /// range was heard (its end on the meeting's clock), which keeps the
+    /// speakers heard most recently when there are too many.
+    pub fn link(&mut self, voices: &[Voice], at: f64) -> HashMap<u32, u32> {
         let mut map = HashMap::new();
-        let mut taken = vec![false; self.centroids.len()];
+        // Ids taken by a slot of this range.
+        let mut taken: Vec<u32> = Vec::new();
         // Longest first: the surest voices choose first.
         let mut ordered: Vec<&Voice> = voices.iter().collect();
         ordered.sort_by(|a, b| b.seconds.total_cmp(&a.seconds));
         for v in ordered {
             let best = self
-                .centroids
+                .speakers
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| !taken[*i])
-                .map(|(i, c)| (i, cosine(&v.embedding, c)))
+                .filter(|(_, s)| !taken.contains(&s.id))
+                .map(|(i, s)| (i, cosine(&v.embedding, &s.centroid)))
                 .max_by(|a, b| a.1.total_cmp(&b.1));
             // The same voice as a slot of this range already took.
             let shared = self
-                .centroids
+                .speakers
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| taken[*i])
-                .map(|(i, c)| (i, cosine(&v.embedding, c)))
+                .filter(|(_, s)| taken.contains(&s.id))
+                .map(|(i, s)| (i, cosine(&v.embedding, &s.centroid)))
                 .max_by(|a, b| a.1.total_cmp(&b.1))
                 .filter(|&(_, sim)| sim >= self.share && best.is_none_or(|(_, b)| sim > b));
             if let Some((i, _)) = shared {
-                map.insert(v.slot, i as u32);
+                self.speakers[i].heard = self.speakers[i].heard.max(at);
+                map.insert(v.slot, self.speakers[i].id);
                 continue;
             }
             let join = match best {
                 Some((i, sim)) if sim >= self.threshold => Some(i),
-                _ if v.seconds >= MIN_NEW || self.centroids.is_empty() => None,
+                _ if v.seconds >= MIN_NEW || self.speakers.is_empty() => None,
                 Some((i, sim)) if sim >= LOOSE => Some(i),
                 _ => continue,
             };
-            let speaker = match join {
+            let id = match join {
                 Some(i) => {
-                    for (a, b) in self.centroids[i].iter_mut().zip(&v.embedding) {
+                    let s = &mut self.speakers[i];
+                    for (a, b) in s.centroid.iter_mut().zip(&v.embedding) {
                         *a += b * v.seconds as f32;
                     }
-                    self.seconds[i] += v.seconds;
-                    i
+                    s.seconds += v.seconds;
+                    s.heard = s.heard.max(at);
+                    s.id
                 }
                 None => {
-                    self.centroids
-                        .push(v.embedding.iter().map(|x| x * v.seconds as f32).collect());
-                    self.seconds.push(v.seconds);
-                    taken.push(false);
-                    self.centroids.len() - 1
+                    if self.speakers.len() >= self.cap {
+                        self.forget_one(&taken);
+                    }
+                    let id = self.next;
+                    self.next += 1;
+                    self.speakers.push(Speaker {
+                        id,
+                        centroid: v.embedding.iter().map(|x| x * v.seconds as f32).collect(),
+                        seconds: v.seconds,
+                        heard: at,
+                    });
+                    id
                 }
             };
-            taken[speaker] = true;
-            map.insert(v.slot, speaker as u32);
+            taken.push(id);
+            map.insert(v.slot, id);
         }
         map
+    }
+
+    /// Forgets the speaker heard least recently, but none of `taken` (this
+    /// range's: their ids are in its map already).
+    fn forget_one(&mut self, taken: &[u32]) {
+        let oldest = self
+            .speakers
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !taken.contains(&s.id))
+            .min_by(|a, b| a.1.heard.total_cmp(&b.1.heard).then(a.1.id.cmp(&b.1.id)))
+            .map(|(i, _)| i);
+        if let Some(i) = oldest {
+            self.speakers.remove(i);
+        }
     }
 }
 
@@ -274,16 +340,19 @@ mod tests {
     fn voices_link_ranges_and_new_ones_found_speakers() {
         let mut l = Linker::new(0.5);
         // Range 1: two voices.
-        let m = l.link(&[
-            voice(0, &[1.0, 0.0, 0.0], 20.0),
-            voice(1, &[0.0, 1.0, 0.0], 10.0),
-        ]);
+        let m = l.link(
+            &[
+                voice(0, &[1.0, 0.0, 0.0], 20.0),
+                voice(1, &[0.0, 1.0, 0.0], 10.0),
+            ],
+            60.0,
+        );
         assert_eq!((m[&0], m[&1]), (0, 1));
         // Range 2: its slot 0 is a third voice.
-        let m = l.link(&[voice(0, &[0.0, 0.0, 1.0], 15.0)]);
+        let m = l.link(&[voice(0, &[0.0, 0.0, 1.0], 15.0)], 120.0);
         assert_eq!(m[&0], 2);
         // Range 3: the first voice is back, as slot 1.
-        let m = l.link(&[voice(1, &[0.9, 0.1, 0.0], 12.0)]);
+        let m = l.link(&[voice(1, &[0.9, 0.1, 0.0], 12.0)], 180.0);
         assert_eq!(m[&1], 0);
         assert_eq!(l.speakers(), 3);
         // Each speaker's voice: unit length, with all the audio behind it.
@@ -297,16 +366,22 @@ mod tests {
     #[test]
     fn a_pass_taken_up_again_keeps_the_speakers_numbers() {
         let mut first = Linker::new(0.5);
-        first.link(&[
-            voice(0, &[1.0, 0.0, 0.0], 20.0),
-            voice(1, &[0.0, 1.0, 0.0], 10.0),
-        ]);
+        first.link(
+            &[
+                voice(0, &[1.0, 0.0, 0.0], 20.0),
+                voice(1, &[0.0, 1.0, 0.0], 10.0),
+            ],
+            240.0,
+        );
         let mut again = Linker::new(0.5).seeded(&first.voices());
         // The second voice comes back as slot 0, a new one as slot 1.
-        let m = again.link(&[
-            voice(0, &[0.1, 0.9, 0.0], 12.0),
-            voice(1, &[0.0, 0.0, 1.0], 8.0),
-        ]);
+        let m = again.link(
+            &[
+                voice(0, &[0.1, 0.9, 0.0], 12.0),
+                voice(1, &[0.0, 0.0, 1.0], 8.0),
+            ],
+            300.0,
+        );
         assert_eq!((m[&0], m[&1]), (1, 2));
         assert_eq!(again.voices()[1].2, 22.0);
     }
@@ -314,19 +389,82 @@ mod tests {
     #[test]
     fn slots_of_a_range_merge_only_as_one_voice_and_short_voices_found_no_one() {
         let mut l = Linker::new(0.5);
-        let m = l.link(&[voice(0, &[1.0, 0.0], 20.0), voice(1, &[0.0, 1.0], 20.0)]);
+        let m = l.link(
+            &[voice(0, &[1.0, 0.0], 20.0), voice(1, &[0.0, 1.0], 20.0)],
+            360.0,
+        );
         assert_eq!((m[&0], m[&1]), (0, 1));
         // Both the first voice: one voice the diarization split in two.
-        let m = l.link(&[voice(0, &[1.0, 0.1], 3.0), voice(1, &[1.0, 0.05], 9.0)]);
+        let m = l.link(
+            &[voice(0, &[1.0, 0.1], 3.0), voice(1, &[1.0, 0.05], 9.0)],
+            420.0,
+        );
         assert_eq!((m[&0], m[&1]), (0, 0));
         // Close to the first, but not that close: the next best instead.
-        let m = l.link(&[voice(0, &[1.0, 2.0], 3.0), voice(1, &[1.0, 0.05], 9.0)]);
+        let m = l.link(
+            &[voice(0, &[1.0, 2.0], 3.0), voice(1, &[1.0, 0.05], 9.0)],
+            480.0,
+        );
         assert_eq!(m[&1], 0);
         assert_eq!(m[&0], 1);
         // A short voice like no one: no speaker, not a new one.
-        let m = l.link(&[voice(2, &[-1.0, -1.0], 2.0)]);
+        let m = l.link(&[voice(2, &[-1.0, -1.0], 2.0)], 540.0);
         assert!(!m.contains_key(&2));
         assert_eq!(l.speakers(), 2);
+    }
+
+    #[test]
+    fn past_the_cap_the_speaker_heard_least_recently_is_forgotten() {
+        let dir = |i: usize| {
+            let mut d = vec![0.0f32; 8];
+            d[i] = 1.0;
+            d
+        };
+        let mut l = Linker::new(0.5).with_cap(3);
+        // Speakers 0, 1, 2, heard at 10, 20, 30; 0 again at 40.
+        for (i, at) in [(0, 10.0), (1, 20.0), (2, 30.0), (0, 40.0)] {
+            l.link(&[voice(0, &dir(i), 10.0)], at);
+        }
+        // A fourth voice: speaker 1, heard last at 20, is forgotten; the
+        // new one is 3, not 1.
+        let m = l.link(&[voice(0, &dir(3), 10.0)], 50.0);
+        assert_eq!(m[&0], 3);
+        let ids: Vec<u32> = l.voices().iter().map(|v| v.0).collect();
+        assert_eq!(ids, [0, 2, 3]);
+        assert_eq!(l.speakers(), 4);
+        // The others keep their numbers.
+        let m = l.link(&[voice(0, &dir(2), 10.0), voice(1, &dir(0), 5.0)], 60.0);
+        assert_eq!((m[&0], m[&1]), (2, 0));
+        // Speaker 1's voice back: a new speaker, 4 (3 is forgotten now).
+        let m = l.link(&[voice(0, &dir(1), 10.0)], 70.0);
+        assert_eq!(m[&0], 4);
+        let ids: Vec<u32> = l.voices().iter().map(|v| v.0).collect();
+        assert_eq!(ids, [0, 2, 4]);
+        // Taken up again from sparse numbers: they hold, and the next new
+        // one is 5.
+        let mut again = Linker::new(0.5).with_cap(3).seeded(&l.voices());
+        let m = again.link(&[voice(0, &dir(2), 10.0), voice(1, &dir(5), 10.0)], 5.0);
+        assert_eq!((m[&0], m[&1]), (2, 5));
+        let ids: Vec<u32> = again.voices().iter().map(|v| v.0).collect();
+        assert_eq!(ids, [2, 4, 5]);
+    }
+
+    #[test]
+    fn a_range_s_own_speakers_are_never_forgotten_for_its_new_one() {
+        let dir = |i: usize| {
+            let mut d = vec![0.0f32; 8];
+            d[i] = 1.0;
+            d
+        };
+        let mut l = Linker::new(0.5).with_cap(2);
+        l.link(&[voice(0, &dir(0), 10.0)], 10.0);
+        l.link(&[voice(0, &dir(1), 10.0)], 20.0);
+        // Speaker 0 (heard at 10) speaks in this range, which also founds
+        // a speaker: 1 goes, though 0 was heard before it.
+        let m = l.link(&[voice(0, &dir(0), 10.0), voice(1, &dir(2), 8.0)], 30.0);
+        assert_eq!((m[&0], m[&1]), (0, 2));
+        let ids: Vec<u32> = l.voices().iter().map(|v| v.0).collect();
+        assert_eq!(ids, [0, 2]);
     }
 
     #[test]

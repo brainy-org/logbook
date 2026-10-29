@@ -32,6 +32,8 @@ pub enum PolishJob {
         utterances: Vec<Utterance>,
         warnings: Vec<String>,
         voices: Vec<SpeakerVoice>,
+        /// As in `FinalState::Done`.
+        from: f64,
     },
 }
 
@@ -71,6 +73,7 @@ fn work(rx: &Mutex<Receiver<PolishJob>>, polisher: &Polisher, finals: &Finals) {
                 utterances,
                 mut warnings,
                 voices,
+                from,
             } => {
                 let polished = timed(polisher, "upload", &[], utterances);
                 warnings.extend(warning(&polished.errors));
@@ -80,6 +83,7 @@ fn work(rx: &Mutex<Receiver<PolishJob>>, polisher: &Polisher, finals: &Finals) {
                         utterances: polished.utterances,
                         warnings,
                         voices,
+                        from,
                     },
                 );
             }

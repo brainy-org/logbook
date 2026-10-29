@@ -16,5 +16,6 @@ pub mod local;
 pub mod meeting;
 pub mod pending;
 pub mod remote;
+pub mod series;
 pub mod transcript;
 pub mod voices;

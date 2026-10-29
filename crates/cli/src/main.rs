@@ -7,7 +7,9 @@
 //! with `--brainy` the result becomes a page in brainy, with `--report`
 //! a language model writes its report. A meeting with a final pass is
 //! also kept here until it is published (client pending.rs), and
-//! `finish` publishes the ones a lost server left behind.
+//! `finish` publishes the ones a lost server left behind. A recording is
+//! cut into meetings at a long pause or a meeting's length (client
+//! series.rs, `--pause`, `--max-length`): `live` may run for months.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,6 +21,7 @@ use clap::{Parser, Subcommand};
 use logbook_client::meeting::{self, Backend, Credentials, Outcome};
 use logbook_client::pending::Pending;
 use logbook_client::remote::{self, Server};
+use logbook_client::series::{self, Limits};
 use logbook_client::{aec, audio, local, voices};
 use logbook_engine::protocol::{ChannelConfig, Utterance};
 
@@ -108,6 +111,31 @@ impl Publish {
     }
 }
 
+/// When a recording becomes the next meeting (client series.rs).
+#[derive(clap::Args)]
+struct Split {
+    /// Minutes without a phrase ending (while the live transcript runs)
+    /// after which the meeting is over: what follows is the next meeting,
+    /// with its own page. 0: never.
+    #[arg(long, default_value_t = series::PAUSE / 60.0, value_name = "MINUTES")]
+    pause: f64,
+    /// Hours after which a meeting closes at the end of its next phrase,
+    /// two minutes later at the latest, and the next one starts. 0: never
+    /// (a meeting then grows for as long as the recording).
+    #[arg(long, default_value_t = series::MAX_LENGTH / 3600.0, value_name = "HOURS")]
+    max_length: f64,
+}
+
+impl Split {
+    fn limits(&self) -> Limits {
+        let positive = |x: f64| Some(x).filter(|&x| x > 0.0);
+        Limits {
+            pause: positive(self.pause * 60.0),
+            max_length: positive(self.max_length * 3600.0),
+        }
+    }
+}
+
 /// Where the models and the language model come from.
 #[derive(clap::Args, Clone)]
 #[command(next_help_heading = "Without --server")]
@@ -145,8 +173,11 @@ enum Command {
         no_diarize: bool,
         #[command(flatten)]
         publish: Publish,
+        #[command(flatten)]
+        split: Split,
     },
-    /// Transcribe the microphone, and with --system the call, until Ctrl-C.
+    /// Transcribe the microphone, and with --system the call, until Ctrl-C:
+    /// a meeting, or for as long as it runs, one after the other.
     Live {
         /// Also record what the computer plays (the call's other people), as
         /// a second channel whose speakers are told apart.
@@ -181,6 +212,8 @@ enum Command {
         mic_gain: aec::Gain,
         #[command(flatten)]
         publish: Publish,
+        #[command(flatten)]
+        split: Split,
     },
     /// Publish the meetings left pending (the server could not be reached,
     /// or brainy refused the page): all of them, or the one in DIR.
@@ -274,9 +307,11 @@ async fn run(cli: Cli) -> Result<()> {
             speed,
             no_diarize,
             publish,
+            split,
         } => {
             server.prepare(publish.polish || publish.report, 1).await?;
-            play(server, &data, &file, speed, !no_diarize, &publish).await
+            let limits = split.limits();
+            play(server, &data, &file, speed, !no_diarize, &publish, limits).await
         }
         Command::Live {
             system,
@@ -288,6 +323,7 @@ async fn run(cli: Cli) -> Result<()> {
             no_aec,
             mic_gain,
             publish,
+            split,
         } => {
             let mut sources = Vec::new();
             if !no_mic {
@@ -303,7 +339,7 @@ async fn run(cli: Cli) -> Result<()> {
             };
             let gain = if no_mic { aec::Gain::Off } else { mic_gain };
             server.prepare(publish.polish || publish.report, 1).await?;
-            live(server, &data, sources, echo, gain, &publish).await
+            live(server, &data, sources, echo, gain, &publish, split.limits()).await
         }
         Command::Finish {
             dir,
@@ -423,6 +459,9 @@ fn list_speakers(data: &Path) -> Result<()> {
 
 /// The final transcript and the report, when they went to no page.
 fn print_outcome(outcome: &Outcome) {
+    if outcome.silent {
+        eprintln!("nothing was said: nothing published");
+    }
     if let Some(transcript) = &outcome.transcript {
         println!("\n{transcript}");
     }
@@ -472,6 +511,28 @@ impl remote::Events for Printer {
     }
 }
 
+impl series::Series for Printer {
+    fn meeting_started(&mut self, n: usize, at: f64) {
+        eprintln!(
+            "[{}] meeting {} starts; the last one is being finished",
+            clock(at),
+            n + 1
+        );
+    }
+
+    fn meeting_ended(&mut self, n: usize, outcome: &Result<Option<Outcome>>) {
+        match outcome {
+            Ok(Some(outcome)) => {
+                eprintln!("meeting {}:", n + 1);
+                print_outcome(outcome);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("meeting {}: {error:#}", n + 1),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_meeting(
     server: &Backend,
     data: &Path,
@@ -480,15 +541,17 @@ async fn run_meeting(
     audio: remote::Audio,
     start: Instant,
     speed: f64,
+    limits: Limits,
 ) -> Result<()> {
     let mut printer = Printer { start, speed };
-    let outcome = meeting::meeting(
+    let outcome = series::meetings(
         server,
         data,
         channels,
         &p.publish(),
         audio,
         meeting::Notes::default(),
+        limits,
         &mut printer,
     )
     .await?;
@@ -505,6 +568,7 @@ async fn play(
     speed: f64,
     diarize: bool,
     p: &Publish,
+    limits: Limits,
 ) -> Result<()> {
     let samples = Arc::new(audio::decode(file)?);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -515,7 +579,7 @@ async fn play(
     }];
     let start = Instant::now();
     tokio::spawn(audio::play(samples, speed, start, tx));
-    run_meeting(server, data, channels, p, rx, start, speed).await
+    run_meeting(server, data, channels, p, rx, start, speed, limits).await
 }
 
 /// Each source is a channel: (what, which device, diarized).
@@ -526,6 +590,7 @@ async fn live(
     echo: audio::Echo,
     gain: aec::Gain,
     p: &Publish,
+    limits: Limits,
 ) -> Result<()> {
     let recording = audio::Recording::start(sources, echo, gain)?;
     for (channel, device) in &recording.devices {
@@ -552,6 +617,7 @@ async fn live(
         recording.audio,
         recording.start,
         1.0,
+        limits,
     )
     .await
 }

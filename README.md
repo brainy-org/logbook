@@ -140,12 +140,35 @@ scripts/client.sh play meeting.m4a --final                           # the final
 With `--final` (implied by `--brainy`) the server reads the meeting again
 as it goes, a minute or so behind, in longer pieces and with speakers
 numbered once for the whole meeting: the final transcript. With
-`--brainy` the page is created when the meeting starts and the final
-transcript is added to it as it comes: who spoke (your name for the
-microphone, "Speaker 1", "Speaker 2"… for the call), when, and what.
+`--brainy` the page is created with the meeting's first final words and
+the final transcript is added to it as it comes: who spoke (your name for the
+microphone, "Speaker 1", "Speaker 2"… for the call), when, and what. A
+meeting in which nothing was said makes no page.
 After Ctrl-C only the last minute or so is left (seconds), then the
 page's first line becomes "Recorded … · duration · speakers". Without
 `--parent` the page goes at the top of your default workspace.
+
+### Left running
+
+`live` may run for days or months: the recording is cut into meetings,
+each with its own page, report and pending folder, and each ends (its
+final transcript, page and report) while the next one records.
+
+```bash
+scripts/client.sh live --system --brainy                  # a new meeting after 15 minutes without a word, or 8 hours
+scripts/client.sh live --system --brainy --pause 30       # after 30 minutes without a word
+scripts/client.sh live --system --brainy --max-length 2   # at 2 hours (the end of the next phrase)
+scripts/client.sh live --pause 0 --max-length 0           # one meeting, however long (never cut)
+```
+
+A meeting closes when no phrase has ended for `--pause` minutes (15 by
+default) while the live transcript runs; when it has lasted
+`--max-length` hours (8), at the end of its next phrase, or two minutes
+later in any case (continuous noise, or no server: offline only the
+length closes it). Every channel is cut at the same instant; the next
+meeting's page starts there. A word said right at the cut may be split
+between the two. 0 turns either off; with both off a meeting, and what
+it keeps, grow for as long as it runs. `play` takes the same options.
 
 `--parent` (or `LOGBOOK_PARENT`, to set it once) takes the page's
 address as the browser shows it, its id, or its path of titles from the

@@ -125,7 +125,12 @@ model's eight
    nearest turn (`crates/engine/src/speakers.rs`). A range's slots are its
    own, unrelated to the next range's: only voices link them, so the
    encoder (`--voice`) is required. The meeting has no limit of eight, and
-   its numbering holds from the first minute to the last.
+   its numbering holds from the first minute to the last. A channel keeps
+   64 speakers at most (`MAX_SPEAKERS`): past that, the one heard least
+   recently is forgotten, and a voice like it later is a new speaker with
+   a new number. Numbers are never given twice in a meeting, so those
+   kept are not renumbered and the client's names hold; the voices sent
+   and saved may skip numbers.
 4. **Segments**: words become segments with brainy-worker's rules (a
    change of speaker, a pause of 1.2 s, a sentence end past 8 s, 30 s at
    most), and are sent as `final_segments` up to the earliest cut of all
@@ -135,7 +140,12 @@ model's eight
 5. **The end**: after `stop`, every channel's rest is cut in ranges the
    same way; then `final` and `done`. The session lives until then even
    if the client has gone, and the result is kept under the `finalizing`
-   id.
+   id: the segments of the last ten minutes or so of meeting
+   (`KEEP_SENT`), from `from`, not the whole meeting's. A client that lost
+   the end has every segment before its last `until`, minutes behind at
+   most; one whose segments stop before `from` uploads from there
+   (docs/protocol.md, `GET /finals/{id}`). A session holds minutes of
+   segments, not hours, on a server with tens of meetings.
 
 6. **Clean-up** (with `--polish-url` and `--polish-model`, for a meeting
    that asks for it: `"polish": true`, the CLI's `--polish`): before they

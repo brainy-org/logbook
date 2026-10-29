@@ -37,6 +37,9 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
     const t = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(t);
   }, []);
+  // A new meeting of the recording starts with empty notes: what was not
+  // sent yet stays with the last one's page (lost, under NOTES_DELAY_MS).
+  useEffect(() => () => window.clearTimeout(timer.current), []);
 
   const edit = (text: string) => {
     setNotes(text);

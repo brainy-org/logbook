@@ -95,6 +95,7 @@ export function App() {
   } else if (recorder) {
     main = (
       <Recorder
+        key={recorder.part}
         state={recorder}
         utterances={utterances}
         levels={levels}

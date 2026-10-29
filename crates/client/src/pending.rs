@@ -17,7 +17,7 @@
 //! written.
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -211,21 +211,47 @@ impl Pending {
         }
     }
 
-    /// Final segments that came during the meeting.
-    pub fn add_segments(&self, utterances: &[Utterance]) -> Result<()> {
+    /// Final segments that came during the meeting; returns where in
+    /// `segments.jsonl` they start, for `segments_from`.
+    pub fn add_segments(&self, utterances: &[Utterance]) -> Result<u64> {
         let path = self.dir.join("segments.jsonl");
         let mut file = File::options()
             .create(true)
             .append(true)
             .open(&path)
             .with_context(|| format!("could not write {}", path.display()))?;
+        let at = file
+            .metadata()
+            .with_context(|| format!("could not read {}", path.display()))?
+            .len();
         let mut text = String::new();
         for u in utterances {
             text.push_str(&serde_json::to_string(u)?);
             text.push('\n');
         }
         file.write_all(text.as_bytes())
-            .with_context(|| format!("could not write {}", path.display()))
+            .with_context(|| format!("could not write {}", path.display()))?;
+        Ok(at)
+    }
+
+    /// The final segments from byte `at` of `segments.jsonl` (as
+    /// `add_segments` returned it) to its end: the ones not on the page
+    /// yet, read again instead of held in memory while brainy fails.
+    pub fn segments_from(&self, at: u64) -> Result<Vec<Utterance>> {
+        let path = self.dir.join("segments.jsonl");
+        let mut file =
+            File::open(&path).with_context(|| format!("could not read {}", path.display()))?;
+        file.seek(SeekFrom::Start(at))
+            .with_context(|| format!("could not read {}", path.display()))?;
+        let mut out = Vec::new();
+        for line in BufReader::new(file).lines() {
+            let line = line.with_context(|| format!("could not read {}", path.display()))?;
+            // A line cut by a crash is dropped, as in `segments`.
+            if let Ok(u) = serde_json::from_str(&line) {
+                out.push(u);
+            }
+        }
+        Ok(out)
     }
 
     /// Every final segment that came during the meeting, by start.
@@ -456,9 +482,8 @@ mod tests {
         assert!((read[1] * 32768.0 + 2.0).abs() < 1e-3);
         assert!(opened.final_result().unwrap().is_none());
         let finalized = Finalized {
-            utterances: Vec::new(),
             warnings: vec!["w".into()],
-            voices: Vec::new(),
+            ..Finalized::default()
         };
         opened.save_final(&finalized).unwrap();
         assert_eq!(opened.final_result().unwrap().unwrap().warnings, ["w"]);
@@ -497,13 +522,7 @@ mod tests {
             Pending::open(&pending.dir).unwrap().meeting.final_until,
             420.0
         );
-        pending
-            .save_final(&Finalized {
-                utterances: Vec::new(),
-                warnings: Vec::new(),
-                voices: Vec::new(),
-            })
-            .unwrap();
+        pending.save_final(&Finalized::default()).unwrap();
         assert!(segments(&pending.dir, 0).is_empty());
 
         // A meeting kept with one file per channel is cut into files.

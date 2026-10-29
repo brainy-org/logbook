@@ -60,7 +60,9 @@ passes it, times in `f64`, samples in `u64`). What was not:
   unbuffered so that a session taking the pass up reads it back; a file
   whose last sample is before `final_until` is deleted. A folder kept
   before this, with one file per channel, is cut into files when opened.
-- **The publisher holds only what is not on the page yet.**
+- **The publisher holds only what is not on the page yet** (since
+  `2026-10-29-bounded-meetings.md`, nothing: it reads it again from
+  `segments.jsonl`).
 - **The report of a long meeting is written in steps** (engine
   report.rs): past `ONE_REQUEST` (320 000 characters, six to nine
   hours), the model takes notes of each part of 80 000 characters, then

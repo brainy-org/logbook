@@ -38,6 +38,9 @@ pub struct Final {
     pub warnings: Vec<String>,
     /// The diarized channels' speakers' voices.
     pub voices: Vec<SpeakerVoice>,
+    /// Where it starts on the meeting's clock: every segment from there
+    /// on is in it.
+    pub from: f64,
 }
 
 /// `offset`: where on the meeting's clock the channels' `start` is (the
@@ -97,5 +100,6 @@ pub fn run(
         utterances,
         warnings: Vec::new(),
         voices: pass.voices(),
+        from: offset,
     })
 }

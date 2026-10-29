@@ -131,6 +131,7 @@ fn whole_done(
                     utterances: result.utterances,
                     warnings: result.warnings,
                     voices: result.voices,
+                    from: result.from,
                 };
                 match polisher.send(job) {
                     Ok(()) => return,
@@ -139,6 +140,7 @@ fn whole_done(
                             utterances,
                             warnings,
                             voices,
+                            from,
                             ..
                         } = job
                         {
@@ -148,6 +150,7 @@ fn whole_done(
                                     utterances,
                                     warnings,
                                     voices,
+                                    from,
                                 },
                             );
                         }
@@ -159,6 +162,7 @@ fn whole_done(
                 utterances: result.utterances,
                 warnings: result.warnings,
                 voices: result.voices,
+                from: result.from,
             }
         }
         Err(error) => {

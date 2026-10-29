@@ -141,7 +141,7 @@ fn main() -> Result<()> {
                     &local,
                     args.embed,
                 )?;
-                let map = linker.link(&voices);
+                let map = linker.link(&voices, to);
                 out.extend(
                     local
                         .iter()

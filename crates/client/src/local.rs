@@ -193,6 +193,7 @@ impl Local {
                 out_tx,
             );
         });
+        events.connected(true);
         let mut ended = false;
         loop {
             tokio::select! {
@@ -256,11 +257,13 @@ impl Local {
                     utterances,
                     warnings,
                     voices,
+                    from,
                 }) => {
                     return Ok(Finalized {
                         utterances,
                         warnings,
                         voices,
+                        from,
                     });
                 }
                 Some(FinalState::Failed { message }) => bail!("{message}"),

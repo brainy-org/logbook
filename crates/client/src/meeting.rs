@@ -4,7 +4,8 @@
 //! at the end the final transcript completed, the report written, the
 //! meeting kept in the history (history.rs) and the folder removed. On any
 //! failure the folder stays, with whatever was reached, for `finish`.
-//! The CLI and the desktop app both run meetings through here.
+//! The CLI and the desktop app both run meetings through here, one
+//! recording as a series of them (series.rs).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -188,6 +189,10 @@ pub struct Outcome {
     pub report: Option<String>,
     /// Why the report could not be written; the meeting is published anyway.
     pub report_error: Option<String>,
+    /// Nothing was said in it, and no note written: nothing was published
+    /// and nothing kept (a stretch of silence a long recording was cut
+    /// into, `meetings`).
+    pub silent: bool,
 }
 
 /// The live session's events, and the final segments to the publisher.
@@ -231,6 +236,10 @@ impl<E: remote::Events> remote::Events for Tee<'_, E> {
             let _ = tx.send(Progress::FinalId(id.to_string()));
         }
     }
+
+    fn connected(&mut self, up: bool) {
+        self.events.connected(up);
+    }
 }
 
 fn started(pending: &Pending) -> Result<DateTime<FixedOffset>> {
@@ -250,9 +259,10 @@ fn title(pending: &Pending) -> Result<String> {
 }
 
 /// Writes the segments that start between what the page already has and
-/// `limit` to the meeting's brainy page, creating the page first. What
-/// is written is recorded in the pending folder, so nothing is written
-/// twice, whatever fails.
+/// `limit` to the meeting's brainy page, creating the page first (with
+/// the first segments, or at the end: a meeting in which nothing is said
+/// makes no page until then). What is written is recorded in the pending
+/// folder, so nothing is written twice, whatever fails.
 async fn write_page(
     b: &Brainy,
     pending: &mut Pending,
@@ -260,6 +270,15 @@ async fn write_page(
     segments: &[Utterance],
 ) -> Result<()> {
     let saved = pending.meeting.publish.clone();
+    let new: Vec<Utterance> = segments
+        .iter()
+        .filter(|u| u.start >= pending.meeting.published_until && u.start < limit)
+        .cloned()
+        .collect();
+    if pending.meeting.page.is_none() && new.is_empty() && limit != END {
+        pending.meeting.published_until = pending.meeting.published_until.max(limit);
+        return pending.save();
+    }
     if pending.meeting.page.is_none() {
         let started = started(pending)?.format("%Y-%m-%d %H:%M").to_string();
         let page = b
@@ -277,11 +296,6 @@ async fn write_page(
         pending.save()?;
     }
     let page = pending.meeting.page.clone().expect("created above");
-    let new: Vec<Utterance> = segments
-        .iter()
-        .filter(|u| u.start >= pending.meeting.published_until && u.start < limit)
-        .cloned()
-        .collect();
     let mut writer = pending
         .meeting
         .writer
@@ -299,14 +313,17 @@ async fn write_page(
 
 /// The meeting's final segments as they come: kept in the pending folder,
 /// and written to brainy. A failed write is tried again with the next
-/// segments: the ones not written yet are held here, never the whole
-/// meeting. Gives the folder back when the meeting is over.
+/// segments: the ones not written yet are read again from
+/// `segments.jsonl`, where they are, never held here (brainy may fail for
+/// hours). Gives the folder back when the meeting is over.
 async fn publisher(
     mut pending: Pending,
     brainy: Option<Brainy>,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Progress>,
 ) -> Pending {
-    let mut unwritten: Vec<Utterance> = Vec::new();
+    // Where in `segments.jsonl` the segments not on the page start, while
+    // a write has failed.
+    let mut unwritten: Option<u64> = None;
     while let Some(progress) = rx.recv().await {
         let written = async {
             match progress {
@@ -316,7 +333,7 @@ async fn publisher(
                     utterances,
                     voices,
                 } => {
-                    pending.add_segments(&utterances)?;
+                    let at = pending.add_segments(&utterances)?;
                     if !voices.is_empty() {
                         pending.meeting.voices = voices;
                         pending.save()?;
@@ -324,10 +341,16 @@ async fn publisher(
                     pending.set_final_until(until)?;
                     match &brainy {
                         Some(b) => {
-                            unwritten.extend(utterances);
-                            let written = write_page(b, &mut pending, until, &unwritten).await;
-                            let on_page = pending.meeting.published_until;
-                            unwritten.retain(|u| u.start >= on_page);
+                            // `write_page` takes those from `published_until` on.
+                            let segments = match unwritten {
+                                Some(from) => pending.segments_from(from)?,
+                                None => utterances,
+                            };
+                            let written = write_page(b, &mut pending, until, &segments).await;
+                            unwritten = match written {
+                                Ok(()) => None,
+                                Err(_) => Some(unwritten.unwrap_or(at)),
+                            };
                             written
                         }
                         None => Ok(()),
@@ -421,6 +444,19 @@ pub async fn finish(
             Err(error) => return Err(kept(error, &pending.dir)),
         },
     };
+    if finalized.utterances.is_empty()
+        && pending.meeting.page.is_none()
+        && pending.notes().trim().is_empty()
+    {
+        info!("nothing was said: nothing to publish");
+        let id = pending.id();
+        pending.remove()?;
+        return Ok(Outcome {
+            id,
+            silent: true,
+            ..Outcome::default()
+        });
+    }
     let transcript = match publish(pending, brainy, &finalized).await {
         Ok(transcript) => transcript,
         Err(error) => {
@@ -494,6 +530,7 @@ pub async fn finish(
         transcript,
         report: kept_meeting.report,
         report_error: kept_meeting.report_error,
+        silent: false,
     })
 }
 
@@ -620,8 +657,8 @@ async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalize
         // Every segment came; only `final.json` was not written.
         return Ok(Finalized {
             utterances: pending.segments()?,
-            warnings: Vec::new(),
             voices: pending.meeting.voices.clone(),
+            ..Finalized::default()
         });
     }
     let from = (until * SAMPLE_RATE as f64) as u64;
@@ -647,13 +684,24 @@ async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalize
             let result = local
                 .final_pass(channels, offset, meeting.voices.clone(), meeting.polish)
                 .await?;
-            return merged(pending, result);
+            return merged(pending, result)?.context("the final pass started after the audio kept");
         }
     };
     if let Some(id) = pending.meeting.final_id.clone() {
         info!("waiting for the final pass…");
         match remote::poll(server, &id).await? {
-            Pass::Done(f) => return merged(pending, f),
+            Pass::Done(f) => {
+                let from = f.from;
+                match merged(pending, f)? {
+                    Some(f) => return Ok(f),
+                    // The server kept the pass's last minutes only, and
+                    // this folder's segments stop before them: as unknown.
+                    None => warn!(
+                        "the server kept the final pass from {from:.0} s only; \
+                         the segments here stop at {until:.0} s"
+                    ),
+                }
+            }
             Pass::Unknown => warn!("the server no longer has the final pass"),
             Pass::Failed(message) => warn!("{message}"),
         }
@@ -679,7 +727,7 @@ async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalize
     pending.set_final_id(Some(id.clone()))?;
     info!("reading the meeting again from {offset:.0} s…");
     match remote::poll(server, &id).await? {
-        Pass::Done(f) => merged(pending, f),
+        Pass::Done(f) => merged(pending, f)?.context("the final pass started after the audio sent"),
         Pass::Unknown => bail!("the server lost the final pass it had just started"),
         Pass::Failed(message) => {
             pending.set_final_id(None)?;
@@ -690,9 +738,14 @@ async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalize
 
 /// A final pass's result after the segments kept: those before
 /// `final_until` from the folder, the rest from the result (which may
-/// start earlier: a pass taken up during the meeting).
-fn merged(pending: &Pending, result: Finalized) -> Result<Finalized> {
+/// start earlier: a pass taken up during the meeting). None when the
+/// result starts after them (`from` past `final_until`): what was said in
+/// between is in neither, and the audio kept must be read again.
+fn merged(pending: &Pending, result: Finalized) -> Result<Option<Finalized>> {
     let until = pending.meeting.final_until;
+    if result.from > until {
+        return Ok(None);
+    }
     let mut utterances: Vec<Utterance> = pending
         .segments()?
         .into_iter()
@@ -704,28 +757,54 @@ fn merged(pending: &Pending, result: Finalized) -> Result<Finalized> {
     } else {
         result.voices
     };
-    Ok(Finalized {
+    Ok(Some(Finalized {
         utterances,
         warnings: result.warnings,
         voices,
-    })
+        from: 0.0,
+    }))
 }
 
 /// A meeting being recorded: the audio of `audio` goes to the backend,
 /// and, with a final pass, to a pending folder too, where the final
 /// segments are kept as they come (and written to brainy). `notes` are
 /// read when the audio ends. Returns once the meeting is finished; None
-/// without a final pass.
+/// without a final pass. A recording that may last for hours or months
+/// goes through `meetings`, which cuts it into meetings.
 pub async fn meeting(
+    backend: &Backend,
+    data: &Path,
+    channels: Vec<ChannelConfig>,
+    p: &Publish,
+    audio: Audio,
+    notes: Notes,
+    events: &mut impl remote::Events,
+) -> Result<Option<Outcome>> {
+    meeting_at(
+        backend,
+        data,
+        channels,
+        p,
+        audio,
+        notes,
+        Local::now(),
+        events,
+    )
+    .await
+}
+
+/// `meeting`, whose first sample was taken at `started`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn meeting_at(
     backend: &Backend,
     data: &Path,
     channels: Vec<ChannelConfig>,
     p: &Publish,
     mut audio: Audio,
     notes: Notes,
+    started: DateTime<Local>,
     events: &mut impl remote::Events,
 ) -> Result<Option<Outcome>> {
-    let started = Local::now();
     let credentials = p.credentials();
     let mut spool: Option<Spool> = None;
     // The pending folder, where a local session records its final pass.
@@ -811,9 +890,83 @@ pub async fn meeting(
             utterances,
             warnings,
             voices,
+            from: 0.0,
         })?;
     } else if let Err(error) = kept {
         warn!("the final pass reads only what was kept before: {error:#}");
     }
     finish(backend, &mut pending, &credentials).await.map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(start: f64) -> Utterance {
+        Utterance {
+            channel: "mic".into(),
+            speaker: None,
+            start,
+            end: start + 2.0,
+            text: format!("{start}"),
+            words: Vec::new(),
+        }
+    }
+
+    fn pending(name: &str) -> Pending {
+        let root = std::env::temp_dir().join(format!("logbook-{name}-{}", std::process::id()));
+        let meeting: Meeting = serde_json::from_value(serde_json::json!({
+            "started": "2026-10-29T09:00:00+01:00",
+            "channels": [{"name": "mic", "diarize": false}],
+            "publish": {"brainy": false, "brainy_url": null, "parent": null, "title": null, "me": "Me"},
+        }))
+        .unwrap();
+        Pending::create(&root, "m", meeting).unwrap().0
+    }
+
+    #[test]
+    fn a_result_that_starts_after_the_segments_kept_is_a_gap() {
+        let mut p = pending("gap");
+        p.add_segments(&[seg(10.0), seg(50.0)]).unwrap();
+        p.set_final_until(100.0).unwrap();
+        // The server kept the pass from 80 s: it covers 100 s on.
+        let covered = Finalized {
+            utterances: vec![seg(85.0), seg(120.0), seg(700.0)],
+            from: 80.0,
+            ..Finalized::default()
+        };
+        let whole = merged(&p, covered).unwrap().unwrap();
+        let starts: Vec<f64> = whole.utterances.iter().map(|u| u.start).collect();
+        assert_eq!(starts, [10.0, 50.0, 120.0, 700.0]);
+        assert_eq!(whole.from, 0.0);
+        // From 400 s only: 100–400 s is in neither; the audio kept from
+        // 100 s is read again instead.
+        let gap = Finalized {
+            utterances: vec![seg(420.0)],
+            from: 400.0,
+            ..Finalized::default()
+        };
+        assert!(merged(&p, gap).unwrap().is_none());
+        // A server older than `from` sent everything (0).
+        let old: Finalized =
+            serde_json::from_str(r#"{"utterances":[],"warnings":[],"voices":[]}"#).unwrap();
+        assert!(merged(&p, old).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn segments_not_on_the_page_are_read_again_from_the_folder() {
+        let p = pending("unwritten");
+        p.add_segments(&[seg(1.0), seg(2.0)]).unwrap();
+        let at = p.add_segments(&[seg(3.0)]).unwrap();
+        p.add_segments(&[seg(4.0), seg(5.0)]).unwrap();
+        let again: Vec<f64> = p
+            .segments_from(at)
+            .unwrap()
+            .iter()
+            .map(|u| u.start)
+            .collect();
+        assert_eq!(again, [3.0, 4.0, 5.0]);
+        let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
+    }
 }

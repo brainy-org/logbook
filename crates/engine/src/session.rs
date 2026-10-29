@@ -7,7 +7,9 @@
 //! (engine progressive.rs) follows the meeting: its ranges are transcribed
 //! by the finalizer thread from the recording, and its segments sent as
 //! they are ready. After `stop`, the session lives until the pass is
-//! complete, even if the client has gone: its result is kept in `Finals`.
+//! complete, even if the client has gone: its result is kept in `Finals`,
+//! the segments of its last minutes (`Sent`, `KEEP_SENT`): a session
+//! holds minutes of segments, not the meeting's.
 //! With a model to clean the transcript up (polisher.rs), and unless the
 //! client declined it, the segments go through it before they are sent, a
 //! part at a time and in order.
@@ -85,12 +87,105 @@ pub struct Resume {
     pub voices: Vec<SpeakerVoice>,
 }
 
+/// How much of the meeting's final segments a session keeps once sent:
+/// for a client that lost the end of the pass (`Finals`, `from`), which
+/// has every segment before its last `until`, minutes behind at most.
+pub const KEEP_SENT: f64 = 600.0;
+
+/// The final segments sent, the last `KEEP_SENT` seconds of them (and at
+/// least `polish::CONTEXT`), by the part they went in.
+#[derive(Debug, Default)]
+pub struct Sent {
+    /// (until, segments), on the meeting's clock, in the order sent.
+    parts: VecDeque<(f64, Vec<Utterance>)>,
+    /// Segments starting at or after this are all kept.
+    from: f64,
+    count: usize,
+}
+
+impl Sent {
+    /// Nothing sent yet; the session's segments start at `from` (its
+    /// offset on the meeting's clock).
+    pub fn new(from: f64) -> Self {
+        Self {
+            parts: VecDeque::new(),
+            from,
+            count: 0,
+        }
+    }
+
+    /// A part sent with `until`; the oldest parts go once the rest covers
+    /// `KEEP_SENT` and the clean-up's context. A part goes whole, and
+    /// `from` becomes its `until`: every segment from there on is kept.
+    pub fn push(&mut self, until: f64, utterances: Vec<Utterance>) {
+        self.count += utterances.len();
+        self.parts.push_back((until, utterances));
+        // The end of the meeting (f64::MAX) keeps the last finite one.
+        let Some(latest) = self
+            .parts
+            .iter()
+            .rev()
+            .map(|p| p.0)
+            .find(|&u| u != f64::MAX)
+        else {
+            return;
+        };
+        while let Some((until, front)) = self.parts.front() {
+            let rest = self.count - front.len();
+            if *until >= latest - KEEP_SENT || rest < polish::CONTEXT {
+                break;
+            }
+            self.from = self.from.max(*until);
+            self.count = rest;
+            self.parts.pop_front();
+        }
+    }
+
+    /// The last `n` segments sent.
+    pub fn last(&self, n: usize) -> Vec<Utterance> {
+        let mut out: Vec<Utterance> = self
+            .parts
+            .iter()
+            .rev()
+            .flat_map(|p| p.1.iter().rev())
+            .take(n)
+            .cloned()
+            .collect();
+        out.reverse();
+        out
+    }
+
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Where the kept segments start (`FinalState::Done::from`).
+    pub fn from(&self) -> f64 {
+        self.from
+    }
+
+    /// The kept segments, by start, and `from`.
+    pub fn take(&mut self) -> (f64, Vec<Utterance>) {
+        let all = std::mem::take(&mut self.parts)
+            .into_iter()
+            .flat_map(|p| p.1)
+            .collect();
+        self.count = 0;
+        (self.from, all)
+    }
+}
+
 /// A session's final pass.
 struct Final {
     pass: Progressive,
     recording: Recording,
-    /// Every segment sent, for `Finals` once the pass is complete.
-    sent: Vec<Utterance>,
+    /// The last segments sent, for the clean-up's context and for
+    /// `Finals` once the pass is complete.
+    sent: Sent,
     warnings: Vec<String>,
     /// The id under which the result is kept, once the meeting has ended.
     id: Option<String>,
@@ -131,7 +226,7 @@ pub fn run(
                 Ok(Final {
                     pass: shared.engine.progressive(configs.clone(), &resume.voices)?,
                     recording,
-                    sent: Vec::new(),
+                    sent: Sent::new(resume.offset),
                     warnings: Vec::new(),
                     id: None,
                     waiting: VecDeque::new(),
@@ -364,12 +459,14 @@ fn live(
             });
             let _ = out.send(ServerMessage::Done);
             if let Some(id) = &f.id {
+                let (from, utterances) = f.sent.take();
                 shared.finals.finish(
                     id,
                     FinalState::Done {
-                        utterances: std::mem::take(&mut f.sent),
+                        utterances,
                         warnings: f.warnings.clone(),
                         voices,
+                        from,
                     },
                 );
             }
@@ -434,7 +531,7 @@ fn release(
             send(f, until, utterances, out);
             continue;
         };
-        let context = f.sent[f.sent.len().saturating_sub(polish::CONTEXT)..].to_vec();
+        let context = f.sent.last(polish::CONTEXT);
         let job = PolishJob::Segments {
             session: session.to_string(),
             context,
@@ -477,7 +574,7 @@ fn send(
     } else {
         until + f.offset
     };
-    f.sent.extend(utterances.iter().cloned());
+    f.sent.push(until, utterances.clone());
     // Every speaker's voice as it stands: a few kB a minute, and the client
     // names a speaker from it before the segment goes on the page.
     let _ = out.send(ServerMessage::FinalSegments {
@@ -485,4 +582,58 @@ fn send(
         utterances,
         voices: f.pass.voices(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(start: f64) -> Utterance {
+        Utterance {
+            channel: "mic".into(),
+            speaker: None,
+            start,
+            end: start + 5.0,
+            text: format!("{start}"),
+            words: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_session_keeps_the_last_minutes_it_sent() {
+        let mut sent = Sent::new(30.0);
+        // Three hours, a part a minute, two segments each.
+        for minute in 1..=180 {
+            let until = 30.0 + minute as f64 * 60.0;
+            sent.push(until, vec![seg(until - 60.0), seg(until - 30.0)]);
+        }
+        // About ten minutes kept, from a part's until.
+        let latest = 30.0 + 180.0 * 60.0;
+        assert!(sent.len() <= 2 * (KEEP_SENT as usize / 60 + 1));
+        assert!(sent.from() >= latest - KEEP_SENT - 60.0 && sent.from() <= latest - KEEP_SENT);
+        assert_eq!(sent.last(polish::CONTEXT).len(), polish::CONTEXT);
+        assert_eq!(sent.last(1)[0].start, latest - 30.0);
+        // The end of the meeting keeps them, and says where they start.
+        sent.push(f64::MAX, vec![seg(latest)]);
+        let (from, all) = sent.take();
+        assert!(all.iter().all(|u| u.start >= from));
+        assert_eq!(all.first().unwrap().start, from);
+        assert_eq!(all.last().unwrap().start, latest);
+    }
+
+    #[test]
+    fn the_clean_up_s_context_is_kept_through_a_long_silence() {
+        let mut sent = Sent::new(0.0);
+        sent.push(60.0, vec![seg(10.0), seg(20.0), seg(30.0)]);
+        // An hour of parts with nothing in them.
+        for minute in 2..=60 {
+            sent.push(minute as f64 * 60.0, Vec::new());
+        }
+        assert_eq!(sent.last(polish::CONTEXT).len(), 3);
+        assert_eq!(sent.from(), 0.0);
+        // A short session: everything, from its offset.
+        let mut short = Sent::new(12.5);
+        short.push(60.0, vec![seg(13.0)]);
+        assert_eq!(short.take().0, 12.5);
+    }
 }
