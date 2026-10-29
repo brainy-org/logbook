@@ -84,19 +84,25 @@ fn screen(app: &AppHandle) -> Result<RgbaImage> {
 }
 
 /// An area selected by the system's own tool; None if given up (Esc).
+/// screencapture refuses a file whose name starts with a dot and exits 0
+/// all the same, as it does when given up: what it says on stderr is
+/// the failure.
 #[cfg(target_os = "macos")]
-fn area(data: &Path) -> Result<Option<RgbaImage>> {
-    let dir = shots::staging(data);
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(".area.png");
+fn area(_: &Path) -> Result<Option<RgbaImage>> {
+    let path = std::env::temp_dir().join(format!("logbook-area-{}.png", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let status = std::process::Command::new("/usr/sbin/screencapture")
+    let output = std::process::Command::new("/usr/sbin/screencapture")
         .args(["-i", "-x", "-o"])
         .arg(&path)
-        .status()
+        .output()
         .context("could not run screencapture")?;
     if !path.exists() {
-        anyhow::ensure!(status.success(), "screencapture failed: {status}");
+        let said = String::from_utf8_lossy(&output.stderr);
+        anyhow::ensure!(
+            output.status.success() && said.trim().is_empty(),
+            "screencapture failed: {}",
+            said.trim()
+        );
         return Ok(None);
     }
     let image = xcap::image::open(&path)
