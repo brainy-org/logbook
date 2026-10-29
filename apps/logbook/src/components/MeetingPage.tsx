@@ -286,25 +286,40 @@ function Speakers({
   );
 }
 
+/** How long typing pauses before a kept meeting's notes are saved. */
+const SAVE_DELAY_MS = 400;
+
 function Notes({ meeting, onSaved }: { meeting: MeetingView; onSaved: (notes: string) => void }) {
   const text = useRef(meeting.notes);
   const saved = useRef(meeting.notes);
-  const save = async () => {
-    if (text.current === saved.current) return;
+  const timer = useRef<number | undefined>(undefined);
+  const save = () => {
+    window.clearTimeout(timer.current);
     const notes = text.current;
-    await api.saveMeetingNotes(meeting.id, notes);
+    if (notes === saved.current) return;
     saved.current = notes;
-    onSaved(notes);
+    void api.saveMeetingNotes(meeting.id, notes).then(() => onSaved(notes));
   };
+  // Leaving the tab or the meeting saves what was typed last.
+  useEffect(() => save, []);
   return (
-    <NotesEditor
-      key={meeting.id}
-      initial={meeting.notes}
-      folder={`meetings/${meeting.id}`}
-      onChange={(markdown) => (text.current = markdown)}
-      onBlur={() => void save()}
-      placeholder="No notes were written during this meeting."
-    />
+    <>
+      <p className={`mb-4 text-xs ${mutedTextClass}`}>
+        Edits are saved on this computer. The report and the brainy page are not rewritten.
+      </p>
+      <NotesEditor
+        key={meeting.id}
+        initial={meeting.notes}
+        folder={`meetings/${meeting.id}`}
+        onChange={(markdown) => {
+          text.current = markdown;
+          window.clearTimeout(timer.current);
+          timer.current = window.setTimeout(save, SAVE_DELAY_MS);
+        }}
+        onBlur={save}
+        placeholder="No notes were taken during this meeting. You can add some here."
+      />
+    </>
   );
 }
 

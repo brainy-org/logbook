@@ -270,18 +270,100 @@ select:disabled {
   transition: height 90ms linear;
 }
 
-/* The notes' editor (NotesEditor.tsx): a line per point, close together;
-   its placeholder, its screenshots. */
-.notes-editor p {
-  @apply my-1;
+/* The notes' editor (NotesEditor.tsx): its own rhythm, close as Notion's:
+   about 6 px between blocks, 2 px between a list's items, room above
+   headings only. */
+.notes-editor {
+  @apply text-[15px] leading-[1.6] text-neutral-800 dark:text-neutral-200;
 }
-.notes-editor p.is-editor-empty:first-child::before {
+.notes-editor :where(p, ul, ol, pre, figure, h1, h2, h3) {
+  @apply my-0;
+}
+.notes-editor > * + * {
+  @apply mt-1.5;
+}
+.notes-editor > :is(h1, h2, h3) {
+  @apply mt-5 font-semibold text-neutral-900 dark:text-neutral-100;
+}
+.notes-editor > :is(h1, h2, h3):first-child {
+  @apply mt-0;
+}
+.notes-editor > :is(h1, h2, h3) + * {
+  @apply mt-1;
+}
+.notes-editor h1 {
+  @apply text-xl;
+}
+.notes-editor h2 {
+  @apply text-lg;
+}
+.notes-editor h3 {
+  @apply text-base;
+}
+.notes-editor ul {
+  @apply list-disc pl-6;
+}
+.notes-editor ol {
+  @apply list-decimal pl-6;
+}
+.notes-editor li {
+  @apply my-0.5;
+}
+.notes-editor li > p {
+  @apply my-0;
+}
+.notes-editor strong {
+  @apply font-semibold text-neutral-900 dark:text-neutral-100;
+}
+.notes-editor ul[data-type='taskList'] {
+  @apply list-none pl-0.5;
+}
+.notes-editor li[data-type='taskItem'] {
+  @apply flex items-start gap-2;
+}
+.notes-editor li[data-type='taskItem'] > label {
+  @apply mt-[0.3em] select-none;
+}
+.notes-editor li[data-type='taskItem'] > label input {
+  @apply accent-accent;
+}
+.notes-editor li[data-type='taskItem'] > div {
+  @apply min-w-0 flex-1;
+}
+.notes-editor li[data-checked='true'] > div {
+  @apply text-neutral-400 line-through;
+}
+.notes-editor code {
+  @apply rounded bg-neutral-100 px-1 font-mono text-[0.9em] dark:bg-neutral-800;
+}
+.notes-editor pre {
+  @apply my-2 rounded-md bg-neutral-100 px-3 py-2 font-mono text-[0.85em] leading-normal dark:bg-neutral-800;
+}
+.notes-editor pre code {
+  @apply bg-transparent p-0;
+}
+.notes-editor .is-empty::before {
   @apply pointer-events-none float-left h-0 text-neutral-400;
   content: attr(data-placeholder);
 }
-.notes-editor img.shot {
-  @apply my-3 max-h-96 cursor-zoom-in rounded-md border border-neutral-200 dark:border-neutral-800;
+.notes-editor figure.shot {
+  @apply my-3;
 }
-.notes-editor img.shot.ProseMirror-selectednode {
-  @apply outline-2 outline-accent;
+.notes-editor figure.shot img {
+  @apply max-h-80 w-auto max-w-full rounded-md border border-neutral-200 dark:border-neutral-800;
+}
+.notes-editor figure.shot figcaption {
+  @apply mt-1 text-xs text-neutral-500;
+}
+.notes-editor figure.shot.is-selected img {
+  @apply outline-2 outline-offset-2 outline-accent;
+}
+.notes-editor figure.shot img {
+  transition: outline-color 300ms;
+}
+.notes-editor figure.shot.just-added img {
+  @apply outline-2 outline-offset-2 outline-accent;
+}
+.notes-editor .ProseMirror-gapcursor:after {
+  @apply border-accent;
 }

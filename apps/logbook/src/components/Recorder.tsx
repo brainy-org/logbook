@@ -175,7 +175,8 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
             onChange={edit}
             autoFocus={!android}
             editable={state.phase !== 'finishing'}
-            placeholder="Write notes… A line per point is enough: the report completes each one from what was said."
+            placeholder="Write what matters, one line per point. The report fills in each one from what was said."
+            hints={!android}
           />
         </div>
 
