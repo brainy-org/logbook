@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine", "crates/client", "crates/server", "crates/cli", "apps/desktop/src-tauri"]
+members = ["crates/engine", "crates/client", "crates/server", "crates/cli", "apps/desktop/src-tauri", "apps/desktop/plugins/recording"]
 # The desktop app needs its web pages built first (apps/desktop): `cargo build`
 # and `cargo test` at the root build the rest only.
 default-members = ["crates/engine", "crates/client", "crates/server", "crates/cli"]

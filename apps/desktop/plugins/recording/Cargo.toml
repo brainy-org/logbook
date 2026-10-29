@@ -1,0 +1,18 @@
+[package]
+name = "tauri-plugin-recording"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Keeps logbook's Android app recording with the screen off: a foreground service of type microphone, a wake lock, the permissions it needs"
+# tauri-plugin's build script hands the Android project to the app's
+# through this key.
+links = "tauri-plugin-recording"
+
+[build-dependencies]
+tauri-plugin = { version = "2.7.2", features = ["build"] }
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tauri = { version = "2.12.5", features = [] }
