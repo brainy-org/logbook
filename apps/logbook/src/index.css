@@ -235,12 +235,20 @@ select:disabled {
 .prose-report li > ol {
   @apply my-1;
 }
-/* GitHub task lists: the checkbox replaces the bullet. */
-.prose-report li:has(> input[type='checkbox']) {
-  @apply list-none -ml-5;
+/*
+ * GitHub task lists: the checkbox replaces the bullet, in the bullet's
+ * gutter and on the first line's middle, so the text and its wrapped
+ * lines start where a bullet's do. In a loose list the box is in the
+ * item's first paragraph, which then places it.
+ */
+.prose-report li.task-list-item {
+  @apply relative list-none;
 }
-.prose-report input[type='checkbox'] {
-  @apply mr-2 align-middle accent-accent;
+.prose-report li.task-list-item > p:first-child {
+  @apply relative;
+}
+.prose-report li.task-list-item input[type='checkbox'] {
+  @apply absolute top-[calc((1.625em-1rem)/2)] -left-6 m-0 ml-1 size-4 accent-accent;
 }
 .prose-report strong {
   @apply font-semibold text-neutral-900 dark:text-neutral-100;
@@ -316,22 +324,29 @@ select:disabled {
   @apply font-semibold text-neutral-900 dark:text-neutral-100;
 }
 .notes-editor ul[data-type='taskList'] {
-  @apply list-none pl-0.5;
+  @apply list-none pl-0;
 }
 /* TaskItem's node view writes no data-type on its li: only data-checked. */
 .notes-editor ul[data-type='taskList'] > li {
-  @apply flex items-start gap-2;
+  @apply flex items-start;
 }
+/*
+ * The box as brainy draws a to-do: centred in a column a bullet's width
+ * and one line high, so it sits on the first line's middle and the text
+ * starts where a bullet's does. Aligned by the line's baseline instead,
+ * the native box sits low, and its margins make the line taller.
+ */
 .notes-editor ul[data-type='taskList'] > li > label {
-  @apply mt-[0.3em] select-none;
+  @apply flex h-[1.6em] w-6 shrink-0 items-center justify-center select-none;
 }
 .notes-editor ul[data-type='taskList'] > li > label input {
-  @apply accent-accent;
+  @apply m-0 size-4 accent-accent;
 }
 .notes-editor ul[data-type='taskList'] > li > div {
   @apply min-w-0 flex-1;
 }
-.notes-editor li[data-checked='true'] > div {
+/* Its own lines only: the tasks nested in a done one are not done. */
+.notes-editor li[data-checked='true'] > div > :not(ul, ol) {
   @apply text-neutral-400 line-through;
 }
 .notes-editor code {
@@ -343,7 +358,12 @@ select:disabled {
 .notes-editor pre code {
   @apply bg-transparent p-0;
 }
-.notes-editor .is-empty::before {
+/*
+ * Lines only: Placeholder's includeChildren marks an empty list item as
+ * well, and a task item is a flex row, where the pseudo-element is one
+ * more item and pushes the box and the text to the right.
+ */
+.notes-editor :is(p, h1, h2, h3).is-empty::before {
   @apply pointer-events-none float-left h-0 text-neutral-400;
   content: attr(data-placeholder);
 }
