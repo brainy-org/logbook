@@ -203,10 +203,15 @@ async fn main() -> Result<()> {
     if args.no_auth {
         warn!("--no-auth: anyone who reaches the server can use it");
     } else {
-        info!(tokens = auth.count(), "a token is needed for every meeting");
+        info!(
+            tokens = auth.count()?,
+            "a token is needed for every meeting"
+        );
     }
     let engine = Arc::new(Engine::load(&options)?);
-    let finals = Arc::new(Finals::default());
+    // In the data folder: with replicas sharing it, any of them answers
+    // for a pass another one runs.
+    let finals = Arc::new(Finals::on_disk(&data)?);
     let model = match (args.polish_url, args.polish_model) {
         (Some(url), Some(model)) => {
             info!(
@@ -445,12 +450,18 @@ async fn final_state(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<FinalState>, StatusCode> {
-    state
-        .shared
-        .finals
-        .get(&id)
-        .map(Json)
-        .ok_or(StatusCode::NOT_FOUND)
+    let finals = state.shared.finals.clone();
+    // A file on a volume that may be a network's: off the async threads.
+    match tokio::task::spawn_blocking(move || finals.get(&id)).await {
+        Ok(Ok(Some(pass))) => Ok(Json(pass)),
+        Ok(Ok(None)) => Err(StatusCode::NOT_FOUND),
+        // Not a 404: the client would upload the meeting again.
+        Ok(Err(error)) => {
+            warn!("could not read a final pass: {error:#}");
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 async fn live(

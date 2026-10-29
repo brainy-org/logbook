@@ -251,7 +251,7 @@ models.
 | `--min-pause` | 0.5 | seconds of silence that close a phrase |
 | `--context` | 3 | seconds of audio before a phrase transcribed with it, so that a short phrase keeps its language; 0 for none |
 | `--max-batch` | 16 | phrases per transcription call |
-| `--data` / `LOGBOOK_DATA` | `logbook-server` in the user's data folder | the people's tokens (their hashes, `tokens.json`) and `admin.token` |
+| `--data` / `LOGBOOK_DATA` | `logbook-server` in the user's data folder | the people's tokens (their hashes, `tokens/`), `admin.token` and the final passes' results for an hour (`finals/`); replicas share it |
 | `--admin-token` / `LOGBOOK_ADMIN_TOKEN` | the one in `admin.token`, made at first start | the admin page's (`/`), where the people's tokens are made and revoked |
 | `--no-auth` / `LOGBOOK_NO_AUTH` | off | anyone who reaches the server may use it, without a token |
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
@@ -285,6 +285,17 @@ linux/amd64 there. Settings go in as the variables of the table above
 (`.env` beside `compose.yaml`); the server listens on 0.0.0.0:3300 in
 the container, published on 127.0.0.1 by compose. Across a network, put
 HTTPS in front of it.
+
+### Replicas
+
+Several servers can answer at one address (Kubernetes, behind one
+Service), with no session affinity: give them one `--data`, a volume
+they all mount for writing (`ReadWriteMany`: NFS, EFS, CephFS), and each
+its own `--recordings` on its own disk (an `emptyDir`). A token made or
+revoked on one is made or revoked on all, and any of them answers for a
+final pass another one runs. Their clocks must agree within seconds
+(NTP). Why and how:
+`docs/decisions/2026-10-29-replicas-share-the-data-folder.md`.
 
 ## Licences
 

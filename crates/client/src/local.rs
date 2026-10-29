@@ -250,7 +250,7 @@ impl Local {
             })
             .context("the finalizer has stopped")?;
         loop {
-            match loaded.finals.get(&id) {
+            match loaded.finals.get(&id)? {
                 Some(FinalState::Running { .. }) => tokio::time::sleep(POLL).await,
                 Some(FinalState::Done {
                     utterances,

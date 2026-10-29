@@ -118,8 +118,10 @@ the client moves its times by where it started
 - `GET /finals/{id}`: `{"state":"running","audio_s":…}`,
   `{"state":"done","utterances":[...],"warnings":[...]}` or
   `{"state":"failed","message":"…"}`; `404` if the server does not know
-  the id (restarted, or the result expired an hour after it was ready):
-  the client uploads again.
+  the id (the server that ran it stopped, or the result expired an hour
+  after it was ready): the client uploads again. Any replica answers
+  (`docs/decisions/2026-10-29-replicas-share-the-data-folder.md`); `503`
+  if it cannot read the data folder, which the client retries.
 
 - `POST /reports`, JSON `{"title":"…","notes":"…","transcript":"…"}`
   (`title` and `notes` optional): the meeting's report by the server's
@@ -142,7 +144,7 @@ samples, so that sample i is the meeting's sample i.
 `/live`, `/finals`, `/finals/{id}` and `/reports` need
 `Authorization: Bearer <token>`, the token of a person (`lbk_` and 64
 hex digits), on the WebSocket's upgrade request as on every other; `401`
-without one the server knows. The client sends it from `--server-token`
+without one the server knows, `503` if it cannot read its tokens. The client sends it from `--server-token`
 (`LOGBOOK_SERVER_TOKEN`) or the app's settings (kept in its `secrets.json`). The
 server logs whose token opened each session, upload and report.
 `--no-auth` lets anyone in, for a server only its own computer reaches.
@@ -152,13 +154,17 @@ for the admin token (`--admin-token`, or the one made at first start
 in `admin.token` in the data folder, `--data`) and calls:
 
 - `GET /admin/api/tokens`: `[{"id","name","created","last_used"}]`
-  (seconds since the epoch; `last_used` noted at most once a minute).
+  (seconds since the epoch; `last_used` noted at most once a minute by
+  each replica; `id` is the token's SHA-256).
 - `POST /admin/api/tokens`, `{"name":"Luca"}`: `201
   {"id","name","token"}`, the only time the token is seen.
-- `DELETE /admin/api/tokens/{id}`: `204`; refused at once from then on.
+- `DELETE /admin/api/tokens/{id}`: `204`; refused at once from then on,
+  by every replica.
 
-The server keeps only each token's SHA-256, in `tokens.json` (mode 600)
-in the data folder (`crates/server/src/auth.rs`).
+The server keeps only each token's SHA-256, a file each in `tokens/` in
+the data folder (mode 600), which replicas may share
+(`crates/server/src/auth.rs`). A `tokens.json` of an older server is
+moved there at start.
 
 ## Not yet
 

@@ -21,6 +21,7 @@ pub mod recording;
 pub mod report;
 pub mod session;
 pub mod speakers;
+pub mod store;
 
 use std::path::PathBuf;
 use std::sync::Arc;

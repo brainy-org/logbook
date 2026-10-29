@@ -177,6 +177,12 @@ deletes them when it starts again, having first taken the folder's lock
 first one's live recordings). An uploaded meeting (`POST /finals`)
 is decoded into the same files as it arrives and read by the same pass.
 
+A pass's state and result are in the data folder, not in the recordings
+folder (engine `finals.rs`): replicas sharing it answer `GET /finals/{id}`
+for one another, while each runs the passes whose audio it holds. One
+that stops leaves its running passes unknown within a minute
+(`docs/decisions/2026-10-29-replicas-share-the-data-folder.md`).
+
 ## Report
 
 Once the meeting is published, a language model can write its report

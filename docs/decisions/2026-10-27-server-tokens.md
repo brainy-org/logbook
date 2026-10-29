@@ -5,8 +5,10 @@ Verdict: every route of a meeting on logbook-server (`/live`, `/finals`,
 person on the server's admin page (its address, `/`) and revocable
 there. The
 admin page is guarded by one admin token, given to the server or made
-at its first start. The server keeps the tokens' SHA-256 only, in a file
-in its data folder. `--no-auth` opens it, for a server only its own
+at its first start. The server keeps the tokens' SHA-256 only, in its
+data folder (a file each since
+`2026-10-29-replicas-share-the-data-folder.md`; one `tokens.json`
+before). `--no-auth` opens it, for a server only its own
 computer reaches.
 
 ## Why

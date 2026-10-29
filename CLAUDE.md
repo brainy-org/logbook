@@ -17,7 +17,8 @@ crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet
                  the wire protocol (protocol.rs), the upload's Opus (codec.rs),
                  the final transcript cleaned up by a language model (polish.rs),
                  the meeting's report written by it (report.rs),
-                 libparakeet and the models from the mirror (mirror.rs);
+                 libparakeet and the models from the mirror (mirror.rs),
+                 files replaced whole in a folder replicas share (store.rs);
                  a meeting's session, one thread each (session.rs), and what sessions
                  share: the batcher thread for every transcription (batcher.rs), the
                  finalizer thread for final passes (finalizer.rs), their audio
@@ -133,6 +134,12 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
   data folder (client `voices.rs`). A library on the server would hold
   biometric data of people who never used logbook
   (`docs/decisions/2026-10-27-speakers-named-by-voice.md`).
+- **What replicas share is a file per record, replaced whole** (engine
+  `store.rs`): the data folder may be one volume for every replica, with
+  no lock. A file several servers read, change and write back loses one
+  server's change; a token's last use written into its file brings a
+  revoked token back
+  (`docs/decisions/2026-10-29-replicas-share-the-data-folder.md`).
 - **Every route of a meeting is behind a person's token**: it goes in
   the `meetings` router of the server's `main.rs`, under
   `auth::require_token`. One added beside it answers anyone who reaches
