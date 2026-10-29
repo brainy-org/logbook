@@ -33,8 +33,13 @@ pub struct StreamEncoder {
 impl StreamEncoder {
     /// The encoder for `samples` samples, and the header to send first.
     pub fn new(samples: u64) -> Result<(Self, Vec<u8>)> {
+        Self::with_bitrate(samples, BITRATE)
+    }
+
+    /// `new` at `bitrate` bits a second (examples/opus.rs compares them).
+    pub fn with_bitrate(samples: u64, bitrate: i32) -> Result<(Self, Vec<u8>)> {
         let mut encoder = Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip)?;
-        encoder.set_bitrate(Bitrate::Bits(BITRATE))?;
+        encoder.set_bitrate(Bitrate::Bits(bitrate))?;
         let lookahead = encoder.get_lookahead()? as usize;
         let mut header = Vec::with_capacity(14);
         header.extend_from_slice(MAGIC);
