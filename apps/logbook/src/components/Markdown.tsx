@@ -4,29 +4,17 @@
 // Images are the meeting's screenshots only, from `shots` (lib/shots.ts):
 // nothing is loaded from elsewhere.
 import ReactMarkdown from 'react-markdown';
-import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { isShot, shotUrl } from '../lib/shots.js';
 import { Zoomable } from './Shots.js';
 
-/**
- * `shots`: the folder of the meeting's screenshots. `breaks`: every line
- * break kept, as the person's notes are written, a line per point.
- */
-export function Markdown({
-  text,
-  shots,
-  breaks,
-}: {
-  text: string;
-  shots?: string;
-  breaks?: boolean;
-}) {
+/** `shots`: the folder of the meeting's screenshots. */
+export function Markdown({ text, shots }: { text: string; shots?: string }) {
   return (
     <div className="prose-report">
       <ReactMarkdown
-        remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
+        remarkPlugins={[remarkGfm]}
         components={{
           a: ({ href, children }) => (
             <a

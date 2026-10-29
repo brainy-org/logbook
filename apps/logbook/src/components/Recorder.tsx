@@ -21,8 +21,8 @@ import {
   type Shot,
 } from '../lib/api.js';
 import { android } from '../lib/platform.js';
-import { AREA, AREA_KEYS, SCREEN_KEYS, shotsIn, withShot } from '../lib/shots.js';
-import { Shots } from './Shots.js';
+import { AREA, AREA_KEYS, SCREEN_KEYS } from '../lib/shots.js';
+import { NotesEditor, type NotesHandle } from './NotesEditor.js';
 import { mutedTextClass } from './form-styles.js';
 import { ModelsProgress } from './ModelsProgress.js';
 
@@ -38,16 +38,13 @@ interface Props {
 const NOTES_DELAY_MS = 400;
 
 export function Recorder({ state, utterances, levels, logs, models }: Props) {
-  const [notes, setNotes] = useState(state.notes);
   const [showTranscript, setShowTranscript] = useState(
     () => !window.matchMedia('(max-width: 639px)').matches,
   );
   const [now, setNow] = useState(Date.now());
   const [shotError, setShotError] = useState<string | null>(null);
   const [shooting, setShooting] = useState(false);
-  const area = useRef<HTMLTextAreaElement>(null);
-  // The notes as last typed, for a screenshot that comes by an event.
-  const current = useRef(state.notes);
+  const editor = useRef<NotesHandle>(null);
   const timer = useRef<number | undefined>(undefined);
   // Notes typed and not sent yet: sent with this meeting's number, so that
   // a cut between typing and sending leaves them with this meeting.
@@ -69,20 +66,13 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   useEffect(() => () => void send(), []);
 
   const edit = (text: string) => {
-    current.current = text;
-    setNotes(text);
     unsent.current = text;
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => void send(), NOTES_DELAY_MS);
   };
-  // The screenshot's line where the cursor is, or at the end.
+  // The screenshot where the cursor is, or was last.
   const insert = (shot: Shot) => {
-    const el = area.current;
-    const text = current.current;
-    const at = el && document.activeElement === el ? el.selectionStart : text.length;
-    const next = withShot(text, at, shot);
-    edit(next.text);
-    window.requestAnimationFrame(() => el?.setSelectionRange(next.caret, next.caret));
+    editor.current?.insertShot(shot);
     setShotError(null);
   };
   const failed = (message: string) => {
@@ -104,7 +94,6 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
       setShooting(false);
     }
   };
-  const shots = shotsIn(notes);
 
   // The last keystrokes are not lost when the meeting stops.
   const stop = async () => {
@@ -173,18 +162,15 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
               : 'Getting ready…'}
           </p>
           {shotError && <p className="mb-3 text-sm text-red-600">{shotError}</p>}
-          <textarea
-            ref={area}
+          <NotesEditor
+            ref={editor}
+            initial={state.notes}
+            folder="screenshots"
+            onChange={edit}
             autoFocus={!android}
-            readOnly={state.phase === 'finishing'}
-            value={notes}
-            onChange={(e) => edit(e.target.value)}
-            placeholder={
-              'Write notes…\n\nA line per point is enough: the report completes each one from what was said.'
-            }
-            className="min-h-[50vh] w-full flex-1 resize-none border-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-neutral-400"
+            editable={state.phase !== 'finishing'}
+            placeholder="Write notes… A line per point is enough: the report completes each one from what was said."
           />
-          {shots.length > 0 && <Shots folder="screenshots" shots={shots} />}
         </div>
 
         <Pill

@@ -262,3 +262,15 @@ select:disabled {
 .meter-bar {
   transition: height 90ms linear;
 }
+
+/* The notes' editor (NotesEditor.tsx): its placeholder, its screenshots. */
+.notes-editor p.is-editor-empty:first-child::before {
+  @apply pointer-events-none float-left h-0 text-neutral-400;
+  content: attr(data-placeholder);
+}
+.notes-editor img.shot {
+  @apply my-3 max-h-96 cursor-zoom-in rounded-md border border-neutral-200 dark:border-neutral-800;
+}
+.notes-editor img.shot.ProseMirror-selectednode {
+  @apply outline-2 outline-accent;
+}

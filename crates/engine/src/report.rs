@@ -46,9 +46,11 @@ has \"## Summary\", \"## Notes\", \"## Decisions\", \"## Action items\"; an Ital
 Three to six sentences: what the meeting was about and how it ended.
 
 ## <Notes>
-Only when there are notes: every point of the person's notes, in their order and in their \
-words, each followed, as nested bullets, by what the transcript says about that point. \
-A point the transcript says nothing about stays alone: never put a sentence under a point it \
+Only when there are notes: the person's notes as they wrote them, in their order, in their \
+words and in their Markdown: a heading stays a heading (one level below this section's), a \
+paragraph a paragraph, a list a list; never turn them all into a list. After each point, a \
+bulleted list of what the transcript says about it. A point the transcript says nothing \
+about stays alone: never put a sentence under a point it \
 does not concern, never the same thing under two points, never the transcript copied out. \
 The notes say what mattered to the person: follow them. A line of the notes that is only \
 an image, ![...](name.png), is a screenshot the person took at that point: copy each such line \

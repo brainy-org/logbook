@@ -14,11 +14,12 @@ builds for Android, as a recorder for a server ("Android" below).
 | `src-tauri/src/screenshot.rs` | the desktop's screenshots for the notes: the screen under the pointer (xcap), the app's window hidden while it is taken when it is in front, or on macOS an area (`screencapture -i`, the system's ⌘⇧4 selection, Esc to give up); the buttons (`take_screenshot`) or `SCREEN` (⌘⇧2, Ctrl+Shift+2) and `AREA` (⌘⇧1), registered only while a meeting is recorded (`screenshot` events); the `shot` scheme the pages load them from |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views (the live transcript's last 300 phrases: a meeting of hours has tens of thousands) |
 | `src/components/Home.tsx` | before a meeting: its title and mode (Call, In the room, Room + call) with what each records, what will happen to it, the pending meetings |
-| `src/components/Recorder.tsx` | notes, live transcript, the meter and stop; drawn again (`key`: the state's `part`) when the recording's next meeting starts, its notes empty; a screenshot's line put where the cursor is, the notes' screenshots shown under them |
-| `src/lib/shots.ts` | the screenshots' lines in the notes (`![Screenshot 10:32](screenshot-….png)`, crates/client `shots.rs`) and their `shot` addresses |
-| `src/components/Shots.tsx` | the notes' screenshots under them, and any screenshot (the report's too) over the whole window when clicked |
+| `src/components/Recorder.tsx` | notes, live transcript, the meter and stop; drawn again (`key`: the state's `part`) when the recording's next meeting starts, its notes empty; a screenshot put where the cursor is (or was last) |
+| `src/lib/shots.ts` | the screenshots' `shot` addresses and shortcuts (their lines in the notes, `![Screenshot 10:32](screenshot-….png)`, are crates/client `shots.rs`) |
+| `src/components/NotesEditor.tsx` | the notes, edited as they look (TipTap: `# ` a heading, `- ` a list, screenshots as images, clicked to enlarge), in and out as Markdown (tiptap-markdown), the form the client keeps and the report reads |
+| `src/components/Shots.tsx` | a screenshot over the whole window, from the report or the notes |
 | `src/components/ModelsProgress.tsx` | the models' download and loading as a bar, on the home page and in the live transcript until they are ready |
-| `src/components/MeetingPage.tsx` | a kept meeting: report, notes (Markdown with their screenshots in place, every line break kept; Edit for the text), transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
+| `src/components/MeetingPage.tsx` | a kept meeting: report, notes (the same editor, saved when it loses focus), transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
 | `src/lib/platform.ts` | `android`: what the pages hide or say otherwise on a phone |
 | `src/components/SettingsPage.tsx` | the settings (the language model: a provider, its address kept and the provider read back from it, then one of the models it lists at `/models`: `list_models`, engine `polish::models`), the voices known by name |
 
