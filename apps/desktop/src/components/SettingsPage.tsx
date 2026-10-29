@@ -3,10 +3,12 @@
 // writes the report; then the voices known by name. Secrets (the
 // server's and brainy's tokens, the model's key) are kept on this
 // computer (secrets.json, this user only) and never read back: the page
-// only knows whether they are set.
+// only knows whether they are set. On Android: a server always, the
+// microphone only, and whether the recording may go on in the background.
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, Laptop, Server, Trash2 } from 'lucide-react';
 import { ask } from '@tauri-apps/plugin-dialog';
+import { android } from '../lib/platform.js';
 import { api, type Devices, type Settings, type SettingsView, type Voice } from '../lib/api.js';
 import {
   fieldClass,
@@ -57,6 +59,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
   const [serverCheck, setServerCheck] = useState<Check>({ state: 'idle' });
   const [brainyCheck, setBrainyCheck] = useState<Check>({ state: 'idle' });
   const [listed, setListed] = useState<Listed>({ state: 'idle' });
+  const [unrestricted, setUnrestricted] = useState(true);
 
   const listModels = async (url: string, typedKey?: string) => {
     if (!url.trim()) return;
@@ -74,8 +77,17 @@ export function SettingsPage({ recording }: { recording: boolean }) {
       setS(v.settings);
       if (v.settings.transcription === 'local') void listModels(v.settings.model.url);
     });
-    api.listDevices().then(setDevices, () => undefined);
+    if (!android) api.listDevices().then(setDevices, () => undefined);
     api.listVoices().then(setVoices, () => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!android) return;
+    // Read again when the app comes back from Android's dialog.
+    const check = () => void api.backgroundState().then(setUnrestricted, () => undefined);
+    check();
+    document.addEventListener('visibilitychange', check);
+    return () => document.removeEventListener('visibilitychange', check);
   }, []);
 
   if (!s || !view) return null;
@@ -114,14 +126,15 @@ export function SettingsPage({ recording }: { recording: boolean }) {
     }
   };
 
-  const local = s.transcription === 'local';
+  const local = !android && s.transcription === 'local';
+  const here = android ? 'this phone' : 'this computer';
   const provider = providerOf(s.model.url);
 
   return (
     <div className="flex h-full flex-col">
-      <div data-tauri-drag-region className="h-11 shrink-0" />
+      <div data-tauri-drag-region className="h-11 shrink-0 max-sm:hidden" />
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl space-y-10 px-10 pb-24">
+        <div className="mx-auto max-w-2xl space-y-10 px-10 pb-24 max-sm:px-4 max-sm:pt-4">
           <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
           {recording && (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/30">
@@ -130,26 +143,32 @@ export function SettingsPage({ recording }: { recording: boolean }) {
           )}
 
           <Section title="Transcription">
-            <div className="grid grid-cols-2 gap-3">
-              <Choice
-                selected={local}
-                onClick={() => update((n) => (n.transcription = 'local'))}
-                icon={<Laptop className="size-5" />}
-                title="On this computer"
-                text="The models (about 1 GB) are fetched once and run here. Nothing leaves the computer for the transcript."
-              />
-              <Choice
-                selected={!local}
-                onClick={() => update((n) => (n.transcription = 'server'))}
-                icon={<Server className="size-5" />}
-                title="logbook-server"
-                text="A server holds the models for everyone: for computers that cannot keep up."
-              />
-            </div>
+            {android ? (
+              <p className={`text-sm ${mutedTextClass}`}>
+                This phone records and sends the audio to logbook-server, which transcribes it.
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <Choice
+                  selected={local}
+                  onClick={() => update((n) => (n.transcription = 'local'))}
+                  icon={<Laptop className="size-5" />}
+                  title="On this computer"
+                  text="The models (about 1 GB) are fetched once and run here. Nothing leaves the computer for the transcript."
+                />
+                <Choice
+                  selected={!local}
+                  onClick={() => update((n) => (n.transcription = 'server'))}
+                  icon={<Server className="size-5" />}
+                  title="logbook-server"
+                  text="A server holds the models for everyone: for computers that cannot keep up."
+                />
+              </div>
+            )}
             {!local && (
               <>
                 <Field label="Server address">
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 max-sm:flex-col">
                     <input
                       value={s.serverUrl}
                       onChange={(e) => update((n) => (n.serverUrl = e.target.value))}
@@ -169,7 +188,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 </Field>
                 <Field
                   label="Your token"
-                  help={`Made for you on the server's admin page (${s.serverUrl.replace(/\/+$/, '') || 'http://…'}). Kept on this computer, readable by you only.${view.secrets.serverToken ? ' One is set: type a new one to replace it.' : ''}`}
+                  help={`Made for you on the server's admin page (${s.serverUrl.replace(/\/+$/, '') || 'http://…'}). Kept on ${here}, readable by this app only.${view.secrets.serverToken ? ' One is set: type a new one to replace it.' : ''}`}
                 >
                   <input
                     type="password"
@@ -195,36 +214,66 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 className={`${fieldClass} w-full`}
               />
             </Field>
-            <Field label="Microphone">
-              <DeviceSelect
-                value={s.audio.micDevice}
-                options={devices.inputs}
-                onChange={(v) => update((n) => (n.audio.micDevice = v))}
-              />
-            </Field>
-            <Field
-              label="Output to record"
-              help="The call, in a meeting on a call (chosen on the home page). macOS asks once for permission."
-            >
-              <DeviceSelect
-                value={s.audio.systemDevice}
-                options={devices.outputs}
-                onChange={(v) => update((n) => (n.audio.systemDevice = v))}
-              />
-            </Field>
-            <Toggle
-              checked={s.audio.headphones}
-              onChange={(v) => update((n) => (n.audio.headphones = v))}
-              label="I use headphones"
-              help="On a call, without them the call's echo is cancelled from the microphone; with them nothing is."
-            />
+            {!android && (
+              <>
+                <Field label="Microphone">
+                  <DeviceSelect
+                    value={s.audio.micDevice}
+                    options={devices.inputs}
+                    onChange={(v) => update((n) => (n.audio.micDevice = v))}
+                  />
+                </Field>
+                <Field
+                  label="Output to record"
+                  help="The call, in a meeting on a call (chosen on the home page). macOS asks once for permission."
+                >
+                  <DeviceSelect
+                    value={s.audio.systemDevice}
+                    options={devices.outputs}
+                    onChange={(v) => update((n) => (n.audio.systemDevice = v))}
+                  />
+                </Field>
+                <Toggle
+                  checked={s.audio.headphones}
+                  onChange={(v) => update((n) => (n.audio.headphones = v))}
+                  label="I use headphones"
+                  help="On a call, without them the call's echo is cancelled from the microphone; with them nothing is."
+                />
+              </>
+            )}
             <Toggle
               checked={s.audio.micGainAuto}
               onChange={(v) => update((n) => (n.audio.micGainAuto = v))}
-              label="Raise a quiet microphone"
-              help="For a quiet microphone or voices far from it."
+              label={android ? 'Raise faint voices' : 'Raise a quiet microphone'}
+              help={
+                android
+                  ? 'As far as it goes, for voices across the room; background noise rises too.'
+                  : 'For a quiet microphone or voices far from it.'
+              }
             />
           </Section>
+
+          {android && (
+            <Section title="Background recording">
+              <p className={`text-sm ${mutedTextClass}`}>
+                While recording, a notification stays on and the phone keeps the app awake with the
+                screen off. Android's battery optimization can still stop it: exempt the app.
+              </p>
+              {unrestricted ? (
+                <p className="flex items-center gap-1 text-sm text-accent">
+                  <Check className="size-4" /> Battery optimization leaves the app alone.
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void api.askBackground()}
+                  className={secondaryButtonSmClass}
+                >
+                  Allow in background
+                </button>
+              )}
+            </Section>
+          )}
 
           <Section title="brainy">
             <Toggle
@@ -245,7 +294,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 </Field>
                 <Field
                   label="Personal token"
-                  help={`brainy: Settings → Connections, with write access. Kept on this computer, readable by you only.${view.secrets.brainyToken ? ' One is set: type a new one to replace it.' : ''}`}
+                  help={`brainy: Settings → Connections, with write access. Kept on ${here}, readable by ${android ? 'this app' : 'you'} only.${view.secrets.brainyToken ? ' One is set: type a new one to replace it.' : ''}`}
                 >
                   <input
                     type="password"
@@ -407,8 +456,8 @@ export function SettingsPage({ recording }: { recording: boolean }) {
 
           <Section title="Voices known by name">
             <p className={`text-sm ${mutedTextClass}`}>
-              Name a speaker in a meeting and their voice is kept on this computer only, to name
-              them in the next meetings. Ask before you name someone: a voiceprint is personal data.
+              Name a speaker in a meeting and their voice is kept on {here} only, to name them in
+              the next meetings. Ask before you name someone: a voiceprint is personal data.
             </p>
             {voices.length === 0 ? (
               <p className="text-sm text-neutral-500">No voice yet.</p>
@@ -446,12 +495,12 @@ export function SettingsPage({ recording }: { recording: boolean }) {
               </ul>
             )}
             <p className="text-xs text-neutral-500">
-              Data folder, shared with the logbook CLI: {view.data}
+              {android ? 'Data folder' : 'Data folder, shared with the logbook CLI'}: {view.data}
             </p>
           </Section>
         </div>
       </div>
-      <footer className="flex items-center justify-end gap-3 border-t border-neutral-200 px-10 py-3 dark:border-neutral-800">
+      <footer className="flex items-center justify-end gap-3 border-t border-neutral-200 px-10 py-3 max-sm:px-4 dark:border-neutral-800">
         {error && <span className="text-sm text-red-600">{error}</span>}
         {saved && (
           <span className="flex items-center gap-1 text-sm text-neutral-500">

@@ -6,7 +6,8 @@ spoken, with parakeet.cpp's models (Silero VAD, NVIDIA
 parakeet-tdt-0.6b-v3, Nemotron-3-Diarization): on your computer, or, with
 `--server`, on a `logbook-server` that holds the models for everyone.
 
-A prototype: a desktop app (macOS; Windows built, not tried), a CLI and a server. Once the meeting
+A prototype: a desktop app (macOS; Windows built, not tried; Android
+built as a recorder for a server, not tried), a CLI and a server. Once the meeting
 ends it is read all again (better speakers and phrases), written as a
 page in brainy, and a language model can write its report from the
 transcript and the notes you took, as Granola does.
@@ -76,6 +77,7 @@ scripts/desktop.sh dev       # run it from this checkout (pnpm and Rust)
 scripts/desktop.sh cert      # once per Mac: a self-signed signing certificate
 scripts/desktop.sh build     # Logbook.app and a .dmg in target/release/bundle/
 scripts/desktop.sh windows   # the Windows installer (x64), built on this Mac
+scripts/desktop.sh android   # the Android app (arm64), a debug APK
 ```
 
 Say what the meeting is (a call, people in the room, or a room on a
@@ -105,6 +107,38 @@ Mac that builds it. It is not signed: SmartScreen warns at first open
 (More info → Run anyway). Transcribing on the computer itself needs the
 [Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe);
 with a logbook-server it does not.
+
+### The Android app
+
+An experiment: the phone records the room and sends it to a
+logbook-server, which transcribes it; the meeting goes to brainy and
+gets its report from the server's model, as with the desktop app on a
+server. No models on the phone. It keeps recording with the screen off
+(a notification shows it, with Stop) and finishes meetings left pending
+on its own while it is open. Why and how:
+`docs/decisions/2026-10-29-android-app.md`.
+
+To build it on a Mac: the Android SDK and NDK and a JDK
+(`brew install --cask android-commandlinetools` and `brew install
+openjdk@21`, then `sdkmanager "platform-tools" "platforms;android-35"
+"build-tools;35.0.0" "ndk;27.2.12479018"` with `ANDROID_HOME` at
+`~/Library/Android/sdk`), then `scripts/desktop.sh android`. The APK is
+`apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
+(arm64 only, debug-signed): `adb install -r` it.
+
+On the phone: set the server's address (one the phone reaches, not
+`127.0.0.1`) and your token in Settings; allow the microphone and the
+notifications at the first recording, and "always run in background"
+when asked (or Settings → Apps → Logbook → Battery → Unrestricted). On
+Samsung's One UI, also take Logbook out of Settings → Battery →
+Background usage limits → Sleeping apps and Deep sleeping apps. The
+tokens are kept in a file in the app's private folder, which is weaker
+than the macOS keychain.
+
+The phone's microphone is opened for speech recognition at a distance
+and its level raised as far as it goes ("Raise faint voices", on by
+default): voices across the room are heard, and so is more background
+noise.
 
 ## Use
 
@@ -264,7 +298,9 @@ compare.
 
 `--mic-gain` raises the microphone's level before it is sent (WebRTC's
 AGC2, after the echo is cancelled, with a limiter): `auto` follows the
-voice, up to 50 dB, for a quiet microphone or someone across the room; a
+voice, up to 50 dB, for a quiet microphone or someone across the room;
+`max` the same, reaching it sooner and with more background noise let
+through (the Android app's default); a
 number is a fixed gain in dB (0 to 50); `off`, the default, keeps the
 device's level. The system's input volume (macOS: System Settings →
 Sound → Input) is the other knob.

@@ -2,8 +2,9 @@
 
 Live meeting transcription with speakers: a server that holds the models
 (`logbook-server`) and a client that streams the audio to it or runs the
-models itself: the `logbook` CLI and a desktop app (Tauri), both on one
-client library. parakeet.cpp through
+models itself: the `logbook` CLI and a desktop app (Tauri, which also
+builds for Android as a recorder for a server), both on one client
+library. parakeet.cpp through
 its C API, like brainy-worker, with the same model files. Rust, a cargo
 workspace. A prototype: why it exists and how it is built is in
 `docs/decisions/2026-10-24-live-server-with-pseudo-streaming.md`.
@@ -46,9 +47,11 @@ crates/cli/      logbook: play (a file at the pace of speech), live (microphone 
                  with --system, the call), finish (pending meetings), speakers,
                  devices, bench: options and printing only
 apps/desktop/    the desktop app: pages (React, brainy's look) and src-tauri/
-                 (recorder, settings and their secrets, logs)           → docs/desktop.md
+                 (recorder, settings and their secrets, logs; android.rs and the
+                 Android project in gen/android); plugins/recording: the Android
+                 foreground service, wake lock and permissions (Kotlin)  → docs/desktop.md
 scripts/         server.sh (builds and runs the server), client.sh, desktop.sh (the app:
-                 dev, cert, build)
+                 dev, cert, build, windows, android)
 Dockerfile       the server's image, CPU and GPU alike (compose.yaml, compose.gpu.yaml)
 docs/            pipeline.md, protocol.md, desktop.md, decisions/
 ```
@@ -170,9 +173,14 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
   macOS 27's linker write proc-macro dylibs rustc cannot load (E0463).
   Its hardened runtime needs `disable-library-validation`, or libparakeet
   is refused at `dlopen` (`docs/decisions/2026-10-27-desktop-app.md`).
+- **The Android app links no model code**: engine `models` and client
+  `local` (default features) are added by the app for non-Android
+  targets only. A dependency or a `use` that pulls them into the Android
+  build puts libparakeet's loader and the mirror on a phone that cannot
+  run them, silently (`docs/decisions/2026-10-29-android-app.md`).
 - **Same models as brainy-worker, from the same mirror**: the `parakeet`
   bundle of github.com/brainy-org/models (its files' sha256 in
-  `crates/engine/src/mirror.rs`, the same as brainy-worker's
+  `crates/engine/src/pins.rs`, the same as brainy-worker's
   `models.json`), and libparakeet from its `libparakeet` bundle, fetched
   by the server itself; nothing from GitHub releases or Hugging Face. One set of licences
   (brainy-worker's `docs/decisions/2026-10-10-licences-of-code-and-weights.md`).

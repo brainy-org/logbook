@@ -2,11 +2,12 @@
 
 `apps/desktop`: Tauri 2, the pages in React (`src/`, brainy's look,
 copied from galley-client's app), the Rust side in `src-tauri/`. Why it
-is built so: `docs/decisions/2026-10-27-desktop-app.md`.
+is built so: `docs/decisions/2026-10-27-desktop-app.md`. The same app
+builds for Android, as a recorder for a server ("Android" below).
 
 | File | What it does |
 |---|---|
-| `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's); how the local models get ready (`models`: fetched with their bytes, all files together, loaded, ready, failed; `models_state`, `load_models` to try again) |
+| `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's; the app's own on Android); how the local models get ready (`models`: fetched with their bytes, all files together, loaded, ready, failed; `models_state`, `load_models` to try again) |
 | `src-tauri/src/recorder.rs` | the recording, one at a time: `series::meetings` run with the settings' channels and the default limits (a meeting closes after 15 minutes without a phrase, or at 8 hours), events to the pages (`meeting-state`, whose `part` counts the meetings of the recording; `utterance`, on the recording's clock; `levels`; `meetings-changed` or `meeting-failed` for a meeting that ends while the next records; `meeting-done` or `meeting-failed` at the end) |
 | `src-tauri/src/settings.rs` | `settings.json` in the app's config folder (the meeting's `Mode`, chosen on the home page and saved by `start_meeting`, decides the channels: the call, the microphone diarized); the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
@@ -15,6 +16,7 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 | `src/components/Recorder.tsx` | notes, live transcript, the meter and stop; drawn again (`key`: the state's `part`) when the recording's next meeting starts, its notes empty |
 | `src/components/ModelsProgress.tsx` | the models' download and loading as a bar, on the home page and in the live transcript until they are ready |
 | `src/components/MeetingPage.tsx` | a kept meeting: report, notes, transcript (a phrase after 30 s of silence shows its time, any on hover), renaming speakers |
+| `src/lib/platform.ts` | `android`: what the pages hide or say otherwise on a phone |
 | `src/components/SettingsPage.tsx` | the settings (the language model: a provider, its address kept and the provider read back from it, then one of the models it lists at `/models`: `list_models`, engine `polish::models`), the voices known by name |
 
 ## Traps
@@ -76,6 +78,42 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   teardown, which after a meeting crashes in the GPU driver (0xc0000409)
   (`docs/decisions/2026-10-27-windows-exit-without-teardown.md`).
 
+## Android
+
+The app on a phone records the microphone, sends it to a logbook-server
+and publishes as the desktop app does with a server; it links no model
+code. Why, and what it is not: `docs/decisions/2026-10-29-android-app.md`.
+Built with `scripts/desktop.sh android` (README).
+
+| File | What it does |
+|---|---|
+| `src-tauri/src/android.rs` | before the microphone opens: the permissions, the battery exemption asked once, the foreground service started (its Stop is `Recorder::stop`); at the end the service stopped; `Finisher`, pending meetings finished again with backoff while the app lives |
+| `plugins/recording/` | `tauri-plugin-recording`: the Rust handle (`RecordingExt`, `run_mobile_plugin`) and `android/` (Kotlin): `RecordingPlugin` (permissions, start, update, stop, battery optimization) and `RecordingService` (foreground service of type microphone, its notification, the wake and Wi-Fi locks); its manifest brings the permissions and the service |
+| `src-tauri/gen/android/` | the Android project `tauri android init` made (kept; its build outputs are not): `minSdk` 28, `MainActivity` keeping the pages inside the system bars and the keyboard |
+| crates/client `audio.rs`, `aaudio` | the microphone through AAudio with the `VOICE_RECOGNITION` preset (cpal sets none) |
+
+### Traps
+
+- **Model code stays out by features, not by `cfg`.** The app's
+  `Cargo.toml` takes logbook-client and logbook-engine without default
+  features and adds `local`/`models` for non-Android targets only. A
+  dependency (or a `use`) that pulls `logbook-engine/models` into the
+  Android build links libparakeet's loader into the phone; check with
+  `cargo tree -p logbook-desktop --target aarch64-linux-android -e features`.
+- **`run` is `tauri::mobile_entry_point`.** Without it the Android library
+  exports nothing and the linker drops the whole app: an APK that opens on
+  nothing.
+- **The service starts from the start button.** Android 12+ refuses a
+  foreground service started from the background, and 14+ a microphone
+  one before `RECORD_AUDIO` is granted: `android::begin` asks first, in the
+  recording's task, never at the app's start.
+- **The plugin's calls block** (a permission waits for the person): from
+  `spawn_blocking`, never on the main thread or an async worker.
+- **Settings on Android**: a server always (`Settings::server`), the
+  microphone only (`sources`), no echo, `Gain::Max` when the gain is on
+  (on by default). Secrets in `secrets.json` in the app's config folder,
+  mode 600: weaker than a keychain (the decision record, "Secrets").
+
 ## Not yet
 
 - A recording cut into meetings shows one recorder: the clock counts the
@@ -100,4 +138,5 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   (`docs/decisions/2026-10-27-windows-audio-buffer.md`). Building there
   needs Visual Studio's C++ Build Tools and CMake (Opus).
 - Linux: not built.
+- Android: built (a debug APK, arm64), never run on a phone.
 - A meeting started from the calendar, or when a call starts.

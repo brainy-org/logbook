@@ -2,6 +2,8 @@
 // both: its channels, kept for the next), the start button, and what will happen to
 // it (where it is transcribed, whether it goes to brainy, who writes the
 // report), as the settings say. Meetings left pending are offered here.
+// On Android the phone's microphone is the only channel: the people around
+// it, told apart; no mode to choose.
 import { useEffect, useState, type FormEvent } from 'react';
 import {
   AudioLines,
@@ -25,6 +27,7 @@ import {
   type RecorderState,
   type SettingsView,
 } from '../lib/api.js';
+import { android } from '../lib/platform.js';
 import { mutedTextClass, primaryButtonClass, secondaryButtonSmClass } from './form-styles.js';
 import { ModelsProgress } from './ModelsProgress.js';
 
@@ -69,12 +72,20 @@ export function Home({
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  // Android: whether battery optimization leaves the recording alone.
+  const [unrestricted, setUnrestricted] = useState(true);
 
   useEffect(() => {
     api.getSettings().then((view) => {
       setSettings(view);
-      setMode(view.settings.audio.mode);
+      setMode(android ? 'room' : view.settings.audio.mode);
     });
+    if (!android) return;
+    // Read again when the app comes back from Android's dialog.
+    const check = () => void api.backgroundState().then(setUnrestricted, () => undefined);
+    check();
+    document.addEventListener('visibilitychange', check);
+    return () => document.removeEventListener('visibilitychange', check);
   }, []);
 
   const start = async (e: FormEvent) => {
@@ -91,50 +102,60 @@ export function Home({
   };
 
   const s = settings?.settings;
-  const local = s?.transcription === 'local';
+  const local = !android && s?.transcription === 'local';
+  const here = android ? 'this phone' : 'this computer';
   const model = s && (s.model.polish || s.model.report);
   const lastWarning = [...logs].reverse().find((l) => l.warning);
   const current = MODES.find((m) => m.mode === mode)!;
 
   return (
     <div className="flex h-full flex-col">
-      <div data-tauri-drag-region className="h-11 shrink-0" />
-      <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center px-8 pb-16">
+      <div data-tauri-drag-region className="h-11 shrink-0 max-sm:hidden" />
+      <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center overflow-y-auto px-8 pb-16 max-sm:justify-start max-sm:px-4 max-sm:pt-6 max-sm:pb-8">
         <div className="mb-8 flex size-12 items-center justify-center rounded-2xl bg-accent-fill text-white">
           <AudioLines className="size-6" />
         </div>
         <form onSubmit={start}>
           <input
-            autoFocus
+            // A phone would open its keyboard over the page.
+            autoFocus={!android}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Meeting title (optional)"
             className="mb-6 w-full border-none bg-transparent text-3xl font-semibold tracking-tight outline-none placeholder:text-neutral-300 dark:placeholder:text-neutral-500"
           />
-          <div
-            role="radiogroup"
-            aria-label="Meeting"
-            className="inline-flex h-8 items-center gap-0.5 rounded-md border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-700 dark:bg-neutral-800/60"
-          >
-            {MODES.map(({ mode: m, label, icon: Icon }) => (
-              <button
-                key={m}
-                type="button"
-                role="radio"
-                aria-checked={mode === m}
-                onClick={() => setMode(m)}
-                className={`flex h-full items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
-                  mode === m
-                    ? 'bg-white text-neutral-900 shadow-sm ring-1 ring-neutral-200 dark:bg-neutral-600 dark:text-white dark:ring-white/10'
-                    : `${mutedTextClass} hover:text-neutral-900 dark:hover:text-neutral-100`
-                }`}
+          {android ? (
+            <p className={`text-sm ${mutedTextClass}`}>
+              The voices around this phone, told apart. It keeps recording with the screen off.
+            </p>
+          ) : (
+            <>
+              <div
+                role="radiogroup"
+                aria-label="Meeting"
+                className="inline-flex h-8 items-center gap-0.5 rounded-md border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-700 dark:bg-neutral-800/60"
               >
-                <Icon className="size-3.5" />
-                {label}
-              </button>
-            ))}
-          </div>
-          <p className={`mt-2 text-xs ${mutedTextClass}`}>{current.hears}</p>
+                {MODES.map(({ mode: m, label, icon: Icon }) => (
+                  <button
+                    key={m}
+                    type="button"
+                    role="radio"
+                    aria-checked={mode === m}
+                    onClick={() => setMode(m)}
+                    className={`flex h-full items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
+                      mode === m
+                        ? 'bg-white text-neutral-900 shadow-sm ring-1 ring-neutral-200 dark:bg-neutral-600 dark:text-white dark:ring-white/10'
+                        : `${mutedTextClass} hover:text-neutral-900 dark:hover:text-neutral-100`
+                    }`}
+                  >
+                    <Icon className="size-3.5" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className={`mt-2 text-xs ${mutedTextClass}`}>{current.hears}</p>
+            </>
+          )}
           <button
             type="submit"
             disabled={starting || !s}
@@ -149,6 +170,20 @@ export function Home({
         {local && (
           <div className="mt-6">
             <ModelsProgress status={models} />
+          </div>
+        )}
+        {android && !unrestricted && (
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-md bg-amber-50 px-3 py-2 text-sm max-sm:flex-col max-sm:items-start dark:bg-amber-950/30">
+            <span>
+              Android's battery optimization may stop a long recording with the screen off.
+            </span>
+            <button
+              type="button"
+              className={`${secondaryButtonSmClass} shrink-0 whitespace-nowrap`}
+              onClick={() => void api.askBackground()}
+            >
+              Allow in background
+            </button>
           </div>
         )}
         {(error || failure) && (
@@ -169,7 +204,7 @@ export function Home({
               <Cloud className="size-4" />
               {s.brainy.enabled
                 ? `Written to brainy${s.brainy.parent ? `, under ${s.brainy.parent}` : ''}`
-                : 'Kept on this computer only (brainy is off)'}
+                : `Kept on ${here} only (brainy is off)`}
             </li>
             <li className="flex items-center gap-2">
               <FileText className="size-4" />
@@ -194,12 +229,13 @@ export function Home({
         )}
 
         {pending.length > 0 && (
-          <div className="mt-8 flex items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm dark:border-amber-700 dark:bg-amber-950/30">
+          <div className="mt-8 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-start rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm dark:border-amber-700 dark:bg-amber-950/30">
             <span>
               {pending.length === 1
                 ? 'A meeting is waiting to be finished'
                 : `${pending.length} meetings are waiting to be finished`}{' '}
               (the server or brainy could not be reached).
+              {android && ' Tried again on its own while the app is open.'}
             </span>
             <button
               type="button"

@@ -1,7 +1,8 @@
 // The meeting being recorded, as Granola has it: a page for your notes,
 // the live transcript beside it, and a pill at the bottom with the levels,
 // the time and the stop button. The notes go to the app as they are typed
-// (`set_notes`), and to the report when the meeting ends.
+// (`set_notes`), and to the report when the meeting ends. At phone width
+// the live transcript is a panel over the notes, closed at first.
 import { useEffect, useRef, useState } from 'react';
 import { PanelRightClose, PanelRightOpen, Square } from 'lucide-react';
 import {
@@ -13,6 +14,7 @@ import {
   type ModelsStatus,
   type RecorderState,
 } from '../lib/api.js';
+import { android } from '../lib/platform.js';
 import { mutedTextClass } from './form-styles.js';
 import { ModelsProgress } from './ModelsProgress.js';
 
@@ -29,7 +31,9 @@ const NOTES_DELAY_MS = 400;
 
 export function Recorder({ state, utterances, levels, logs, models }: Props) {
   const [notes, setNotes] = useState(state.notes);
-  const [showTranscript, setShowTranscript] = useState(true);
+  const [showTranscript, setShowTranscript] = useState(
+    () => !window.matchMedia('(max-width: 639px)').matches,
+  );
   const [now, setNow] = useState(Date.now());
   const timer = useRef<number | undefined>(undefined);
   // Notes typed and not sent yet: sent with this meeting's number, so that
@@ -67,7 +71,7 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   const recording = state.phase === 'recording';
 
   return (
-    <div className="flex h-full">
+    <div className="relative flex h-full">
       <div className="relative flex min-w-0 flex-1 flex-col">
         <header
           data-tauri-drag-region
@@ -86,7 +90,7 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
             )}
           </button>
         </header>
-        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col overflow-y-auto px-10 pb-28">
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col overflow-y-auto px-10 pb-28 max-sm:px-4">
           <h1 className="text-3xl font-semibold tracking-tight">
             {state.title || 'Untitled meeting'}
           </h1>
@@ -100,7 +104,7 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
               : 'Getting ready…'}
           </p>
           <textarea
-            autoFocus
+            autoFocus={!android}
             readOnly={state.phase === 'finishing'}
             value={notes}
             onChange={(e) => edit(e.target.value)}
@@ -153,7 +157,7 @@ function Pill({
   canStop: boolean;
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center px-6">
+    <div className="pointer-events-none absolute inset-x-0 bottom-6 z-20 flex justify-center px-6 max-sm:bottom-3 max-sm:px-3">
       <div className="pointer-events-auto flex max-w-full items-center gap-4 rounded-full border border-neutral-200 bg-white/95 py-2 pr-2 pl-5 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900/95">
         {phase === 'recording' ? (
           <>
@@ -226,14 +230,14 @@ function LiveTranscript({
   }, [utterances.length]);
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-neutral-200 bg-sidebar dark:border-neutral-800">
+    <aside className="flex w-80 shrink-0 flex-col border-l border-neutral-200 bg-sidebar max-sm:absolute max-sm:inset-x-0 max-sm:top-11 max-sm:bottom-0 max-sm:z-10 max-sm:w-auto max-sm:border-l-0 max-sm:border-t dark:border-neutral-800">
       <div
         data-tauri-drag-region
         className="flex h-11 shrink-0 items-center px-4 text-xs font-medium text-neutral-500"
       >
         Live transcript
       </div>
-      <div className="flex-1 space-y-3 overflow-y-auto px-4 pb-6">
+      <div className="flex-1 space-y-3 overflow-y-auto px-4 pb-6 max-sm:pb-24">
         {!ready && phase !== 'finishing' && (
           <div className="pt-4">
             <ModelsProgress status={models} />
@@ -275,7 +279,7 @@ function LiveTranscript({
         <div ref={end} />
       </div>
       <p
-        className={`border-t border-neutral-200 px-4 py-3 text-sm dark:border-neutral-800 ${mutedTextClass}`}
+        className={`border-t border-neutral-200 px-4 py-3 text-sm max-sm:hidden dark:border-neutral-800 ${mutedTextClass}`}
       >
         Speakers are numbered as heard live; the final transcript names them once for the whole
         meeting.

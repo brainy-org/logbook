@@ -158,6 +158,10 @@ export const api = {
   finishPending: () => invoke<void>('finish_pending'),
   listVoices: () => invoke<Voice[]>('list_voices'),
   forgetVoice: (name: string) => invoke<void>('forget_voice', { name }),
+  /** Android: whether battery optimization leaves the app alone (true elsewhere). */
+  backgroundState: () => invoke<boolean>('background_state'),
+  /** Android: the system's dialog that exempts the app from battery optimization. */
+  askBackground: () => invoke<boolean>('ask_background'),
 };
 
 export const events = {

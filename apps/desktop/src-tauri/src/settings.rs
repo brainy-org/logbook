@@ -4,6 +4,10 @@
 //! language model's key are not there: they are in `secrets.json`, beside
 //! it and readable by this user only (`Secret`), and never go back to the
 //! pages.
+//!
+//! On Android meetings always go to a server (the app links no model
+//! code), and the secrets file is the only place the secrets are: no
+//! keychain to move them from (docs/decisions/2026-10-29-android-app.md).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,6 +16,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use logbook_client::aec::Gain;
 use logbook_client::audio::{Echo, Source};
+#[cfg(not(target_os = "android"))]
 use logbook_client::local;
 use logbook_client::meeting::{Backend, Credentials, Publish};
 use logbook_client::remote::Server;
@@ -49,7 +54,8 @@ pub struct AudioSettings {
     pub system_device: Option<String>,
     /// The microphone does not hear the speakers: nothing cancelled.
     pub headphones: bool,
-    /// Raise a quiet microphone's level (AGC2).
+    /// Raise a quiet microphone's level (AGC2); on Android at its most
+    /// (`Gain::Max`), and on by default there.
     pub mic_gain_auto: bool,
 }
 
@@ -106,7 +112,12 @@ pub struct ModelSettings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            transcription: Transcription::Local,
+            // Android has no local backend.
+            transcription: if cfg!(target_os = "android") {
+                Transcription::Server
+            } else {
+                Transcription::Local
+            },
             server_url: "http://127.0.0.1:3300".into(),
             me: "Me".into(),
             audio: AudioSettings::default(),
@@ -123,7 +134,8 @@ impl Default for AudioSettings {
             mic_device: None,
             system_device: None,
             headphones: false,
-            mic_gain_auto: false,
+            // A phone on the table hears the far side of the room faintly.
+            mic_gain_auto: cfg!(target_os = "android"),
         }
     }
 }
@@ -160,6 +172,7 @@ impl Settings {
     }
 
     /// The language model here: only without a server, and only once set.
+    #[cfg(not(target_os = "android"))]
     pub fn local_config(&self) -> local::Config {
         let set = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
         local::Config {
@@ -170,8 +183,10 @@ impl Settings {
         }
     }
 
+    /// On Android whatever `transcription` says: there is no other.
     pub fn server(&self) -> Option<Server> {
-        (self.transcription == Transcription::Server && !self.server_url.trim().is_empty())
+        let server = self.transcription == Transcription::Server || cfg!(target_os = "android");
+        (server && !self.server_url.trim().is_empty())
             .then(|| Server::new(self.server_url.trim()).with_token(Secret::ServerToken.get()))
     }
 
@@ -201,21 +216,22 @@ impl Settings {
         }
     }
 
-    /// The channels to record: the microphone, and the call.
+    /// The channels to record: the microphone, and the call. On Android
+    /// the microphone only: there is no call to take.
     pub fn sources(&self) -> Vec<(Source, Option<String>, bool)> {
         let mut sources = vec![(
             Source::Microphone,
             self.audio.mic_device.clone(),
             self.audio.mode.room(),
         )];
-        if self.audio.mode.call() {
+        if self.audio.mode.call() && !cfg!(target_os = "android") {
             sources.push((Source::System, self.audio.system_device.clone(), true));
         }
         sources
     }
 
     pub fn echo(&self) -> Echo {
-        if self.audio.mode.call() && !self.audio.headphones {
+        if self.audio.mode.call() && !self.audio.headphones && !cfg!(target_os = "android") {
             Echo::Cancel
         } else {
             Echo::None
@@ -223,7 +239,9 @@ impl Settings {
     }
 
     pub fn gain(&self) -> Gain {
-        if self.audio.mic_gain_auto {
+        if self.audio.mic_gain_auto && cfg!(target_os = "android") {
+            Gain::Max
+        } else if self.audio.mic_gain_auto {
             Gain::Auto
         } else {
             Gain::Off
@@ -309,6 +327,18 @@ impl Secret {
             return None;
         }
         store.migrated.push(self);
+        Self::moved_from_keychain(self, store)
+    }
+
+    /// Android has no keychain: nothing was ever kept anywhere else.
+    #[cfg(target_os = "android")]
+    fn moved_from_keychain(self, _store: &mut Store) -> Option<String> {
+        None
+    }
+
+    /// One the keychain still holds from an earlier version, moved here.
+    #[cfg(not(target_os = "android"))]
+    fn moved_from_keychain(self, store: &mut Store) -> Option<String> {
         let entry = keyring::Entry::new("logbook", self.name()).ok()?;
         let value = entry.get_password().ok().filter(|v| !v.is_empty())?;
         store.values.insert(self.name().into(), value.clone());
@@ -334,6 +364,7 @@ impl Secret {
         // Set here, it no longer comes from the keychain.
         if !store.migrated.contains(&self) {
             store.migrated.push(self);
+            #[cfg(not(target_os = "android"))]
             if let Ok(entry) = keyring::Entry::new("logbook", self.name()) {
                 let _ = entry.delete_credential();
             }
@@ -367,11 +398,13 @@ impl Store {
 /// The backend the settings name: the same `Local` while its model
 /// settings stay the same, so the models are loaded once. `on_status`
 /// hears how its models get ready.
+#[cfg(not(target_os = "android"))]
 pub struct Backends {
     local: Option<(String, Backend)>,
     on_status: local::OnStatus,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Backends {
     pub fn new(on_status: local::OnStatus) -> Self {
         Self {
@@ -380,9 +413,9 @@ impl Backends {
         }
     }
 
-    pub fn get(&mut self, settings: &Settings) -> Backend {
+    pub fn get(&mut self, settings: &Settings) -> Result<Backend> {
         if let Some(server) = settings.server() {
-            return Backend::Server(server);
+            return Ok(Backend::Server(server));
         }
         let config = settings.local_config();
         let key = format!(
@@ -392,13 +425,28 @@ impl Backends {
             config.polish_key.is_some()
         );
         match &self.local {
-            Some((k, backend)) if *k == key => backend.clone(),
+            Some((k, backend)) if *k == key => Ok(backend.clone()),
             _ => {
                 let local = local::Local::new(config).with_status(self.on_status.clone());
                 let backend = Backend::Local(std::sync::Arc::new(local));
                 self.local = Some((key, backend.clone()));
-                backend
+                Ok(backend)
             }
         }
+    }
+}
+
+/// The server the settings name: on Android there is no other backend.
+#[cfg(target_os = "android")]
+#[derive(Default)]
+pub struct Backends;
+
+#[cfg(target_os = "android")]
+impl Backends {
+    pub fn get(&mut self, settings: &Settings) -> Result<Backend> {
+        settings
+            .server()
+            .map(Backend::Server)
+            .context("no logbook server is set: Settings, Transcription")
     }
 }

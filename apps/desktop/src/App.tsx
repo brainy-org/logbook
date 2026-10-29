@@ -3,6 +3,7 @@
 // and the live transcript live here, so that they survive moving between
 // views while a meeting is recorded.
 import { useCallback, useEffect, useState } from 'react';
+import { Menu } from 'lucide-react';
 import {
   api,
   events,
@@ -41,6 +42,12 @@ export function App() {
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [pending, setPending] = useState<PendingMeeting[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
+  // At phone width the sidebar is a drawer, open over the page.
+  const [drawer, setDrawer] = useState(false);
+  const show = (next: View) => {
+    setView(next);
+    setDrawer(false);
+  };
 
   const refresh = useCallback(() => {
     api.listMeetings().then(setMeetings, () => setMeetings([]));
@@ -111,16 +118,43 @@ export function App() {
         logs={logs}
         models={models}
         onStarted={setRecorder}
-        onOpenSettings={() => setView({ kind: 'settings' })}
+        onOpenSettings={() => show({ kind: 'settings' })}
         onFinishPending={() => api.finishPending()}
       />
     );
   }
 
   return (
-    <div className="flex h-full">
-      <Sidebar view={view} recorder={recorder} meetings={meetings} onView={setView} />
-      <main className="min-w-0 flex-1 overflow-hidden">{main}</main>
+    <div className="flex h-full max-sm:flex-col">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-neutral-200 px-2 sm:hidden dark:border-neutral-800">
+        <button
+          type="button"
+          aria-label="Meetings and settings"
+          onClick={() => setDrawer(true)}
+          className="rounded-md p-2 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        >
+          <Menu className="size-5" />
+        </button>
+        <span className="truncate text-sm font-medium">
+          {recorder
+            ? recorder.phase === 'finishing'
+              ? 'Finishing…'
+              : recorder.title || 'Recording'
+            : 'Logbook'}
+        </span>
+      </div>
+      {drawer && (
+        <div
+          className="fixed inset-0 z-30 bg-black/30 sm:hidden"
+          onClick={() => setDrawer(false)}
+        />
+      )}
+      <div
+        className={`flex max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:z-40 max-sm:shadow-xl ${drawer ? '' : 'max-sm:hidden'}`}
+      >
+        <Sidebar view={view} recorder={recorder} meetings={meetings} onView={show} />
+      </div>
+      <main className="min-h-0 min-w-0 flex-1 overflow-hidden">{main}</main>
     </div>
   );
 }

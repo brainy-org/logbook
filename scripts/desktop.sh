@@ -9,6 +9,10 @@
 #   scripts/desktop.sh windows the Windows installer (x64, NSIS), cross-built
 #                              from this Mac, in target/x86_64-pc-windows-msvc/
 #                              release/bundle/nsis/; not signed
+#   scripts/desktop.sh android the Android app (arm64), a debug APK in
+#                              apps/desktop/src-tauri/gen/android/app/build/
+#                              outputs/apk/; records and sends to a server
+#                              (docs/decisions/2026-10-29-android-app.md)
 #
 # Signed, not notarized: notarization needs an Apple Developer ID. The
 # certificate is what keeps macOS's permissions (microphone, the call's
@@ -121,8 +125,36 @@ windows)
     --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
   ls "$root/target/x86_64-pc-windows-msvc/release/bundle/nsis/"*.exe
   ;;
+android)
+  # The SDK and NDK where Android Studio or Homebrew's commandlinetools
+  # put them (sdkmanager "platform-tools" "platforms;android-35"
+  # "build-tools;35.0.0" "ndk;27.2.12479018"), and a JDK 17 or 21.
+  # No CC or linker of our own: Tauri picks the NDK's clang for minSdk 28
+  # (AAudio's input preset), and an older one lacks libaaudio.
+  export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+  if [[ -z "${NDK_HOME:-}" ]]; then
+    NDK_HOME="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)"
+    export NDK_HOME
+  fi
+  # opusic-sys builds libopus with CMake and finds the NDK by this name.
+  export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$NDK_HOME}"
+  if [[ -z "${JAVA_HOME:-}" && -d /opt/homebrew/opt/openjdk@21 ]]; then
+    export JAVA_HOME=/opt/homebrew/opt/openjdk@21
+  fi
+  if [[ ! -d "$NDK_HOME" ]]; then
+    echo "no NDK under $ANDROID_HOME/ndk: see the README, The Android app" >&2
+    exit 1
+  fi
+  rustup target add aarch64-linux-android >/dev/null
+  install
+  cd "$app"
+  # Line tables only: full debug info makes the APK about 450 MB.
+  CI=true CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+    pnpm tauri android build --debug --apk --target aarch64
+  ls "$app"/src-tauri/gen/android/app/build/outputs/apk/*/debug/*.apk
+  ;;
 *)
-  echo "usage: scripts/desktop.sh dev | cert | build | windows" >&2
+  echo "usage: scripts/desktop.sh dev | cert | build | windows | android" >&2
   exit 2
   ;;
 esac

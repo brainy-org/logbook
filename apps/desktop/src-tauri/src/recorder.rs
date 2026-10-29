@@ -84,12 +84,7 @@ impl Recorder {
 
     /// Ends the recording; the meeting goes on to its end.
     pub fn stop(&self, app: &AppHandle) {
-        let mut running = self.running.lock().unwrap();
-        if let Some(r) = running.as_mut() {
-            r.stop.take();
-            r.state.phase = Phase::Finishing;
-            let _ = app.emit("meeting-state", Some(&r.state));
-        }
+        stop(&self.running, app);
     }
 
     /// Starts a meeting; an error if one is running.
@@ -133,6 +128,9 @@ impl Recorder {
                 &app, &running, backend, &data, publish, sources, echo, gain, notes,
             )
             .await;
+            // The service kept the recording and its meetings' ends going.
+            #[cfg(target_os = "android")]
+            crate::android::end(&app);
             running.lock().unwrap().take();
             let _ = app.emit("meeting-state", None::<State>);
             match result {
@@ -148,6 +146,18 @@ impl Recorder {
             }
         });
         Ok(state)
+    }
+}
+
+/// Ends the recording `running` holds, if any.
+fn stop(running: &Mutex<Option<Running>>, app: &AppHandle) {
+    let mut running = running.lock().unwrap();
+    if let Some(r) = running.as_mut() {
+        r.stop.take();
+        r.state.phase = Phase::Finishing;
+        let _ = app.emit("meeting-state", Some(&r.state));
+        #[cfg(target_os = "android")]
+        crate::android::finishing(app);
     }
 }
 
@@ -168,6 +178,14 @@ async fn run(
         running.lock().unwrap().as_ref().map(|r| &r.state),
     );
     backend.check(publish.polish || publish.report)?;
+    // Android: the permissions, and the service that keeps the process
+    // recording with the screen off, started before the microphone opens.
+    #[cfg(target_os = "android")]
+    {
+        let (handle, running) = (app.clone(), running.clone());
+        let title = publish.title.clone().unwrap_or_default();
+        crate::android::begin(app, &title, move || stop(&running, &handle)).await?;
+    }
     // Recording starts at once, the models loading or not: what is said
     // meanwhile waits in the audio's channel (about 64 KB a second for
     // two channels) and is transcribed once they are ready.

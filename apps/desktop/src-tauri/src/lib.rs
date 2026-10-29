@@ -5,20 +5,33 @@
 //! library's messages `logs.rs`. The data folder is the CLI's (`logbook`
 //! in the user's data folder): the two share the pending meetings and the
 //! voices known by name.
+//!
+//! On Android (`android.rs`) the app records the microphone and sends it
+//! to a server: no local models, its data in the app's own folder, the
+//! recording kept alive by a foreground service, pending meetings finished
+//! again until the server answers (docs/decisions/2026-10-29-android-app.md).
 
+#[cfg(target_os = "android")]
+mod android;
 mod logs;
 mod recorder;
 mod settings;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+#[cfg(not(target_os = "android"))]
+use std::sync::Arc;
+use std::sync::Mutex;
 
+#[cfg(not(target_os = "android"))]
+use logbook_client::local;
 use logbook_client::meeting::{self, Backend, Renamed};
 use logbook_client::pending::Pending;
-use logbook_client::{audio, history, local, remote, voices};
+use logbook_client::{audio, history, remote, voices};
 use logbook_engine::polish;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(not(target_os = "android"))]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager, State};
 
 use crate::logs::Logs;
 use crate::recorder::Recorder;
@@ -31,7 +44,11 @@ struct App {
     backends: Mutex<Backends>,
     /// How the models of the local backend get ready (`models`); none
     /// with a server.
+    #[cfg(not(target_os = "android"))]
     models: Arc<Mutex<Option<local::Status>>>,
+    /// Pending meetings finished again until the server answers.
+    #[cfg(target_os = "android")]
+    finisher: android::Finisher,
     handle: AppHandle,
     logs: Logs,
 }
@@ -41,10 +58,22 @@ impl App {
         Settings::load(&self.config)
     }
 
+    /// The backend the settings name.
+    fn backend(&self, settings: &Settings) -> Answer<Backend> {
+        self.backends.lock().unwrap().get(settings).map_err(text)
+    }
+
+    /// Android has no models to load.
+    #[cfg(target_os = "android")]
+    fn preload(&self) {}
+
     /// The models loaded now, in the background, for the backend the
     /// settings name: a meeting started later does not wait for them.
+    #[cfg(not(target_os = "android"))]
     fn preload(&self) {
-        let backend = self.backends.lock().unwrap().get(&self.settings());
+        let Ok(backend) = self.backends.lock().unwrap().get(&self.settings()) else {
+            return;
+        };
         match backend {
             Backend::Local(local) => {
                 tauri::async_runtime::spawn(async move {
@@ -110,9 +139,17 @@ fn save_settings(
     Ok(get_settings(app))
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 fn models_state(app: State<App>) -> Option<local::Status> {
     app.models.lock().unwrap().clone()
+}
+
+/// No models on Android.
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn models_state() -> Option<()> {
+    None
 }
 
 /// The models fetched and loaded again, after they failed to.
@@ -180,7 +217,7 @@ fn start_meeting(
         settings.audio.mode = mode;
         settings.save(&app.config).map_err(text)?;
     }
-    let backend = app.backends.lock().unwrap().get(&settings);
+    let backend = app.backend(&settings)?;
     let title = title
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
@@ -349,7 +386,7 @@ async fn rename_speaker(
 #[tauri::command]
 async fn write_report(app: State<'_, App>, id: String) -> Answer<MeetingView> {
     let settings = app.settings();
-    let backend = app.backends.lock().unwrap().get(&settings);
+    let backend = app.backend(&settings)?;
     let mut kept = history::load(&app.data, &id).map_err(text)?;
     let brainy = match &kept.page {
         Some(_) => Some(settings.credentials().any(None).map_err(text)?),
@@ -396,12 +433,30 @@ fn list_pending(app: State<App>) -> Answer<Vec<PendingView>> {
     Ok(out)
 }
 
+/// On Android, the meetings left pending finished, and tried again until
+/// the server and brainy answer (`android::Finisher`): the app is the only
+/// way to finish them there.
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn finish_pending(app: State<'_, App>) -> Answer<()> {
+    let settings = app.settings();
+    let backend = app.backend(&settings)?;
+    app.finisher.start(
+        app.handle.clone(),
+        backend,
+        app.data.clone(),
+        settings.credentials(),
+    );
+    Ok(())
+}
+
 /// Finishes the meetings left pending (the server or brainy could not be
 /// reached), one after the other; `meetings-changed` when done.
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn finish_pending(app: State<'_, App>, handle: AppHandle) -> Answer<()> {
     let settings = app.settings();
-    let backend = app.backends.lock().unwrap().get(&settings);
+    let backend = app.backend(&settings)?;
     let credentials = settings.credentials();
     let data = app.data.clone();
     let dirs = Pending::list(&data).map_err(text)?;
@@ -456,44 +511,108 @@ fn forget_voice(app: State<App>, name: String) -> Answer<()> {
     voices::forget(&app.data, &name).map_err(text)
 }
 
+/// Whether Android's battery optimization leaves the app alone (always on
+/// the desktop).
+#[tauri::command]
+async fn background_state(handle: AppHandle) -> Answer<bool> {
+    #[cfg(target_os = "android")]
+    return android::unrestricted(&handle).await;
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = handle;
+        Ok(true)
+    }
+}
+
+/// Android's dialog that exempts the app from battery optimization.
+#[tauri::command]
+async fn ask_background(handle: AppHandle) -> Answer<bool> {
+    #[cfg(target_os = "android")]
+    return android::ask_unrestricted(&handle, false).await;
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = handle;
+        Ok(true)
+    }
+}
+
+/// Where meetings wait and voices are kept: the CLI's folder on the
+/// desktop; the app's own on Android, where `dirs` has none.
+fn data_folder(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    #[cfg(target_os = "android")]
+    return Ok(app.path().app_data_dir()?);
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(dirs::data_dir()
+            .ok_or("no data folder for this user")?
+            .join("logbook"))
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let logs = Logs::install();
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
+    let builder = tauri::Builder::default();
+    #[cfg(not(target_os = "android"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_recording::init());
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |tauri_app| {
             logs.attach(tauri_app.handle().clone());
-            let data = dirs::data_dir()
-                .ok_or("no data folder for this user")?
-                .join("logbook");
+            let data = data_folder(tauri_app)?;
             let config = tauri_app.path().app_config_dir()?;
             Secret::open(&config);
             let handle = tauri_app.handle().clone();
+            #[cfg(not(target_os = "android"))]
             let models = Arc::new(Mutex::new(None));
-            let on_status: local::OnStatus = {
-                let models = models.clone();
-                let handle = handle.clone();
-                Arc::new(move |status: local::Status| {
-                    *models.lock().unwrap() = Some(status.clone());
-                    let _ = handle.emit("models", Some(status));
-                })
+            #[cfg(not(target_os = "android"))]
+            let backends = {
+                let on_status: local::OnStatus = {
+                    let models = models.clone();
+                    let handle = handle.clone();
+                    Arc::new(move |status: local::Status| {
+                        *models.lock().unwrap() = Some(status.clone());
+                        let _ = handle.emit("models", Some(status));
+                    })
+                };
+                Backends::new(on_status)
             };
+            #[cfg(target_os = "android")]
+            let backends = Backends;
             tauri_app.manage(App {
                 data,
                 config,
                 recorder: Recorder::default(),
-                backends: Mutex::new(Backends::new(on_status)),
+                backends: Mutex::new(backends),
+                #[cfg(not(target_os = "android"))]
                 models,
+                #[cfg(target_os = "android")]
+                finisher: android::Finisher::default(),
                 handle,
                 logs: logs.clone(),
             });
-            tauri_app.state::<App>().preload();
+            let app = tauri_app.state::<App>();
+            app.preload();
+            // What a meeting left pending at the last run needs: the server.
+            #[cfg(target_os = "android")]
+            if let Ok(backend) = app.backend(&app.settings()) {
+                let settings = app.settings();
+                app.finisher.start(
+                    app.handle.clone(),
+                    backend,
+                    app.data.clone(),
+                    settings.credentials(),
+                );
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -520,13 +639,16 @@ pub fn run() {
             finish_pending,
             list_voices,
             forget_voice,
+            background_state,
+            ask_background,
         ])
         .build(tauri::generate_context!())
         .expect("the app could not start")
-        .run(|_, event| {
+        .run(|_, _event| {
             // Tauri would call `process::exit`, which on Windows runs
             // libparakeet's teardown in the GPU driver (`parakeet::exit`).
-            if let tauri::RunEvent::Exit = event {
+            #[cfg(not(target_os = "android"))]
+            if let tauri::RunEvent::Exit = _event {
                 logbook_engine::parakeet::exit(0);
             }
         });
