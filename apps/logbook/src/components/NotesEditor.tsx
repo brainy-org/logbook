@@ -263,11 +263,14 @@ export const NotesEditor = forwardRef<NotesHandle, Props>(function NotesEditor(
       Placeholder.configure({
         showOnlyCurrent: true,
         includeChildren: true,
+        // includeChildren marks an empty list or task item as well as the
+        // line in it: only a line gets text, or the two overlap.
         placeholder: ({ editor, node, pos }) => {
-          if (editor.isEmpty) return placeholder;
+          if (!node.isTextblock) return '';
           if (node.type.name === 'heading') return 'Heading';
           const parent = editor.state.doc.resolve(pos).parent;
-          return parent.type.name === 'taskItem' ? 'To do' : '';
+          if (parent.type.name === 'taskItem') return 'To do';
+          return editor.isEmpty ? placeholder : '';
         },
       }),
       // A line break typed in the old plain notes stays one.
