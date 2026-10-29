@@ -1,6 +1,6 @@
-# The desktop app
+# The app
 
-`apps/desktop`: Tauri 2, the pages in React (`src/`, brainy's look,
+`apps/logbook`, one app for the desktop (macOS, Windows) and Android: Tauri 2, the pages in React (`src/`, brainy's look,
 copied from galley-client's app), the Rust side in `src-tauri/`. Why it
 is built so: `docs/decisions/2026-10-27-desktop-app.md`. The same app
 builds for Android, as a recorder for a server ("Android" below).
@@ -40,7 +40,7 @@ builds for Android, as a recorder for a server ("Android" below).
   only with a Developer ID (decision record, "Found on the way").
 - **The certificate keeps the privacy permissions** (microphone, the
   call's audio): macOS ties them to the designated requirement, the same
-  for every build signed with it. `scripts/desktop.sh dev` signs the
+  for every build signed with it. `scripts/app.sh dev` signs the
   debug binary with it too (cargo's runner, `signed-run`).
 - **The report and the notes are rendered as React elements**
   (`Markdown.tsx`, react-markdown without raw HTML). A model's output in
@@ -66,7 +66,7 @@ builds for Android, as a recorder for a server ("Android" below).
   build's proc macros on macOS 27 (the decision record, "Found on the
   way").
 
-- **Windows is cross-built from a Mac** (`scripts/desktop.sh windows`:
+- **Windows is cross-built from a Mac** (`scripts/app.sh windows`:
   cargo-xwin, LLVM, makensis), into an NSIS installer, not signed:
   SmartScreen warns at first open (More info → Run anyway). libparakeet
   comes from the mirror as on macOS (`win-vulkan-x64` when System32 has
@@ -83,7 +83,7 @@ builds for Android, as a recorder for a server ("Android" below).
 The app on a phone records the microphone, sends it to a logbook-server
 and publishes as the desktop app does with a server; it links no model
 code. Why, and what it is not: `docs/decisions/2026-10-29-android-app.md`.
-Built with `scripts/desktop.sh android` (README).
+Built with `scripts/app.sh android` (README).
 
 | File | What it does |
 |---|---|
@@ -99,7 +99,7 @@ Built with `scripts/desktop.sh android` (README).
   features and adds `local`/`models` for non-Android targets only. A
   dependency (or a `use`) that pulls `logbook-engine/models` into the
   Android build links libparakeet's loader into the phone; check with
-  `cargo tree -p logbook-desktop --target aarch64-linux-android -e features`.
+  `cargo tree -p logbook-app --target aarch64-linux-android -e features`.
 - **`run` is `tauri::mobile_entry_point`.** Without it the Android library
   exports nothing and the linker drops the whole app: an APK that opens on
   nothing.
@@ -130,7 +130,7 @@ Built with `scripts/desktop.sh android` (README).
 - The rename on a real brainy page: `rename_speaker` matches the turn
   headings as `list_blocks` returns them (`**Speaker 2** · 00:04`), read
   from brainy's code, not seen.
-- Windows: the installer is built (`scripts/desktop.sh windows`), never
+- Windows: the installer is built (`scripts/app.sh windows`), never
   run; the window's frame (`titleBarStyle` is macOS's) is untried. The
   app and the CLI, built on Windows and run over Remote Desktop (`pnpm
   tauri dev`), record, transcribe on the Vulkan build and finish a

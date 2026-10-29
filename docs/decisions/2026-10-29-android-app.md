@@ -1,6 +1,6 @@
 # The Android app: the microphone sent to a server, kept recording by a foreground service
 
-**Verdict.** The desktop app (`apps/desktop`) also builds for Android
+**Verdict.** The desktop app (`apps/logbook`) also builds for Android
 (arm64, a debug APK for now), as an experiment. On a phone it records the
 microphone and streams it to a logbook-server (Opus on the live socket),
 publishes the meeting to brainy with the person's token, and has the
@@ -68,21 +68,21 @@ Android binary carry no loader, no mirror and no model pins it cannot use:
   adds `tauri-plugin-recording`. Cargo's resolver leaves a target's
   features out of another target's build.
 
-Checked on the built `liblogbook_desktop.so` (`llvm-nm -C`): no symbol of
+Checked on the built `liblogbook_app.so` (`llvm-nm -C`): no symbol of
 `logbook_engine::{parakeet, mirror, session, batcher, progressive,
 speakers, Engine}`, `logbook_client::local` or libloading, while
 `codec`, `polish`, `remote`, the AAudio capture and the plugin are
 there; no `libparakeet` string; it needs only libandroid, libaaudio,
 liblog, libdl, libm and libc. The model files' names and sha256 are in
 it as data (`pins.rs`, which names a voice library), never fetched.
-`cargo tree -p logbook-desktop --target aarch64-linux-android -e
+`cargo tree -p logbook-app --target aarch64-linux-android -e
 features` shows neither `models` nor `local`.
 
 ## Recording with the screen off
 
 Android 14 and 15 stop a background app's microphone and network unless
 the app runs a foreground service of the matching type. The Kotlin side
-is a Tauri 2 mobile plugin kept here (`apps/desktop/plugins/recording`):
+is a Tauri 2 mobile plugin kept here (`apps/logbook/plugins/recording`):
 
 - `RecordingService`: `startForeground` with type `microphone`
   (`FOREGROUND_SERVICE_MICROPHONE`), an ongoing low-importance

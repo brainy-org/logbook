@@ -2514,6 +2514,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "logbook-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "keyring",
+ "logbook-client",
+ "logbook-engine",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-recording",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "logbook-client"
 version = "0.1.0"
 dependencies = [
@@ -2533,28 +2555,6 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing",
  "webpki-root-certs",
-]
-
-[[package]]
-name = "logbook-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "keyring",
- "logbook-client",
- "logbook-engine",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-recording",
- "tauri-plugin-single-instance",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

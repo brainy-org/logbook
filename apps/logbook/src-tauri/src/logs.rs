@@ -37,7 +37,7 @@ impl Logs {
         let logs = Logs::default();
         let filter = || {
             EnvFilter::try_from_env("LOGBOOK_LOG")
-                .unwrap_or_else(|_| EnvFilter::new("logbook_client=info,logbook_desktop=info"))
+                .unwrap_or_else(|_| EnvFilter::new("logbook_client=info,logbook_app=info"))
         };
         let _ = tracing_subscriber::registry()
             .with(logs.clone().with_filter(filter()))

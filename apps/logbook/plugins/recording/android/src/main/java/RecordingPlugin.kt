@@ -1,4 +1,4 @@
-// The app's Rust side calls these while it records (apps/desktop/src-tauri/
+// The app's Rust side calls these while it records (apps/logbook/src-tauri/
 // src/android.rs): the permissions first, then the service started with the
 // recording and stopped once its meetings have finished.
 

@@ -1,5 +1,5 @@
 {
-  "name": "logbook-desktop",
+  "name": "logbook-app",
   "private": true,
   "type": "module",
   "scripts": {

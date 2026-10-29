@@ -46,14 +46,14 @@ crates/client/   the client, a library the CLI and the app share: the audio (aud
 crates/cli/      logbook: play (a file at the pace of speech), live (microphone and,
                  with --system, the call), finish (pending meetings), speakers,
                  devices, bench: options and printing only
-apps/desktop/    the desktop app: pages (React, brainy's look) and src-tauri/
+apps/logbook/    the app, macOS, Windows and Android: pages (React, brainy's look) and src-tauri/
                  (recorder, settings and their secrets, logs; android.rs and the
                  Android project in gen/android); plugins/recording: the Android
-                 foreground service, wake lock and permissions (Kotlin)  → docs/desktop.md
-scripts/         server.sh (builds and runs the server), client.sh, desktop.sh (the app:
+                 foreground service, wake lock and permissions (Kotlin)  → docs/app.md
+scripts/         server.sh (builds and runs the server), client.sh, app.sh (the app:
                  dev, cert, build, windows, android)
 Dockerfile       the server's image, CPU and GPU alike (compose.yaml, compose.gpu.yaml)
-docs/            pipeline.md, protocol.md, desktop.md, decisions/
+docs/            pipeline.md, protocol.md, app.md, decisions/
 ```
 
 ## Commands
@@ -63,7 +63,7 @@ cargo build && cargo test
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
 scripts/server.sh                     # fetches libparakeet and the models on first start
 scripts/client.sh play FILE           # or: live [--system], devices, bench FILE --sessions N
-scripts/desktop.sh dev                # the app; `build` signs it (`cert` once per Mac)
+scripts/app.sh dev                    # the app; `build` signs it (`cert` once per Mac), `android`
 ```
 
 ## Invariants
@@ -75,7 +75,7 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
   meetings, `series.rs`); the CLI and the app only choose its options.**
   A step added in the CLI's `main.rs` or the app's `recorder.rs` is
   missing from the other, and from `finish` for a meeting left pending
-  (`docs/desktop.md`).
+  (`docs/app.md`).
 - **libparakeet is loaded at run time and its ABI is checked at open**
   (`ABI` in `parakeet.rs`, v0.6.1). A function declared with the wrong
   signature does not fail to build: it corrupts memory. Declare from

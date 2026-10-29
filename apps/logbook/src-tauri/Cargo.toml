@@ -1,12 +1,12 @@
 [package]
-name = "logbook-desktop"
+name = "logbook-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [lib]
-name = "logbook_desktop"
+name = "logbook_app"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

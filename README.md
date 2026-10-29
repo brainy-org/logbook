@@ -70,14 +70,16 @@ testing, not for meetings that must stay on your servers: only meetings
 started with `--polish` go there.
 `play` and `bench` need ffmpeg on the PATH.
 
-## The desktop app
+## The app
+
+One app for macOS, Windows and Android (`apps/logbook`).
 
 ```bash
-scripts/desktop.sh dev       # run it from this checkout (pnpm and Rust)
-scripts/desktop.sh cert      # once per Mac: a self-signed signing certificate
-scripts/desktop.sh build     # Logbook.app and a .dmg in target/release/bundle/
-scripts/desktop.sh windows   # the Windows installer (x64), built on this Mac
-scripts/desktop.sh android   # the Android app (arm64), a debug APK
+scripts/app.sh dev       # run it from this checkout (pnpm and Rust)
+scripts/app.sh cert      # once per Mac: a self-signed signing certificate
+scripts/app.sh build     # Logbook.app and a .dmg in target/release/bundle/
+scripts/app.sh windows   # the Windows installer (x64), built on this Mac
+scripts/app.sh android   # the Android app (arm64), a debug APK
 ```
 
 Say what the meeting is (a call, people in the room, or a room on a
@@ -122,8 +124,8 @@ To build it on a Mac: the Android SDK and NDK and a JDK
 (`brew install --cask android-commandlinetools` and `brew install
 openjdk@21`, then `sdkmanager "platform-tools" "platforms;android-35"
 "build-tools;35.0.0" "ndk;27.2.12479018"` with `ANDROID_HOME` at
-`~/Library/Android/sdk`), then `scripts/desktop.sh android`. The APK is
-`apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
+`~/Library/Android/sdk`), then `scripts/app.sh android`. The APK is
+`apps/logbook/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
 (arm64 only, debug-signed): `adb install -r` it.
 
 On the phone: set the server's address (one the phone reaches, not

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The hardened runtime's exceptions the app needs (docs/desktop.md):
+<!-- The hardened runtime's exceptions the app needs (docs/app.md):
      the microphone, and libparakeet loaded at run time from
      ~/.cache/brainy-org, which is not signed by the app's certificate. -->
 <plist version="1.0">

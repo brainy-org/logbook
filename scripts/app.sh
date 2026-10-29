@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# The desktop app (apps/desktop), from this checkout:
+# The app (apps/logbook), for the desktop and Android, from this checkout:
 #
-#   scripts/desktop.sh dev     run it with the pages reloading as they change
-#   scripts/desktop.sh cert    once per Mac: a self-signed code-signing
-#                              certificate in the login keychain
-#   scripts/desktop.sh build   Logbook.app and a .dmg, signed with it, in
-#                              target/release/bundle/
-#   scripts/desktop.sh windows the Windows installer (x64, NSIS), cross-built
-#                              from this Mac, in target/x86_64-pc-windows-msvc/
-#                              release/bundle/nsis/; not signed
-#   scripts/desktop.sh android the Android app (arm64), a debug APK in
-#                              apps/desktop/src-tauri/gen/android/app/build/
-#                              outputs/apk/; records and sends to a server
-#                              (docs/decisions/2026-10-29-android-app.md)
+#   scripts/app.sh dev     run it with the pages reloading as they change
+#   scripts/app.sh cert    once per Mac: a self-signed code-signing
+#                          certificate in the login keychain
+#   scripts/app.sh build   Logbook.app and a .dmg, signed with it, in
+#                          target/release/bundle/
+#   scripts/app.sh windows the Windows installer (x64, NSIS), cross-built
+#                          from this Mac, in target/x86_64-pc-windows-msvc/
+#                          release/bundle/nsis/; not signed
+#   scripts/app.sh android the Android app (arm64), a debug APK in
+#                          apps/logbook/src-tauri/gen/android/app/build/
+#                          outputs/apk/; records and sends to a server
+#                          (docs/decisions/2026-10-29-android-app.md)
 #
 # Signed, not notarized: notarization needs an Apple Developer ID. The
 # certificate is what keeps macOS's permissions (microphone, the call's
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-app="$root/apps/desktop"
+app="$root/apps/logbook"
 # The certificate's name: LOGBOOK_SIGNING_IDENTITY picks another one (a
 # Developer ID, once there is one).
 identity="${LOGBOOK_SIGNING_IDENTITY:-Logbook Self-Signed}"
@@ -47,7 +47,7 @@ dev)
   # `signed-run`, which signs it first; without it, it runs as it is.
   if has_identity; then
     triple=$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')
-    export "CARGO_TARGET_${triple}_RUNNER=$root/scripts/desktop.sh signed-run"
+    export "CARGO_TARGET_${triple}_RUNNER=$root/scripts/app.sh signed-run"
   fi
   cd "$app" && exec pnpm tauri dev
   ;;
@@ -95,7 +95,7 @@ EOF
 build)
   install
   if ! has_identity; then
-    echo "no \"$identity\" certificate: run scripts/desktop.sh cert first" >&2
+    echo "no \"$identity\" certificate: run scripts/app.sh cert first" >&2
     exit 1
   fi
   cd "$app"
@@ -154,7 +154,7 @@ android)
   ls "$app"/src-tauri/gen/android/app/build/outputs/apk/*/debug/*.apk
   ;;
 *)
-  echo "usage: scripts/desktop.sh dev | cert | build | windows | android" >&2
+  echo "usage: scripts/app.sh dev | cert | build | windows | android" >&2
   exit 2
   ;;
 esac
