@@ -47,7 +47,7 @@ const KEEP_MEETINGS: usize = 20;
 /// The encoder the voices come from: another model's embeddings are in
 /// another space, and the library is not used with them.
 fn encoder() -> String {
-    let (file, sha, _, _) = logbook_engine::mirror::MODELS
+    let (file, sha, _, _) = logbook_engine::pins::MODELS
         .iter()
         .find(|(.., bundle)| *bundle == "parakeet-voice")
         .expect("the voice model is in the mirror's list");

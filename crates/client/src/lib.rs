@@ -8,12 +8,17 @@
 //! for the app, kept once published (history.rs). Messages for the person
 //! go through `tracing` at info and warn: the CLI prints them, the app
 //! shows them.
+//!
+//! The `local` feature (default) is the backend in this process, with the
+//! engine's models; without it the client streams to a server only, and
+//! links no model code (the Android app).
 
 pub mod aec;
 pub mod audio;
 pub mod brainy;
 pub mod finishing;
 pub mod history;
+#[cfg(feature = "local")]
 pub mod local;
 pub mod meeting;
 pub mod pending;

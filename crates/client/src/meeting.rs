@@ -18,12 +18,14 @@ use tracing::{info, warn};
 
 use crate::brainy::{Brainy, Page};
 use crate::finishing::Transient;
+#[cfg(feature = "local")]
 use crate::local;
 use crate::pending::{self, Meeting, Pending, Saved, Spool};
 use crate::remote::{self, Audio, Finalized, KeptChannel, Live, Pass, Server};
 use crate::{history, transcript, voices};
+#[cfg(feature = "local")]
 use logbook_engine::final_pass::Recorded;
-use logbook_engine::parakeet::SAMPLE_RATE;
+use logbook_engine::protocol::SAMPLE_RATE;
 
 /// "Up to the end" for `published_until`: JSON has no infinity.
 const END: f64 = f64::MAX;
@@ -35,6 +37,9 @@ pub type Notes = Arc<Mutex<String>>;
 #[derive(Clone)]
 pub enum Backend {
     Server(Server),
+    /// Only with the `local` feature: not in the Android app, which links
+    /// no model code.
+    #[cfg(feature = "local")]
     Local(Arc<local::Local>),
 }
 
@@ -43,19 +48,23 @@ impl Backend {
     /// process may start again to find the CUDA libraries), for
     /// `sessions` at once; a clean-up or a report refused without a model.
     /// On a server, a token it refuses.
+    #[cfg_attr(not(feature = "local"), allow(unused_variables))]
     pub async fn prepare(&self, model: bool, sessions: usize) -> Result<()> {
         self.check(model)?;
         match self {
             Backend::Server(server) => remote::check_token(server).await,
+            #[cfg(feature = "local")]
             Backend::Local(local) => local.load(sessions).await,
         }
     }
 
     /// A clean-up or a report refused here without a model, before any
     /// audio is taken; the models are not loaded.
+    #[cfg_attr(not(feature = "local"), allow(unused_variables))]
     pub fn check(&self, model: bool) -> Result<()> {
         match self {
             Backend::Server(_) => Ok(()),
+            #[cfg(feature = "local")]
             Backend::Local(local) => local.check_model(model),
         }
     }
@@ -79,6 +88,7 @@ impl Backend {
                 });
                 remote::live(server, channels, final_pass, audio, kept, events).await
             }
+            #[cfg(feature = "local")]
             Backend::Local(local) => {
                 let dir = dir
                     .map(Path::to_path_buf)
@@ -93,6 +103,7 @@ impl Backend {
     pub async fn report(&self, request: ReportRequest) -> Result<String> {
         match self {
             Backend::Server(server) => remote::report(server, &request).await,
+            #[cfg(feature = "local")]
             Backend::Local(local) => local.report(request).await,
         }
     }
@@ -665,8 +676,10 @@ async fn final_pass(backend: &Backend, pending: &mut Pending) -> Result<Finalize
     let from = (until * SAMPLE_RATE as f64) as u64;
     let offset = from as f64 / SAMPLE_RATE as f64;
     let rest = |pending: &Pending, i: usize| pending.samples(i).saturating_sub(from);
+    #[cfg_attr(not(feature = "local"), allow(clippy::infallible_destructuring_match))]
     let server = match backend {
         Backend::Server(server) => server,
+        #[cfg(feature = "local")]
         Backend::Local(local) => {
             pending.set_final_id(None)?;
             info!("reading the meeting again from {offset:.0} s…");

@@ -5,17 +5,32 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The models: libparakeet, the mirror, the pipeline and the session. Off,
+# the crate is what a client streaming to a server needs (the protocol,
+# the codec, the language model's clean-up and report): the Android app.
+default = ["models"]
+models = ["dep:flate2", "dep:libloading", "dep:sha2", "dep:tar", "dep:zip", "dep:tokio"]
+
 [dependencies]
 anyhow = "1.0.104"
-flate2 = "1.1.10"
+flate2 = { version = "1.1.10", optional = true }
 getrandom = "0.4.3"
-libloading = "0.9.0"
+libloading = { version = "0.9.0", optional = true }
 opus = "0.4.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sha2 = "0.11.1"
-tar = "0.4.46"
-tokio = { version = "1.54.1", features = ["sync"] }
+sha2 = { version = "0.11.1", optional = true }
+tar = { version = "0.4.46", optional = true }
+tokio = { version = "1.54.1", features = ["sync"], optional = true }
 tracing = "0.1.44"
 ureq = { version = "3.5.0", default-features = false, features = ["rustls", "json"] }
-zip = { version = "9.1.2", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.1.2", default-features = false, features = ["deflate-flate2"], optional = true }
+
+[[example]]
+name = "diarize"
+required-features = ["models"]
+
+[[example]]
+name = "embed"
+required-features = ["models"]

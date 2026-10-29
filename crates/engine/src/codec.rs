@@ -19,7 +19,7 @@
 use anyhow::{Result, bail};
 use opus::{Application, Bitrate, Channels, Decoder, Encoder};
 
-use crate::parakeet::SAMPLE_RATE;
+use crate::protocol::SAMPLE_RATE;
 
 const MAGIC: &[u8; 4] = b"LBO1";
 const FRAME: usize = SAMPLE_RATE as usize / 50;

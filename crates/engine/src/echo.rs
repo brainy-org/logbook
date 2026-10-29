@@ -10,8 +10,7 @@
 
 use std::collections::VecDeque;
 
-use crate::parakeet::Word;
-use crate::protocol::Utterance;
+use crate::protocol::{Utterance, Word};
 
 /// How far apart in time a mic word and a system word can be and still be
 /// one sound: the room's delay is milliseconds, the word times of two

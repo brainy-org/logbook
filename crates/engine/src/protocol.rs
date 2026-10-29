@@ -11,7 +11,17 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::codec::LiveDecoder;
 
-pub use crate::parakeet::Word;
+/// The audio's rate, everywhere: the models', the wire's, the recordings'.
+pub const SAMPLE_RATE: u32 = 16_000;
+
+/// A word with its times, as libparakeet returns it (`parakeet.rs`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Word {
+    pub w: String,
+    pub start: f64,
+    pub end: f64,
+    pub conf: f64,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChannelConfig {

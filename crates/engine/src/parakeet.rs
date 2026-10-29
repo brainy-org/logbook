@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 /// The ABI of the functions declared here (`parakeet_capi.h` of v0.6.1).
 const ABI: c_int = 10;
 
-pub const SAMPLE_RATE: u32 = 16_000;
+/// The wire's rate and word, which the client uses without this module.
+pub use crate::protocol::{SAMPLE_RATE, Word};
 
 const KIND_ASR: c_int = 1;
 const KIND_DIARIZATION: c_int = 2;
@@ -464,14 +465,6 @@ pub struct Transcript {
     pub text: String,
     #[serde(default)]
     pub words: Vec<Word>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Word {
-    pub w: String,
-    pub start: f64,
-    pub end: f64,
-    pub conf: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

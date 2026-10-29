@@ -26,8 +26,8 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::protocol::ChannelConfig;
+use logbook_engine::protocol::SAMPLE_RATE;
 use logbook_engine::recording::{RangeReader, SEGMENT, segment_path};
 use serde::{Deserialize, Serialize};
 

@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use chrono::Local;
-use logbook_engine::parakeet::SAMPLE_RATE;
+use logbook_engine::protocol::SAMPLE_RATE;
 use logbook_engine::protocol::{ChannelConfig, Utterance};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 

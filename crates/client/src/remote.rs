@@ -21,7 +21,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use logbook_engine::codec::{LiveEncoder, StreamEncoder};
-use logbook_engine::parakeet::SAMPLE_RATE;
+use logbook_engine::protocol::SAMPLE_RATE;
 use logbook_engine::protocol::{
     ChannelConfig, ClientMessage, Codec, FinalState, Report, ReportRequest, ServerMessage,
     SpeakerVoice, Started, Upload, Utterance, encode_audio,

@@ -2522,6 +2522,7 @@ dependencies = [
  "cpal",
  "futures-util",
  "logbook-engine",
+ "ndk",
  "reqwest",
  "rustls",
  "serde",
@@ -2530,6 +2531,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
+ "webpki-root-certs",
 ]
 
 [[package]]
@@ -2547,6 +2549,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tauri-plugin-recording",
  "tauri-plugin-single-instance",
  "tokio",
  "tracing",
@@ -4724,6 +4727,16 @@ dependencies = [
  "url",
  "windows",
  "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-recording"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]
