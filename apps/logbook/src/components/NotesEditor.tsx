@@ -155,7 +155,14 @@ function ShotView({ node, selected, extension }: NodeViewProps) {
 const ShotImage = Image.extend<ShotOptions>({
   draggable: true,
   addOptions() {
-    return { ...this.parent!(), folder: '', onZoom: () => undefined };
+    // Image's own, written out: `this.parent` is not there in addOptions.
+    return {
+      inline: false,
+      allowBase64: false,
+      HTMLAttributes: {},
+      folder: '',
+      onZoom: () => undefined,
+    };
   },
   addAttributes() {
     return {
