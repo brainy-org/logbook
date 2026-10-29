@@ -142,7 +142,8 @@ export const api = {
   startMeeting: (title: string, mode: Mode) =>
     invoke<RecorderState>('start_meeting', { title, mode }),
   stopMeeting: () => invoke<void>('stop_meeting'),
-  setNotes: (notes: string) => invoke<void>('set_notes', { notes }),
+  /** The notes of meeting `part` of the recording (`RecorderState.part`). */
+  setNotes: (part: number, notes: string) => invoke<void>('set_notes', { part, notes }),
   meetingState: () => invoke<RecorderState | null>('meeting_state'),
   getLogs: () => invoke<LogLine[]>('get_logs'),
   listMeetings: () => invoke<MeetingSummary[]>('list_meetings'),

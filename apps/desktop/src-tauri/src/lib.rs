@@ -203,8 +203,8 @@ fn stop_meeting(app: State<App>, handle: AppHandle) {
 }
 
 #[tauri::command]
-fn set_notes(app: State<App>, notes: String) {
-    app.recorder.set_notes(notes);
+fn set_notes(app: State<App>, part: usize, notes: String) {
+    app.recorder.set_notes(part, notes);
 }
 
 #[tauri::command]

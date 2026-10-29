@@ -768,7 +768,7 @@ fn merged(pending: &Pending, result: Finalized) -> Result<Option<Finalized>> {
 /// A meeting being recorded: the audio of `audio` goes to the backend,
 /// and, with a final pass, to a pending folder too, where the final
 /// segments are kept as they come (and written to brainy). `notes` are
-/// read when the audio ends. Returns once the meeting is finished; None
+/// read once the final pass is done. Returns once the meeting is finished; None
 /// without a final pass. A recording that may last for hours or months
 /// goes through `meetings`, which cuts it into meetings.
 pub async fn meeting(

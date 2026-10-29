@@ -32,24 +32,34 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   const [showTranscript, setShowTranscript] = useState(true);
   const [now, setNow] = useState(Date.now());
   const timer = useRef<number | undefined>(undefined);
+  // Notes typed and not sent yet: sent with this meeting's number, so that
+  // a cut between typing and sending leaves them with this meeting.
+  const unsent = useRef<string | undefined>(undefined);
+  const part = state.part;
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(t);
   }, []);
-  // A new meeting of the recording starts with empty notes: what was not
-  // sent yet stays with the last one's page (lost, under NOTES_DELAY_MS).
-  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const send = () => {
+    window.clearTimeout(timer.current);
+    const text = unsent.current;
+    unsent.current = undefined;
+    return text === undefined ? Promise.resolve() : api.setNotes(part, text);
+  };
+  // A new meeting of the recording draws this again with empty notes (its
+  // `key`): what this one had not sent yet goes to its own meeting now.
+  useEffect(() => () => void send(), []);
 
   const edit = (text: string) => {
     setNotes(text);
+    unsent.current = text;
     window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => void api.setNotes(text), NOTES_DELAY_MS);
+    timer.current = window.setTimeout(() => void send(), NOTES_DELAY_MS);
   };
   // The last keystrokes are not lost when the meeting stops.
   const stop = async () => {
-    window.clearTimeout(timer.current);
-    await api.setNotes(notes);
+    await send();
     await api.stopMeeting();
   };
 

@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use logbook_client::audio::{Recording, Stop};
-use logbook_client::meeting::{self, Backend, Notes, Publish};
+use logbook_client::meeting::{self, Backend, Publish};
 use logbook_client::remote::{self, Audio};
-use logbook_client::series::{self, Limits};
+use logbook_client::series::{self, Limits, Notebook};
 use logbook_engine::protocol::{ChannelConfig, Utterance};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -56,7 +56,7 @@ pub struct State {
 
 struct Running {
     state: State,
-    notes: Notes,
+    notes: Notebook,
     stop: Option<Stop>,
 }
 
@@ -69,14 +69,16 @@ impl Recorder {
     pub fn state(&self) -> Option<State> {
         self.running.lock().unwrap().as_ref().map(|r| {
             let mut state = r.state.clone();
-            state.notes = r.notes.lock().unwrap().clone();
+            state.notes = r.notes.get(state.part);
             state
         })
     }
 
-    pub fn set_notes(&self, text: String) {
+    /// The notes typed in meeting `part` of the recording: an earlier
+    /// one's, sent just after it closed, still go to it.
+    pub fn set_notes(&self, part: usize, text: String) {
         if let Some(r) = self.running.lock().unwrap().as_ref() {
-            *r.notes.lock().unwrap() = text;
+            r.notes.set(part, text);
         }
     }
 
@@ -102,7 +104,7 @@ impl Recorder {
         echo: logbook_client::audio::Echo,
         gain: logbook_client::aec::Gain,
     ) -> Result<State> {
-        let notes = Notes::default();
+        let notes = Notebook::default();
         let state = {
             let mut running = self.running.lock().unwrap();
             if running.is_some() {
@@ -159,7 +161,7 @@ async fn run(
     sources: Vec<(logbook_client::audio::Source, Option<String>, bool)>,
     echo: logbook_client::audio::Echo,
     gain: logbook_client::aec::Gain,
-    notes: Notes,
+    notes: Notebook,
 ) -> Result<Option<meeting::Outcome>> {
     let _ = app.emit(
         "meeting-state",
@@ -210,7 +212,7 @@ async fn run(
         channels,
         &publish,
         audio,
-        notes,
+        &notes,
         Limits::default(),
         &mut events,
     )
@@ -235,7 +237,7 @@ impl series::Series for Events {
         tracing::info!("a new meeting starts at {:.0} s of the recording", at);
         let mut guard = self.running.lock().unwrap();
         if let Some(r) = guard.as_mut() {
-            // `meetings` has taken the notes for the meeting that closed.
+            // The meeting that closed keeps its notes; this one's start empty.
             r.state.part = n;
             r.state.notes = String::new();
             let _ = self.app.emit("meeting-state", Some(&r.state));

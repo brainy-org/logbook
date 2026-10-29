@@ -550,7 +550,7 @@ async fn run_meeting(
         channels,
         &p.publish(),
         audio,
-        meeting::Notes::default(),
+        &series::Notebook::default(),
         limits,
         &mut printer,
     )

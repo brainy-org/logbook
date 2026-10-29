@@ -115,6 +115,10 @@ lasted as long as `live` ran:
   behind the end. Ten leaves room, at a few hundred KB per session.
 - **The app**: no settings for the limits yet (the defaults); the
   recorder draws itself again with empty notes when a meeting starts.
+  Notes go to the meeting they were typed in (client `series.rs`,
+  `Notebook`), not to the one current when they arrive: the last
+  keystrokes before a cut reach the app just after it, and a meeting
+  reads its notes only once its final pass is done.
 
 ## Cost at scale
 

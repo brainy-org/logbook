@@ -78,8 +78,10 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 - A recording cut into meetings shows one recorder: the clock counts the
   whole recording, the live transcript runs on across meetings, and
   nothing on the page says a new one started but the notes emptying
-  (the meeting that closed took them; what was typed in the last 400 ms
-  before is lost). A meeting that ends meanwhile only refreshes the list.
+  (the meeting that closed keeps its own: the app sends notes with the
+  meeting they were typed in, `set_notes(part, notes)`, and the recorder
+  sends what it had not sent yet as it is drawn again). A meeting that
+  ends meanwhile only refreshes the list.
   The limits are the defaults, not settings.
 
 - Run on a real meeting through the app (the CLI's flow is the same, and

@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use chrono::Local;
@@ -212,19 +213,52 @@ impl remote::Events for Forward {
     }
 }
 
+/// The notes of a series' meetings, by number: each is written to the
+/// meeting it was typed in, never to the one current when it arrives. A
+/// meeting reads its notes once its final pass is done (meeting.rs), so
+/// the last keystrokes before a cut, sent just after it, still reach the
+/// meeting that closed. Kept while the meeting runs.
+#[derive(Clone, Default)]
+pub struct Notebook(Arc<Mutex<HashMap<usize, Notes>>>);
+
+impl Notebook {
+    /// Meeting `n`'s notes are `text`; nothing if it has ended.
+    pub fn set(&self, n: usize, text: String) {
+        if let Some(notes) = self.0.lock().unwrap().get(&n) {
+            *notes.lock().unwrap() = text;
+        }
+    }
+
+    /// Meeting `n`'s notes so far.
+    pub fn get(&self, n: usize) -> String {
+        self.0
+            .lock()
+            .unwrap()
+            .get(&n)
+            .map(|notes| notes.lock().unwrap().clone())
+            .unwrap_or_default()
+    }
+
+    fn open(&self, n: usize) -> Notes {
+        self.0.lock().unwrap().entry(n).or_default().clone()
+    }
+
+    fn close(&self, n: usize) {
+        self.0.lock().unwrap().remove(&n);
+    }
+}
+
 /// A meeting of the series being recorded.
 struct Part {
     n: usize,
     /// Its sample 0 on the recording's clock.
     base: u64,
     audio: Option<UnboundedSender<(u8, Vec<i16>)>>,
-    /// What it reads as its notes when it ends.
-    notes: Notes,
 }
 
 /// The audio of `audio` as a series of meetings (`Limits`), each run as
-/// `meeting::meeting` runs one; `notes` are the notes being written, which
-/// go to the meeting closing when it closes. Returns the last meeting's
+/// `meeting::meeting` runs one; `notes` holds the notes being written,
+/// by meeting. Returns the last meeting's
 /// outcome once every meeting has ended; the others go to
 /// `Series::meeting_ended`. A meeting that ends before its audio does
 /// (its backend failed) ends the series.
@@ -235,7 +269,7 @@ pub async fn meetings(
     channels: Vec<ChannelConfig>,
     p: &Publish,
     mut audio: Audio,
-    notes: Notes,
+    notes: &Notebook,
     limits: Limits,
     events: &mut impl Series,
 ) -> Result<Option<Outcome>> {
@@ -244,7 +278,6 @@ pub async fn meetings(
     let (note_tx, mut note_rx) = unbounded_channel::<(usize, Note)>();
     let start = |n: usize, base: u64| -> Part {
         let (tx, rx) = unbounded_channel();
-        let own = Notes::default();
         let (backend, data, channels) = (backend.clone(), data.to_path_buf(), channels.clone());
         let mut p = p.clone();
         if n > 0 {
@@ -254,7 +287,7 @@ pub async fn meetings(
                 .map(|t| format!("{t} ({})", n + 1));
         }
         let at = started + chrono::Duration::milliseconds((base as f64 / rate * 1000.0) as i64);
-        let notes = own.clone();
+        let notes = notes.open(n);
         let mut forward = Forward {
             n,
             tx: note_tx.clone(),
@@ -269,7 +302,6 @@ pub async fn meetings(
             n,
             base,
             audio: Some(tx),
-            notes: own,
         }
     };
     let mut current = start(0, 0);
@@ -288,9 +320,7 @@ pub async fn meetings(
             let next = start(current.n + 1, at);
             bases.insert(next.n, at);
             running += 1;
-            let old = std::mem::replace(&mut current, next);
-            *old.notes.lock().unwrap() = std::mem::take(&mut *notes.lock().unwrap());
-            closing = Some(old);
+            closing = Some(std::mem::replace(&mut current, next));
             closer = Closer::new(limits);
             events.meeting_started(current.n, at as f64 / rate);
         }};
@@ -315,7 +345,6 @@ pub async fn meetings(
                 }
                 None => {
                     ended = true;
-                    *current.notes.lock().unwrap() = notes.lock().unwrap().clone();
                     current.audio = None;
                     closing = None;
                 }
@@ -343,6 +372,7 @@ pub async fn meetings(
                     Note::Ended(result) => {
                         running -= 1;
                         bases.remove(&n);
+                        notes.close(n);
                         if n == current.n {
                             if !ended {
                                 // Its backend failed before the audio
