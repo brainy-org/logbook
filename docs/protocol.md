@@ -132,7 +132,12 @@ in `channels`. Then:
 
 A lost connection is the client's to repair; the server drops the
 session, its recording and its final pass, and does not know the next
-session is the same meeting. With a final pass, the client opens one
+session is the same meeting. It drops it at once, the audio still queued
+for it included (engine `session.rs`, `Feed`): a session behind the
+audio would otherwise transcribe those minutes for nobody, beside the
+one that takes the meeting up. Until its `stop` a client sends audio all
+the time, silence too: a socket that brings nothing for 30 s is a client
+gone without closing it (its network dropped), and is closed. With a final pass, the client opens one
 that takes it up: `offset` is where the last `final_segments` stopped
 (their `until`, on a sample), `voices` the speakers they last sent. It
 sends the audio it kept from there to now first (each channel in step,

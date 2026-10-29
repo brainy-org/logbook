@@ -112,7 +112,10 @@ model's eight
    45 s of new audio, its range from the last cut to the latest quiet
    point between 45 and 60 s on (or, with none there, the first one
    after 45 s) goes to the finalizer thread, one job at a time for every
-   session. A pause before 45 s is never an end: taken as "the latest
+   session; none while the session has more than 2 s of audio queued,
+   until it is under 1 s (`HOLD_FINAL`): the live transcript first, the final pass catches up at
+   the end (`docs/decisions/2026-10-29-a-server-on-a-cpu-falls-behind.md`).
+   A pause before 45 s is never an end: taken as "the latest
    within 60 s" after more than 60 s of speech, it held the channel, and
    with it every channel's final segments, until the meeting ended.
 2. **Words**: the finalizer reads the range from the recording, cuts it

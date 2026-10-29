@@ -35,7 +35,7 @@ use logbook_engine::protocol::{
 };
 use logbook_engine::recording::{self, Recording};
 use logbook_engine::report;
-use logbook_engine::session::{self, Input, Resume, Shared};
+use logbook_engine::session::{self, Feed, Input, Resume, Shared};
 use logbook_engine::{Engine, Options, batcher, polisher};
 use tracing::{info, warn};
 
@@ -47,6 +47,8 @@ const MAX_UPLOAD: usize = 4 << 30;
 /// The largest report request: a transcript of some three weeks of
 /// speech, in UTF-8; a long one is reported in steps (engine report.rs).
 const MAX_REPORT: usize = 64 << 20;
+/// How long a live client may send nothing before its stop (`handle`).
+const SILENT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Parser)]
 #[command(version, about = "Live transcription and diarization server")]
@@ -528,6 +530,8 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
         }
     };
     info!(session, caller = caller.0, codec = ?codec.unwrap_or_default(), "live session");
+    let feed = Feed::default();
+    let session_feed = feed.clone();
     std::thread::spawn(move || {
         session::run(
             &thread_state.shared,
@@ -535,6 +539,7 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
             configs,
             final_pass.then_some(polish),
             resume,
+            session_feed,
             in_rx,
             reply,
             out_tx,
@@ -556,13 +561,30 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
         let _ = sink.close().await;
     });
 
-    while let Some(message) = stream.next().await {
+    // Until its stop the client sends audio all the time (silence too): a
+    // socket quiet for `SILENT` is a client gone without closing it (its
+    // network dropped), whose session is dropped (session.rs, `Feed`).
+    // After the stop it only waits for the final pass, minutes on a CPU.
+    let mut stopped = false;
+    loop {
+        let next = if stopped {
+            stream.next().await
+        } else {
+            match tokio::time::timeout(SILENT, stream.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    warn!("no audio for {} s: the client has gone", SILENT.as_secs());
+                    break;
+                }
+            }
+        };
+        let Some(message) = next else { break };
         match message {
             // One Opus decode per 20 ms packet, here on the socket's task:
             // about 30 µs for a 100 ms frame on one core.
             Ok(Message::Binary(frame)) => match audio.frame(&frame) {
                 Ok(Some((channel, pcm))) if !pcm.is_empty() => {
-                    let _ = in_tx.send(Input::Audio(channel, pcm));
+                    feed.audio(&in_tx, channel, pcm);
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -578,13 +600,14 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
                     if owed > 0 {
                         warn!(owed, "stop before the last samples of the audio");
                     }
-                    let _ = in_tx.send(Input::Stop);
+                    stopped = true;
+                    feed.stop(&in_tx);
                 }
             }
             Ok(Message::Close(_)) | Err(_) => break,
             Ok(_) => {}
         }
     }
-    let _ = in_tx.send(Input::Closed);
+    feed.close(&in_tx);
     let _ = writer.await;
 }

@@ -20,7 +20,7 @@ use logbook_engine::finals::Finals;
 use logbook_engine::mirror::{Fetching, Mirror};
 use logbook_engine::polish::{self, Polisher};
 use logbook_engine::protocol::{ChannelConfig, FinalState, ReportRequest, SpeakerVoice};
-use logbook_engine::session::{self, Input, Resume, Shared};
+use logbook_engine::session::{self, Feed, Resume, Shared};
 use logbook_engine::{Engine, Options, batcher, polisher, report};
 use serde::Serialize;
 use tokio::sync::OnceCell;
@@ -181,6 +181,8 @@ impl Local {
         let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
         let (in_tx, in_rx) = std::sync::mpsc::channel();
         let reply = in_tx.clone();
+        let feed = Feed::default();
+        let session_feed = feed.clone();
         std::thread::spawn(move || {
             session::run(
                 &shared,
@@ -188,6 +190,7 @@ impl Local {
                 channels,
                 final_pass,
                 Resume::default(),
+                session_feed,
                 in_rx,
                 reply,
                 out_tx,
@@ -200,11 +203,11 @@ impl Local {
                 frame = audio.recv(), if !ended => match frame {
                     Some((channel, samples)) => {
                         let pcm = samples.iter().map(|&s| s as f32 / 32768.0).collect();
-                        let _ = in_tx.send(Input::Audio(channel as usize, pcm));
+                        feed.audio(&in_tx, channel as usize, pcm);
                     }
                     None => {
                         ended = true;
-                        let _ = in_tx.send(Input::Stop);
+                        feed.stop(&in_tx);
                     }
                 },
                 message = out_rx.recv() => {

@@ -138,6 +138,13 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   State that grows with the meeting fails only after hours or months, on
   a server with tens of meetings or a client left running
   (`docs/decisions/2026-10-29-bounded-meetings.md`).
+- **What the client's side tells a session goes through its `Feed`, not
+  only its inbox** (engine `session.rs`): audio counted (`Feed::audio`),
+  the stop and the client gone flagged. News sent only into the inbox
+  waits behind every minute of audio queued before it: a session behind
+  the audio transcribes for a client long gone, or never yields to its
+  live transcript
+  (`docs/decisions/2026-10-29-a-server-on-a-cpu-falls-behind.md`).
 - **A session has one part with the clean-up model at a time**
   (`Final::polishing`, engine `session.rs`): final segments leave in the
   order they were ready. Two parts out at once can come back swapped and

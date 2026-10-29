@@ -17,10 +17,22 @@
 //! A session may take up a meeting another one started (`Resume`): its
 //! first sample is at `offset` on the meeting's clock, every time it sends
 //! is moved there, and its final pass keeps the meeting's speakers.
+//!
+//! A session behind the audio (a server on a CPU, where every model's
+//! threads take every core) hears from its `Feed`, not its inbox, how far
+//! behind it is and whether the client has gone: news in the inbox would
+//! wait behind the minutes of audio queued before it. Behind, the
+//! progressive pass waits (`HOLD_FINAL`): the live transcript is what the
+//! person reads, the final pass can catch up at the end. A client gone
+//! before the end of its audio drops the meeting at once: the minutes
+//! queued would be transcribed for nobody, while the client takes the
+//! meeting up in a new session (remote.rs); so does one gone after it
+//! without a final pass, which has nothing left to complete.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -30,7 +42,9 @@ use crate::echo::EchoFilter;
 use crate::parakeet::Transcript;
 use crate::polish::{self, Polished};
 use crate::progressive::{Progressive, Range, Transcribed};
-use crate::protocol::{ChannelConfig, FinalState, ServerMessage, SpeakerVoice, Utterance};
+use crate::protocol::{
+    ChannelConfig, FinalState, SAMPLE_RATE, ServerMessage, SpeakerVoice, Utterance,
+};
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -77,6 +91,58 @@ pub enum Input {
 }
 
 const TICK: Duration = Duration::from_millis(100);
+
+/// Seconds of audio a session may have queued before its progressive pass
+/// waits for the live one to catch up; it goes on below half of it, so
+/// that it does not stop and start at every frame around the line.
+const HOLD_FINAL: f64 = 2.0;
+
+/// What the client's side tells a session beside its inbox: the audio sent
+/// and not read yet, the end of the audio, and the client gone. Audio goes
+/// through `audio`, the end through `stop`, so that the counts hold.
+#[derive(Clone, Default)]
+pub struct Feed {
+    /// Samples sent and not read yet, every channel together.
+    queued: Arc<AtomicUsize>,
+    stopped: Arc<AtomicBool>,
+    gone: Arc<AtomicBool>,
+}
+
+impl Feed {
+    pub fn audio(&self, inbox: &Sender<Input>, channel: usize, pcm: Vec<f32>) {
+        self.queued.fetch_add(pcm.len(), Ordering::Relaxed);
+        if inbox.send(Input::Audio(channel, pcm)).is_err() {
+            self.queued.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// The client has no more audio.
+    pub fn stop(&self, inbox: &Sender<Input>) {
+        self.stopped.store(true, Ordering::Relaxed);
+        let _ = inbox.send(Input::Stop);
+    }
+
+    /// The connection is gone.
+    pub fn close(&self, inbox: &Sender<Input>) {
+        self.gone.store(true, Ordering::Relaxed);
+        let _ = inbox.send(Input::Closed);
+    }
+
+    fn read(&self, samples: usize) {
+        self.queued.fetch_sub(samples, Ordering::Relaxed);
+    }
+
+    /// Seconds of audio waiting in the inbox.
+    fn behind(&self, channels: usize) -> f64 {
+        self.queued.load(Ordering::Relaxed) as f64 / (SAMPLE_RATE as f64 * channels.max(1) as f64)
+    }
+
+    /// Gone with nothing left to do for it: before the end of its audio,
+    /// or with no final pass to complete for `Finals`.
+    fn abandoned(&self, final_pass: bool) -> bool {
+        self.gone.load(Ordering::Relaxed) && (!self.stopped.load(Ordering::Relaxed) || !final_pass)
+    }
+}
 
 /// Where a session starts in its meeting (protocol.rs, `Start`).
 #[derive(Clone, Debug, Default)]
@@ -215,6 +281,7 @@ pub fn run(
     configs: Vec<ChannelConfig>,
     final_pass: Option<bool>,
     resume: Resume,
+    feed: Feed,
     inbox: Receiver<Input>,
     reply: Sender<Input>,
     out: UnboundedSender<ServerMessage>,
@@ -252,6 +319,7 @@ pub fn run(
         configs,
         resume.offset,
         &mut fin,
+        &feed,
         inbox,
         reply,
         &out,
@@ -280,6 +348,7 @@ fn live(
     configs: Vec<ChannelConfig>,
     offset: f64,
     fin: &mut Option<Final>,
+    feed: &Feed,
     inbox: Receiver<Input>,
     reply: Sender<Input>,
     out: &UnboundedSender<ServerMessage>,
@@ -320,7 +389,13 @@ fn live(
     };
     let mut stopping = false;
     let mut live_done = false;
+    // The progressive pass waits for the live one (`HOLD_FINAL`).
+    let mut held = false;
     loop {
+        if feed.abandoned(fin.is_some()) {
+            info!(session, "the client has gone: the meeting is dropped");
+            return Ok(());
+        }
         let input = match inbox.recv_timeout(TICK) {
             Ok(input) => Some(input),
             Err(RecvTimeoutError::Timeout) => None,
@@ -329,6 +404,7 @@ fn live(
         let step = (|| -> Result<bool> {
             match input {
                 Some(Input::Audio(index, pcm)) if !stopping => {
+                    feed.read(pcm.len());
                     if let Some(f) = fin.as_mut() {
                         f.recording.write(index, &pcm)?;
                         f.pass.feed(index, &pcm);
@@ -337,7 +413,8 @@ fn live(
                         submit(channel.feed(&pcm)?);
                     }
                 }
-                Some(Input::Audio(..)) | None => {}
+                Some(Input::Audio(_, pcm)) => feed.read(pcm.len()),
+                None => {}
                 Some(Input::Transcribed {
                     channel,
                     id,
@@ -405,7 +482,21 @@ fn live(
                 }
             }
             if let Some(f) = fin.as_mut() {
-                progress(shared, session, f, &channels, stopping, &reply, out)?;
+                let behind = feed.behind(channels.len());
+                let line = if held { HOLD_FINAL / 2.0 } else { HOLD_FINAL };
+                let hold = !stopping && behind > line;
+                if hold != held {
+                    held = hold;
+                    match hold {
+                        true => info!(
+                            session,
+                            behind_s = format!("{behind:.1}"),
+                            "the live transcript is behind: the final pass waits"
+                        ),
+                        false => info!(session, "the final pass goes on"),
+                    }
+                }
+                progress(shared, session, f, &channels, stopping, hold, &reply, out)?;
             }
             Ok(true)
         })();
@@ -475,14 +566,17 @@ fn live(
     }
 }
 
-/// The progressive pass's turn: quiet points, ranges to transcribe, and the
-/// segments that are ready.
+/// The progressive pass's turn: quiet points, ranges to transcribe (none
+/// while `hold`: the live transcript is behind), and the segments that are
+/// ready.
+#[allow(clippy::too_many_arguments)]
 fn progress(
     shared: &Shared,
     session: &str,
     f: &mut Final,
     channels: &[Channel],
     stopping: bool,
+    hold: bool,
     reply: &Sender<Input>,
     out: &UnboundedSender<ServerMessage>,
 ) -> Result<()> {
@@ -498,6 +592,9 @@ fn progress(
         }
     }
     release(session, f, reply, out);
+    if hold {
+        return Ok(());
+    }
     let ranges = f.pass.next_ranges();
     if !ranges.is_empty() {
         f.recording.flush()?;
