@@ -95,7 +95,10 @@ async fn fake_server(listener: TcpListener, heard: Arc<Heard>, finals: watch::Re
                 sessions.len() - 1
             };
             let send = |m: &ServerMessage| Message::Text(serde_json::to_string(m).unwrap().into());
-            socket.send(send(&ServerMessage::Ready)).await.unwrap();
+            socket
+                .send(send(&ServerMessage::Ready { codec: None }))
+                .await
+                .unwrap();
             let mut said = Vec::new();
             while let Some(message) = socket.next().await {
                 match message.unwrap() {

@@ -11,16 +11,20 @@
 //! segments stopped; both try again for a while when the server does not
 //! answer, then give up, and the caller keeps the meeting pending.
 //! `report`: the meeting's report by the server's model.
+//!
+//! The live audio goes in Opus when the server takes it (`ready` says so),
+//! in PCM otherwise: each session has its own encoder per channel, flushed
+//! before `stop`, so the server gets exactly the samples captured.
 
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use logbook_engine::codec::StreamEncoder;
+use logbook_engine::codec::{LiveEncoder, StreamEncoder};
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::protocol::{
-    ChannelConfig, ClientMessage, FinalState, Report, ReportRequest, ServerMessage, SpeakerVoice,
-    Started, Upload, Utterance, encode_audio,
+    ChannelConfig, ClientMessage, Codec, FinalState, Report, ReportRequest, ServerMessage,
+    SpeakerVoice, Started, Upload, Utterance, encode_audio,
 };
 use logbook_engine::recording::RangeReader;
 use serde::{Deserialize, Serialize};
@@ -54,6 +58,9 @@ const KEPT_PART: u64 = 10 * SAMPLE_RATE as u64;
 pub struct Server {
     http: String,
     token: Option<String>,
+    /// The codec the live session asks for: Opus unless forced to PCM
+    /// (`with_codec`, for comparing and debugging).
+    codec: Codec,
 }
 
 impl Server {
@@ -67,13 +74,24 @@ impl Server {
         } else {
             address.to_string()
         };
-        Self { http, token: None }
+        Self {
+            http,
+            token: None,
+            codec: Codec::Opus,
+        }
     }
 
     pub fn with_token(mut self, token: Option<String>) -> Self {
         self.token = token
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty());
+        self
+    }
+
+    /// The codec the live session asks for (Opus by default); the server
+    /// may still answer PCM.
+    pub fn with_codec(mut self, codec: Codec) -> Self {
+        self.codec = codec;
         self
     }
 
@@ -222,7 +240,7 @@ pub async fn live(
             },
         };
         let lost = match connect(server, &url, &start).await {
-            Ok(socket) => {
+            Ok((socket, encoders)) => {
                 if !first {
                     tracing::info!("live: connected again");
                 }
@@ -257,6 +275,7 @@ pub async fn live(
                 };
                 let result = session(
                     socket,
+                    encoders,
                     &mut audio,
                     replay,
                     &mut unreadable,
@@ -352,7 +371,40 @@ fn to_i16(pcm: &[f32]) -> Vec<i16> {
         .collect()
 }
 
-async fn connect(server: &Server, url: &str, start: &Start<'_>) -> Result<Socket> {
+/// The audio of a session as it goes out: PCM, or Opus with an encoder per
+/// channel (this session's own).
+struct Outgoing(Option<Vec<LiveEncoder>>);
+
+impl Outgoing {
+    fn frame(&mut self, channel: u8, samples: &[i16]) -> Result<Message> {
+        let frame = match &mut self.0 {
+            None => encode_audio(channel, samples),
+            Some(encoders) => encoders
+                .get_mut(channel as usize)
+                .context("audio of a channel the session does not have")?
+                .frame(channel, samples)?,
+        };
+        Ok(Message::Binary(frame.into()))
+    }
+
+    /// The frames that flush the encoders, before `stop`: the last
+    /// samples of each channel are in the encoder until then.
+    fn finish(&mut self) -> Result<Vec<Message>> {
+        let Some(encoders) = &mut self.0 else {
+            return Ok(Vec::new());
+        };
+        encoders
+            .iter_mut()
+            .enumerate()
+            .map(|(i, e)| Ok(Message::Binary(e.finish(i as u8)?.into())))
+            .collect()
+    }
+}
+
+/// A session open and ready, and how its audio goes out: Opus if the
+/// server said so in `ready`, PCM otherwise (an older server answers a
+/// bare `ready`).
+async fn connect(server: &Server, url: &str, start: &Start<'_>) -> Result<(Socket, Outgoing)> {
     let mut request = url.into_client_request()?;
     if let Some(token) = &server.token {
         request
@@ -370,16 +422,42 @@ async fn connect(server: &Server, url: &str, start: &Start<'_>) -> Result<Socket
             return Err(anyhow::Error::new(error).context(format!("could not connect to {url}")));
         }
     };
+    let encoders = match server.codec {
+        Codec::Opus => Some(
+            start
+                .channels
+                .iter()
+                .map(|_| LiveEncoder::new())
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Codec::Pcm => None,
+    };
+    let lookahead = encoders
+        .as_ref()
+        .and_then(|e| e.first())
+        .map(LiveEncoder::lookahead);
     let start = serde_json::to_string(&ClientMessage::Start {
         channels: start.channels.to_vec(),
         final_pass: start.final_pass.is_some(),
         polish: start.final_pass.unwrap_or(false),
         offset: start.offset,
         voices: start.voices.clone(),
+        codec: if lookahead.is_some() {
+            Codec::Opus
+        } else {
+            Codec::Pcm
+        },
+        lookahead,
     })?;
     socket.send(Message::Text(start.into())).await?;
     match next(&mut socket).await? {
-        Some(ServerMessage::Ready) => Ok(socket),
+        Some(ServerMessage::Ready { codec }) => {
+            let opus = codec == Some(Codec::Opus) && encoders.is_some();
+            if encoders.is_some() && !opus {
+                tracing::debug!("live: the server takes PCM only");
+            }
+            Ok((socket, Outgoing(encoders.filter(|_| opus))))
+        }
         Some(ServerMessage::Error { message }) => {
             bail!("the server refused the session: {message}")
         }
@@ -394,6 +472,7 @@ async fn connect(server: &Server, url: &str, start: &Start<'_>) -> Result<Socket
 #[allow(clippy::too_many_arguments)]
 async fn session(
     socket: Socket,
+    mut outgoing: Outgoing,
     audio: &mut Audio,
     mut replay: Option<Replay>,
     unreadable: &mut bool,
@@ -415,7 +494,7 @@ async fn session(
                 }
                 match part? {
                     Some((channel, samples)) => {
-                        sink.send(Message::Binary(encode_audio(channel, &samples).into()))
+                        sink.send(outgoing.frame(channel, &samples)?)
                             .await
                             .context("the connection was lost")?;
                     }
@@ -427,12 +506,15 @@ async fn session(
                     if let Some(p) = position.get_mut(channel as usize) {
                         *p += samples.len() as u64;
                     }
-                    sink.send(Message::Binary(encode_audio(channel, &samples).into()))
+                    sink.send(outgoing.frame(channel, &samples)?)
                         .await
                         .context("the connection was lost")?;
                 }
                 None => {
                     *ended = true;
+                    for frame in outgoing.finish()? {
+                        sink.send(frame).await.context("the connection was lost")?;
+                    }
                     let stop = serde_json::to_string(&ClientMessage::Stop)?;
                     sink.send(Message::Text(stop.into()))
                         .await
@@ -494,7 +576,7 @@ pub fn handle(
         }
         ServerMessage::Done => return Ok(true),
         ServerMessage::Error { message } => bail!("server: {message}"),
-        ServerMessage::Ready => {}
+        ServerMessage::Ready { .. } => {}
     }
     Ok(false)
 }

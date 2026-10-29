@@ -3,6 +3,10 @@
 What happens to a channel's audio between the socket and an utterance.
 Code: `crates/engine/src/{channel,session,batcher}.rs`, run by the server
 or, without `--server`, by the CLI itself (`crates/cli/src/local.rs`).
+On the server the audio arrives in Opus (or PCM from an older client)
+and is decoded before it reaches the session, sample for sample what the
+client captured (docs/protocol.md, "The audio"); without a server there
+is no codec.
 
 ```
 audio ──▶ VAD stream (Silero) ── phrase closed at a pause ──▶ batcher ──▶ tdt-0.6b-v3

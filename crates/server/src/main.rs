@@ -30,7 +30,8 @@ use logbook_engine::parakeet::Latency;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::polish::{self, Polisher};
 use logbook_engine::protocol::{
-    ClientMessage, FinalState, Report, ReportRequest, ServerMessage, Started, Upload, decode_audio,
+    AudioIn, ClientMessage, Codec, FinalState, Report, ReportRequest, ServerMessage, Started,
+    Upload,
 };
 use logbook_engine::recording::{self, Recording};
 use logbook_engine::report;
@@ -474,7 +475,7 @@ async fn live(
 
 async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
     let (mut sink, mut stream) = socket.split();
-    let (configs, final_pass, polish, resume) = loop {
+    let (configs, final_pass, polish, resume, codec, lookahead) = loop {
         match stream.next().await {
             Some(Ok(Message::Text(text))) => match serde_json::from_str(text.as_str()) {
                 Ok(ClientMessage::Start {
@@ -483,7 +484,18 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
                     polish,
                     offset,
                     voices,
-                }) => break (channels, final_pass, polish, Resume { offset, voices }),
+                    codec,
+                    lookahead,
+                }) => {
+                    break (
+                        channels,
+                        final_pass,
+                        polish,
+                        Resume { offset, voices },
+                        Codec::answer(codec, lookahead),
+                        lookahead,
+                    );
+                }
                 Ok(_) | Err(_) => {
                     warn!("the first message was not a start");
                     return;
@@ -506,7 +518,16 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
         "{millis}-{}",
         state.sessions.fetch_add(1, Ordering::Relaxed)
     );
-    info!(session, caller = caller.0, "live session");
+    // A decoder per channel with Opus (an encoder's state is the stream's
+    // so far: a reconnected client opens a new session with new ones).
+    let mut audio = match AudioIn::new(codec, lookahead, configs.len()) {
+        Ok(audio) => audio,
+        Err(error) => {
+            warn!("no Opus decoder: {error:#}");
+            return;
+        }
+    };
+    info!(session, caller = caller.0, codec = ?codec.unwrap_or_default(), "live session");
     std::thread::spawn(move || {
         session::run(
             &thread_state.shared,
@@ -521,7 +542,11 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
     });
 
     let writer = tokio::spawn(async move {
-        while let Some(message) = out_rx.recv().await {
+        while let Some(mut message) = out_rx.recv().await {
+            // The session says it exists; the codec is the socket's.
+            if let ServerMessage::Ready { codec: c } = &mut message {
+                *c = codec;
+            }
             let last = matches!(message, ServerMessage::Done | ServerMessage::Error { .. });
             let json = serde_json::to_string(&message).expect("server messages serialize");
             if sink.send(Message::Text(json.into())).await.is_err() || last {
@@ -533,13 +558,26 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, caller: auth::Caller) {
 
     while let Some(message) = stream.next().await {
         match message {
-            Ok(Message::Binary(frame)) => {
-                if let Some((channel, pcm)) = decode_audio(&frame) {
+            // One Opus decode per 20 ms packet, here on the socket's task:
+            // about 30 µs for a 100 ms frame on one core.
+            Ok(Message::Binary(frame)) => match audio.frame(&frame) {
+                Ok(Some((channel, pcm))) if !pcm.is_empty() => {
                     let _ = in_tx.send(Input::Audio(channel, pcm));
                 }
-            }
+                Ok(_) => {}
+                Err(error) => {
+                    // A stream Opus cannot read has lost its samples and
+                    // shifted its channel's clock: no use going on.
+                    warn!("unreadable audio: {error:#}");
+                    break;
+                }
+            },
             Ok(Message::Text(text)) => {
                 if let Ok(ClientMessage::Stop) = serde_json::from_str(text.as_str()) {
+                    let owed = audio.owed();
+                    if owed > 0 {
+                        warn!(owed, "stop before the last samples of the audio");
+                    }
                     let _ = in_tx.send(Input::Stop);
                 }
             }

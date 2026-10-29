@@ -14,7 +14,8 @@ workspace. A prototype: why it exists and how it is built is in
 crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet.rs),
                  one channel's pipeline (channel.rs), echo (echo.rs), the final pass
                  as the meeting goes (progressive.rs) or over an upload (final_pass.rs),
-                 the wire protocol (protocol.rs), the upload's Opus (codec.rs),
+                 the wire protocol (protocol.rs), Opus for the live socket and
+                 the upload (codec.rs),
                  the final transcript cleaned up by a language model (polish.rs),
                  the meeting's report written by it (report.rs),
                  libparakeet and the models from the mirror (mirror.rs),
@@ -104,9 +105,9 @@ scripts/desktop.sh dev                # the app; `build` signs it (`cert` once p
 - **A live session's times are the meeting's**: one that takes a final
   pass up (after a lost connection, or an upload) is given its `offset`
   and the server moves every time it sends; one without a final pass is
-  moved by the client (`remote.rs`). The upload's codec keeps the sample
-  count and drops Opus's lookahead, for the same reason: channels are
-  compared by time.
+  moved by the client (`remote.rs`). Opus, on the live socket as in an
+  upload, keeps the sample count and drops its lookahead, for the same
+  reason: channels are compared by time (docs/protocol.md, "The audio").
 - **A final pass is taken up where its segments stopped, never started
   again** (`final_until`, with the speakers' voices): one started again
   reads the whole meeting, which for a meeting of hours costs as much as

@@ -42,7 +42,9 @@ Without `--server` (`LOGBOOK_SERVER`) the CLI loads the models itself
 (about 1 GB of files) and runs the same pipeline as the server, in its
 own process: an M3 laptop kept up with a recording played at four times
 the pace of speech; a laptop without a GPU may not (`bench` tells). A server is for clients that
-cannot, and gives every one of them the same quality.
+cannot, and gives every one of them the same quality. The audio goes to
+it in Opus, 32 kbit/s a channel (15 MB an hour; an older server gets
+PCM, eight times as much).
 
 `scripts/server.sh` builds and starts the server; its arguments go to the
 server. On its first start the server (or the CLI without one) fetches

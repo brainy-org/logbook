@@ -28,11 +28,14 @@ token ("Tokens", below).
    moved by it. `"voices"`, optional: the meeting's speakers so far, as
    in `final_segments`; the final pass keeps their numbers. Both are for
    a session that takes a meeting's final pass up ("Reconnection").
+   `"codec":"opus"` with `"lookahead":N`, optional: the client would send
+   the audio in Opus, whose encoder delays it by N samples ("The audio",
+   below). Without them, or with a codec the server does not know, the
+   audio is PCM.
 
-2. Binary frames, the audio: one byte, the channel's index in `channels`,
-   then 16 kHz mono PCM, signed 16-bit little-endian. The CLI sends 100 ms
-   a frame (3.2 KB, 256 kbit/s a channel). Every channel's sample 0 is the
-   session's start, and the client keeps them on that clock, sending
+2. Binary frames, the audio, in the codec `ready` agreed on ("The
+   audio"). The client sends 100 ms a frame. Every channel's sample 0 is
+   the session's start, and the client keeps them on that clock, sending
    silence for gaps (the CLI's `Timeline`): times of different channels
    are compared (echo, speakers), and a device that delivers nothing while
    idle would otherwise shift its channel.
@@ -42,7 +45,10 @@ token ("Tokens", below).
 ## Server to client
 
 - `{"type":"ready"}` once the channels' streams exist; audio sent before
-  it waits in the socket.
+  it waits in the socket. `{"type":"ready","codec":"opus"}` when `start`
+  asked for Opus and the server takes it: the audio is Opus. A bare
+  `ready` means PCM, whatever `start` asked (an older server ignores
+  `codec` and answers a bare one).
 - `{"type":"utterance", ...}` for each run of words from one speaker:
 
   ```json
@@ -88,6 +94,39 @@ token ("Tokens", below).
 Closing the socket without `stop` drops the session, what it held and its
 recording. Closing it after `stop` does not stop the final pass: its
 result is kept under the `finalizing` id.
+
+## The audio
+
+Both codecs start every binary frame with one byte, the channel's index
+in `channels`. Then:
+
+- **PCM** (no codec agreed): 16 kHz mono, signed 16-bit little-endian.
+  100 ms is 3.2 KB: 256 kbit/s a channel.
+- **Opus** (`"codec":"opus"` in `ready`): the number of samples the frame
+  stands for (u32 LE), then the 20 ms packets those samples completed
+  (16 kHz mono, VoIP, 32 kbit/s), each a u16 LE length and its bytes, as
+  in an upload. 100 ms is about 415 bytes: 33 kbit/s a channel with the
+  framing. The encoder keeps samples short of a packet for the next
+  frame (a frame is not always a multiple of 20 ms: the `Timeline` fills
+  gaps), and may send a frame with no packet. Before `stop` the client
+  sends each channel a last frame of 0 samples whose packets flush its
+  encoder: the remainder, and `lookahead` samples of silence, padded to a
+  whole packet.
+
+  The server decodes each channel as its frames come and passes on
+  exactly as many samples as the frames said, in all: it drops the first
+  `lookahead` it decodes and nothing past the count (the padding). So
+  channel i gets sample for sample what the client captured, and the
+  channels stay on one clock. The last `lookahead` samples of each frame
+  (6.5 ms) come with the next one: the only delay Opus adds. Each session
+  has its own encoder and decoder per channel: a session opened again
+  after a lost connection starts new ones, the kept audio it is sent
+  again included.
+
+  `codec.rs` in the engine (`LiveEncoder`, `LiveDecoder`);
+  `docs/decisions/2026-10-29-opus-on-the-live-socket.md`. The CLI's
+  hidden `--live-codec pcm` (`LOGBOOK_LIVE_CODEC=pcm`) asks for PCM, to
+  compare or to debug.
 
 ## Reconnection
 

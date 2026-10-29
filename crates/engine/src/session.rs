@@ -307,7 +307,7 @@ fn live(
     let names: Vec<&str> = channels.iter().map(|c| c.name()).collect();
     let polish = fin.as_ref().is_some_and(|f| f.polisher.is_some());
     info!(session, channels = ?names, final_pass = fin.is_some(), polish, offset, "session started");
-    let _ = out.send(ServerMessage::Ready);
+    let _ = out.send(ServerMessage::Ready { codec: None });
 
     let submit = |clips: Vec<crate::channel::Clip>| {
         for clip in clips {

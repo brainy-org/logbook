@@ -23,7 +23,7 @@ use logbook_client::pending::Pending;
 use logbook_client::remote::{self, Server};
 use logbook_client::series::{self, Limits};
 use logbook_client::{aec, audio, local, voices};
-use logbook_engine::protocol::{ChannelConfig, Utterance};
+use logbook_engine::protocol::{ChannelConfig, Codec, Utterance};
 
 #[derive(Parser)]
 #[command(version, about = "Live meeting transcription")]
@@ -40,6 +40,18 @@ struct Cli {
         hide_env_values = true
     )]
     server_token: Option<String>,
+    /// The live audio's codec on the server's socket: `pcm` (256 kbit/s a
+    /// channel) to compare with Opus (32) or to debug; the server may
+    /// still answer PCM (docs/protocol.md).
+    #[arg(
+        long,
+        global = true,
+        env = "LOGBOOK_LIVE_CODEC",
+        hide = true,
+        value_enum,
+        default_value_t = LiveCodec::Opus
+    )]
+    live_codec: LiveCodec,
     #[command(flatten)]
     local: LocalArgs,
     /// Where meetings wait until their transcript is published; by default
@@ -48,6 +60,12 @@ struct Cli {
     data: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum LiveCodec {
+    Opus,
+    Pcm,
 }
 
 /// What happens once the meeting ends.
@@ -286,7 +304,14 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     let backend = match &cli.server {
-        Some(address) => Backend::Server(Server::new(address).with_token(cli.server_token)),
+        Some(address) => Backend::Server(
+            Server::new(address)
+                .with_token(cli.server_token)
+                .with_codec(match cli.live_codec {
+                    LiveCodec::Opus => Codec::Opus,
+                    LiveCodec::Pcm => Codec::Pcm,
+                }),
+        ),
         None => Backend::Local(Arc::new(local::Local::new(local::Config {
             models: cli.local.models,
             polish_url: cli.local.polish_url,

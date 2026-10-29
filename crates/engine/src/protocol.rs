@@ -2,10 +2,14 @@
 //! over the WebSocket of a live session, and over HTTP for final passes.
 //!
 //! WebSocket text frames are JSON messages. Binary frames are audio: one byte, the
-//! index of the channel in `Start.channels`, then 16 kHz mono PCM as signed
-//! 16-bit little-endian samples.
+//! index of the channel in `Start.channels`, then in the codec `start` and
+//! `ready` agreed on: 16 kHz mono PCM as signed 16-bit little-endian
+//! samples, or Opus (codec.rs, `LiveEncoder`).
 
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::codec::LiveDecoder;
 
 pub use crate::parakeet::Word;
 
@@ -47,6 +51,20 @@ pub enum ClientMessage {
         /// numbers.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         voices: Vec<SpeakerVoice>,
+        /// The codec the client would send the audio in. A server that
+        /// takes it says so in `ready`; one that does not (or an older
+        /// one, which ignores the field) answers a bare `ready`, and the
+        /// audio is PCM.
+        #[serde(
+            default,
+            skip_serializing_if = "Codec::is_pcm",
+            deserialize_with = "codec_or_pcm"
+        )]
+        codec: Codec,
+        /// With `codec` Opus: the encoder's lookahead in samples, which
+        /// the decoder drops (codec.rs). Opus without it is not taken.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lookahead: Option<u16>,
     },
     /// No more audio: the server sends what it still holds, then `Done`.
     Stop,
@@ -55,7 +73,12 @@ pub enum ClientMessage {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    Ready,
+    /// The session exists. `codec`: the one `start` asked for, taken;
+    /// absent, the audio is PCM.
+    Ready {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        codec: Option<Codec>,
+    },
     Utterance(Utterance),
     /// Final segments, during the meeting: every channel's segments that
     /// start before `until` (seconds), by start, never sent again. The
@@ -204,6 +227,96 @@ pub struct SpeakerVoice {
     pub seconds: f64,
 }
 
+/// How the binary frames carry the audio (docs/protocol.md).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Codec {
+    /// 16 kHz mono s16le: 256 kbit/s a channel. What every server takes.
+    #[default]
+    Pcm,
+    /// Opus at 32 kbit/s, framed for a stream (codec.rs).
+    Opus,
+}
+
+impl Codec {
+    fn is_pcm(&self) -> bool {
+        *self == Codec::Pcm
+    }
+
+    /// The server's answer to `start`: the codec in `ready`, None for a
+    /// bare one (PCM). Opus is taken with its lookahead; a codec this
+    /// server does not know was read as PCM.
+    pub fn answer(asked: Codec, lookahead: Option<u16>) -> Option<Codec> {
+        match (asked, lookahead) {
+            (Codec::Opus, Some(_)) => Some(Codec::Opus),
+            _ => None,
+        }
+    }
+}
+
+/// A codec named by a newer client that this server does not know is
+/// PCM, which `ready` then says nothing about: the session still opens.
+fn codec_or_pcm<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Codec, D::Error> {
+    let name = String::deserialize(deserializer)?;
+    Ok(match name.as_str() {
+        "opus" => Codec::Opus,
+        _ => Codec::Pcm,
+    })
+}
+
+/// A session's binary frames read back on the server, in the codec agreed:
+/// each channel's samples as floats in [-1, 1], exactly those the client
+/// captured.
+pub enum AudioIn {
+    Pcm,
+    /// A decoder per channel, for this session only.
+    Opus(Vec<LiveDecoder>),
+}
+
+impl AudioIn {
+    /// For `channels` channels, in the codec `ready` said (None: PCM).
+    pub fn new(codec: Option<Codec>, lookahead: Option<u16>, channels: usize) -> Result<Self> {
+        Ok(match codec {
+            Some(Codec::Opus) => AudioIn::Opus(
+                (0..channels)
+                    .map(|_| LiveDecoder::new(lookahead.unwrap_or(0)))
+                    .collect::<Result<_>>()?,
+            ),
+            _ => AudioIn::Pcm,
+        })
+    }
+
+    /// A binary frame: its channel and the samples it completes (with
+    /// Opus, maybe none yet). None for an empty frame or a channel the
+    /// session does not have; an error for a frame Opus cannot read.
+    pub fn frame(&mut self, frame: &[u8]) -> Result<Option<(usize, Vec<f32>)>> {
+        match self {
+            AudioIn::Pcm => Ok(decode_audio(frame)),
+            AudioIn::Opus(decoders) => {
+                let Some((&channel, rest)) = frame.split_first() else {
+                    return Ok(None);
+                };
+                let Some(decoder) = decoders.get_mut(channel as usize) else {
+                    return Ok(None);
+                };
+                let mut pcm = Vec::with_capacity(1600 + 320);
+                decoder.push(rest, &mut pcm)?;
+                Ok(Some((channel as usize, pcm)))
+            }
+        }
+    }
+
+    /// Samples the frames said and did not bring, all channels together:
+    /// 0 after a client's last frames (it flushes its encoders before
+    /// `stop`).
+    pub fn owed(&self) -> u64 {
+        match self {
+            AudioIn::Pcm => 0,
+            AudioIn::Opus(decoders) => decoders.iter().map(LiveDecoder::owed).sum(),
+        }
+    }
+}
+
 pub fn encode_audio(channel: u8, samples: &[i16]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(1 + samples.len() * 2);
     frame.push(channel);
@@ -243,7 +356,151 @@ mod tests {
             serde_json::from_str(r#"{"type":"start","channels":[{"name":"mic","diarize":false}]}"#)
                 .unwrap();
         assert!(
-            matches!(start, ClientMessage::Start { channels, final_pass: false, polish: false, offset: 0.0, .. } if channels[0].name == "mic")
+            matches!(start, ClientMessage::Start { channels, final_pass: false, polish: false, offset: 0.0, codec: Codec::Pcm, lookahead: None, .. } if channels[0].name == "mic")
         );
+    }
+
+    /// The messages of the protocol before the codec, as an older client
+    /// or server reads and writes them.
+    mod older {
+        use super::super::ChannelConfig;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Deserialize, Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        pub enum ClientMessage {
+            Start {
+                channels: Vec<ChannelConfig>,
+                #[serde(default)]
+                final_pass: bool,
+            },
+        }
+
+        #[derive(Debug, Deserialize, Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        pub enum ServerMessage {
+            Ready,
+        }
+    }
+
+    fn mic() -> Vec<ChannelConfig> {
+        vec![ChannelConfig {
+            name: "mic".into(),
+            diarize: false,
+            echo_of: None,
+        }]
+    }
+
+    #[test]
+    fn a_new_client_and_an_older_server_agree_on_pcm() {
+        // The new client asks for Opus; the older server reads its start
+        // (the fields it does not know ignored) and answers a bare ready,
+        // which the new client reads as PCM.
+        let asked = serde_json::to_string(&ClientMessage::Start {
+            channels: mic(),
+            final_pass: true,
+            polish: false,
+            offset: 0.0,
+            voices: Vec::new(),
+            codec: Codec::Opus,
+            lookahead: Some(104),
+        })
+        .unwrap();
+        assert!(
+            asked.contains(r#""codec":"opus","lookahead":104"#),
+            "{asked}"
+        );
+        let older::ClientMessage::Start { final_pass, .. } = serde_json::from_str(&asked).unwrap();
+        assert!(final_pass);
+        let ready = serde_json::to_string(&older::ServerMessage::Ready).unwrap();
+        assert_eq!(ready, r#"{"type":"ready"}"#);
+        let ready: ServerMessage = serde_json::from_str(&ready).unwrap();
+        assert!(matches!(ready, ServerMessage::Ready { codec: None }));
+    }
+
+    #[test]
+    fn an_older_client_and_a_new_server_agree_on_pcm() {
+        // The older client asks nothing: the new server answers a bare
+        // ready, which the older client reads, and expects PCM.
+        let asked = serde_json::to_string(&older::ClientMessage::Start {
+            channels: mic(),
+            final_pass: false,
+        })
+        .unwrap();
+        let ClientMessage::Start {
+            codec, lookahead, ..
+        } = serde_json::from_str(&asked).unwrap()
+        else {
+            panic!("a start");
+        };
+        let answer = Codec::answer(codec, lookahead);
+        assert_eq!(answer, None);
+        let ready = serde_json::to_string(&ServerMessage::Ready { codec: answer }).unwrap();
+        assert_eq!(ready, r#"{"type":"ready"}"#);
+        let older::ServerMessage::Ready = serde_json::from_str(&ready).unwrap();
+        let mut audio = AudioIn::new(answer, lookahead, 1).unwrap();
+        let frame = encode_audio(0, &[0, 16384, -32768]);
+        let (channel, samples) = audio.frame(&frame).unwrap().unwrap();
+        assert_eq!((channel, samples), (0, vec![0.0, 0.5, -1.0]));
+    }
+
+    #[test]
+    fn a_new_client_and_a_new_server_agree_on_opus() {
+        let start: ClientMessage = serde_json::from_str(
+            r#"{"type":"start","channels":[{"name":"mic","diarize":false}],"codec":"opus","lookahead":104}"#,
+        )
+        .unwrap();
+        let ClientMessage::Start {
+            codec, lookahead, ..
+        } = start
+        else {
+            panic!("a start");
+        };
+        let answer = Codec::answer(codec, lookahead);
+        assert_eq!(answer, Some(Codec::Opus));
+        let ready = serde_json::to_string(&ServerMessage::Ready { codec: answer }).unwrap();
+        assert_eq!(ready, r#"{"type":"ready","codec":"opus"}"#);
+        // Opus without its lookahead, or a codec this server does not
+        // know: PCM, and the session still opens.
+        assert_eq!(Codec::answer(Codec::Opus, None), None);
+        let start: ClientMessage = serde_json::from_str(
+            r#"{"type":"start","channels":[{"name":"mic","diarize":false}],"codec":"flac"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            start,
+            ClientMessage::Start {
+                codec: Codec::Pcm,
+                ..
+            }
+        ));
+
+        // The frames through `AudioIn`, two channels interleaved: each
+        // gets exactly its samples back.
+        let mut encoders = [
+            crate::codec::LiveEncoder::new().unwrap(),
+            crate::codec::LiveEncoder::new().unwrap(),
+        ];
+        let lookahead = Some(encoders[0].lookahead());
+        let mut audio = AudioIn::new(answer, lookahead, 2).unwrap();
+        let mut got = [Vec::new(), Vec::new()];
+        let mut take = |frame: Vec<u8>, got: &mut [Vec<f32>; 2]| {
+            if let Some((channel, pcm)) = audio.frame(&frame).unwrap() {
+                got[channel].extend(pcm);
+            }
+        };
+        let sizes = [(0, 1600), (1, 1600), (0, 1000), (1, 3333), (0, 2333)];
+        for (channel, n) in sizes {
+            let frame = encoders[channel]
+                .frame(channel as u8, &vec![100; n])
+                .unwrap();
+            take(frame, &mut got);
+        }
+        for (channel, encoder) in encoders.iter_mut().enumerate() {
+            take(encoder.finish(channel as u8).unwrap(), &mut got);
+        }
+        assert_eq!(got[0].len(), 4933);
+        assert_eq!(got[1].len(), 4933);
+        assert_eq!(audio.owed(), 0);
     }
 }
