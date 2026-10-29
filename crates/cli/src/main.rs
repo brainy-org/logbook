@@ -134,23 +134,22 @@ struct Split {
     /// Minutes without a phrase ending (while the live transcript runs)
     /// after which the meeting is over: what follows is the next meeting,
     /// with its own page. 0: never.
-    #[arg(long, env = "LOGBOOK_PAUSE", default_value_t = series::PAUSE / 60.0, value_name = "MINUTES")]
+    #[arg(long, default_value_t = series::PAUSE / 60.0, value_name = "MINUTES")]
     pause: f64,
     /// Hours after which a meeting closes at the end of its next phrase,
     /// two minutes later at the latest, and the next one starts. 0: never
     /// (a meeting then grows for as long as the recording).
-    #[arg(
-        long,
-        env = "LOGBOOK_MAX_LENGTH",
-        default_value_t = series::MAX_LENGTH / 3600.0,
-        value_name = "HOURS"
-    )]
+    #[arg(long, default_value_t = series::MAX_LENGTH / 3600.0, value_name = "HOURS")]
     max_length: f64,
 }
 
 impl Split {
     fn limits(&self) -> Limits {
-        Limits::new(self.pause, self.max_length)
+        let positive = |x: f64| Some(x).filter(|&x| x > 0.0);
+        Limits {
+            pause: positive(self.pause * 60.0),
+            max_length: positive(self.max_length * 3600.0),
+        }
     }
 }
 

@@ -7,7 +7,7 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
 | File | What it does |
 |---|---|
 | `src-tauri/src/lib.rs` | the commands the pages call; the data folder (the CLI's); how the local models get ready (`models`: fetched with their bytes, all files together, loaded, ready, failed; `models_state`, `load_models` to try again) |
-| `src-tauri/src/recorder.rs` | the recording, one at a time: `series::meetings` run with the settings' channels and the default limits (a meeting closes after 15 minutes without a phrase, or at 8 hours; `LOGBOOK_PAUSE` minutes and `LOGBOOK_MAX_LENGTH` hours change them, `series::Limits::from_env`), events to the pages (`meeting-state`, whose `part` counts the meetings of the recording; `utterance`, on the recording's clock; `levels`; `meetings-changed` or `meeting-failed` for a meeting that ends while the next records; `meeting-done` or `meeting-failed` at the end) |
+| `src-tauri/src/recorder.rs` | the recording, one at a time: `series::meetings` run with the settings' channels and the default limits (a meeting closes after 15 minutes without a phrase, or at 8 hours), events to the pages (`meeting-state`, whose `part` counts the meetings of the recording; `utterance`, on the recording's clock; `levels`; `meetings-changed` or `meeting-failed` for a meeting that ends while the next records; `meeting-done` or `meeting-failed` at the end) |
 | `src-tauri/src/settings.rs` | `settings.json` in the app's config folder (the meeting's `Mode`, chosen on the home page and saved by `start_meeting`, decides the channels: the call, the microphone diarized); the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views (the live transcript's last 300 phrases: a meeting of hours has tens of thousands) |
@@ -85,8 +85,7 @@ is built so: `docs/decisions/2026-10-27-desktop-app.md`.
   meeting they were typed in, `set_notes(part, notes)`, and the recorder
   sends what it had not sent yet as it is drawn again). A meeting that
   ends meanwhile only refreshes the list.
-  The limits are the defaults, not settings (`LOGBOOK_PAUSE` and
-  `LOGBOOK_MAX_LENGTH` change them, for trying a cut).
+  The limits are the defaults, not settings.
 
 - Run on a real meeting through the app (the CLI's flow is the same, and
   was run; the app's pages were only built, not clicked through).

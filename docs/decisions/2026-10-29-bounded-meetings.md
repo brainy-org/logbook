@@ -182,7 +182,8 @@ lasted as long as `live` ran:
 
 ## Tried, 2026-10-29
 
-The desktop app on a Mac, `LOGBOOK_PAUSE=0.25` (15 s), "In the room":
+The desktop app on a Mac, its pause set to 15 s for the trial (by an
+environment variable since removed: the app keeps the defaults), "In the room":
 speech, then typing through the silence until the notes emptied, then
 speech again and stop. Two meetings were kept, "Prova taglio" and
 "Prova taglio (2)", 33 s apart, each with its own phrases; the first

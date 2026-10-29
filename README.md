@@ -170,10 +170,7 @@ later in any case (continuous noise, or no server: offline only the
 length closes it). Every channel is cut at the same instant; the next
 meeting's page starts there. A word said right at the cut may be split
 between the two. 0 turns either off; with both off a meeting, and what
-it keeps, grow for as long as it runs. `play` takes the same options,
-and `LOGBOOK_PAUSE` and `LOGBOOK_MAX_LENGTH` set them for the CLI and
-the desktop app alike (`LOGBOOK_PAUSE=0.25 scripts/desktop.sh dev`
-cuts after 15 seconds without a word, to try it).
+it keeps, grow for as long as it runs. `play` takes the same options.
 
 `--parent` (or `LOGBOOK_PARENT`, to set it once) takes the page's
 address as the browser shows it, its id, or its path of titles from the

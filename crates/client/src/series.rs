@@ -52,34 +52,6 @@ impl Default for Limits {
     }
 }
 
-impl Limits {
-    /// A pause in minutes and a length in hours, as the CLI's `--pause`
-    /// and `--max-length` take them; 0 (or less) for never.
-    pub fn new(pause_minutes: f64, max_length_hours: f64) -> Self {
-        let positive = |x: f64| Some(x).filter(|&x| x > 0.0);
-        Self {
-            pause: positive(pause_minutes * 60.0),
-            max_length: positive(max_length_hours * 3600.0),
-        }
-    }
-
-    /// The defaults, or `LOGBOOK_PAUSE` (minutes) and `LOGBOOK_MAX_LENGTH`
-    /// (hours) where set: the app has no settings for them, and a short
-    /// pause tries a cut in a minute.
-    pub fn from_env() -> Self {
-        let var = |name: &str, default: f64| {
-            std::env::var(name)
-                .ok()
-                .and_then(|v| v.trim().parse::<f64>().ok())
-                .unwrap_or(default)
-        };
-        Self::new(
-            var("LOGBOOK_PAUSE", PAUSE / 60.0),
-            var("LOGBOOK_MAX_LENGTH", MAX_LENGTH / 3600.0),
-        )
-    }
-}
-
 /// Whether the meeting being recorded is over. Times are seconds of the
 /// meeting (its samples): no clock of its own, so a test gives it any.
 #[derive(Debug)]

@@ -213,8 +213,7 @@ async fn run(
         &publish,
         audio,
         &notes,
-        // The defaults, or LOGBOOK_PAUSE and LOGBOOK_MAX_LENGTH.
-        Limits::from_env(),
+        Limits::default(),
         &mut events,
     )
     .await
