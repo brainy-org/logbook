@@ -84,7 +84,11 @@ lasted as long as `live` ran:
   task of its own (`meeting_at`): its events come back to the loop,
   which puts the live phrases on the recording's clock (the CLI's
   latency and the app's transcript stay right) and passes them on.
-  Notes being written go to the meeting that closes, when it closes.
+  Notes go to the meeting they were typed in (`Notebook`, see the app
+  below), even when they arrive after its cut. `crates/client/tests/
+  series.rs` runs the whole series against a fake server, without
+  models: a pause cuts two channels at one sample, each session gets
+  exactly its samples, and each meeting keeps its own notes.
   A custom title takes " (2)", " (3)"… from the second meeting on.
 - **A meeting in which nothing was said publishes nothing.** The brainy
   page is created with the first final segments (or at the end), not at
