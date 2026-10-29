@@ -138,18 +138,24 @@ pending folders cover the network coming and going.
   settings): the adaptive digital controller up to 50 dB (its design
   ceiling, and the fixed gain's range), starting at 30 dB instead of 15
   and moving 10 dB a second instead of 6, so a faint voice comes up within
-  seconds, and letting the output noise reach -40 dBFS instead of -50:
-  that cap is what otherwise holds the gain down in a room with any hum.
+  seconds, and letting the output noise reach -25 dBFS instead of -50:
+  that cap is what otherwise holds the gain down in a room with any hum
+  (see "Tried on the phone" below for why -25 and not -40).
   The limiter after it keeps the raised signal from clipping.
 - **The trade-off**: background noise, the room's hum and the phone's own
   handling sounds (a hand on the table, the phone moved) rise with the
   voices. The VAD and the ASR on the server cope with steady noise better
   than with a voice too quiet to be found; a louder room will show more
   false phrases.
-- **Not measured on the phone**: neither the preset actually granted by
-  the phone's audio HAL (the log line names it: "microphone (AAudio,
-  VoiceRecognition, … Hz)"), nor the gain on a real room. To be tried
-  with a meeting at a few metres before the settings are believed.
+- **Tried on the phone, 2026-10-29** (S10e, LineageOS 22, a quiet room,
+  the Mac's server): the HAL grants `VoiceRecognition` at 16 kHz mono.
+  With the noise cap at -40 dBFS the room's noise (about -46 dBFS) held
+  the gain to a few dB: near the phone, speech peaked at 0 dBFS through
+  the limiter; across the room it stayed near -35 dBFS RMS (peaks about
+  -18) and the server transcribed nothing of 30 s of it. The same 30 s
+  raised 20 dB offline (noise near -26 dBFS) gave every phrase through
+  the local pipeline. The cap is now -25 dBFS, to be tried again in the
+  room.
 
 ## Pending meetings finish on their own
 

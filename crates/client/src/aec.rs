@@ -62,14 +62,17 @@ pub enum Gain {
 /// `Gain::Max`'s adaptive controller: 50 dB at most, as `Auto` (the most
 /// AGC2's design and the fixed gain's range allow); starting at 30 dB, not
 /// 15, and moving 10 dB a second, not 6, so that a faint voice is raised
-/// within a few seconds; noise let up to -40 dBFS, not -50, which is the
-/// cap that otherwise holds the gain down in a room with any hum.
+/// within a few seconds; noise let up to -25 dBFS, not -50: the cap on
+/// the output's noise is what holds the gain down. On the S10e in a quiet
+/// room (noise about -46 dBFS before the gain) a cap of -40 left a voice
+/// across the room at -35 dBFS, which the pipeline mostly did not hear;
+/// the same audio 20 dB higher (noise near -26) was transcribed whole.
 fn max_adaptive() -> AdaptiveDigital {
     AdaptiveDigital {
         max_gain_db: 50.0,
         initial_gain_db: 30.0,
         max_gain_change_db_per_second: 10.0,
-        max_output_noise_level_dbfs: -40.0,
+        max_output_noise_level_dbfs: -25.0,
         ..AdaptiveDigital::default()
     }
 }
