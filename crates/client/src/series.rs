@@ -22,7 +22,7 @@ use logbook_engine::protocol::SAMPLE_RATE;
 use logbook_engine::protocol::{ChannelConfig, Utterance};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
-use crate::meeting::{self, Backend, Notes, Outcome, Publish};
+use crate::meeting::{self, Backend, Notes, Outcome, Publish, Step, Steps};
 use crate::remote::{self, Audio};
 
 /// A meeting closes once no live phrase has ended for this long.
@@ -182,12 +182,15 @@ pub trait Series: remote::Events {
     /// it while a later one was finishing. The last one's is the result
     /// of `meetings`.
     fn meeting_ended(&mut self, _n: usize, _outcome: &Result<Option<Outcome>>) {}
+    /// Meeting `n`, ended, is being finished: where it is.
+    fn meeting_step(&mut self, _n: usize, _step: &Step) {}
 }
 
 enum Note {
     Utterance(Utterance),
     Finalizing(f64, String),
     Connected(bool),
+    Step(Step),
     Ended(Result<Option<Outcome>>),
 }
 
@@ -210,6 +213,13 @@ impl remote::Events for Forward {
 
     fn connected(&mut self, up: bool) {
         let _ = self.tx.send((self.n, Note::Connected(up)));
+    }
+
+    fn steps(&self) -> Steps {
+        let (n, tx) = (self.n, self.tx.clone());
+        Steps::new(move |step| {
+            let _ = tx.send((n, Note::Step(step)));
+        })
     }
 }
 
@@ -363,6 +373,7 @@ pub async fn meetings(
                         }
                     }
                     Note::Finalizing(audio_s, id) => events.finalizing(audio_s, &id),
+                    Note::Step(step) => events.meeting_step(n, &step),
                     Note::Connected(up) => {
                         if n == current.n {
                             closer.connected(up, now);

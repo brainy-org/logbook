@@ -12,7 +12,7 @@ use crate::final_pass;
 use crate::final_pass::{Final, Recorded};
 use crate::parakeet::{Kind, Latency, Model, Parakeet};
 use crate::progressive::{self, Progressive, Transcribed};
-use crate::protocol::{ChannelConfig, SpeakerVoice};
+use crate::protocol::{ChannelConfig, PassProgress, SpeakerVoice};
 
 pub struct Options {
     /// libparakeet; None for the loader's search path.
@@ -176,6 +176,7 @@ impl Engine {
         channels: Vec<Recorded>,
         offset: f64,
         voices: &[SpeakerVoice],
+        progress: &mut dyn FnMut(PassProgress),
     ) -> Result<Final> {
         final_pass::run(
             &self.range_models(),
@@ -183,6 +184,7 @@ impl Engine {
             channels,
             offset,
             voices,
+            progress,
         )
     }
 

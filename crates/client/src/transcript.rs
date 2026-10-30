@@ -78,6 +78,13 @@ pub fn first_word(utterances: &[Utterance]) -> f64 {
 }
 
 impl Writer {
+    /// The meeting's page is written again from its start, on a new page
+    /// (the old one was deleted): its first turn shows its speaker. The
+    /// names and the clock stay the meeting's.
+    pub fn new_page(&mut self) {
+        self.previous = None;
+    }
+
     pub fn new(me: &str, offset: f64) -> Self {
         Self {
             me: me.to_string(),

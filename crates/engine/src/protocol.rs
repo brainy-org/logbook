@@ -149,6 +149,11 @@ pub struct Started {
 pub enum FinalState {
     Running {
         audio_s: f64,
+        /// How far the pass of a whole meeting (an upload, or one read
+        /// again in the client's process) has got; None for a live
+        /// session's pass, and from a server older than it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<PassProgress>,
     },
     Done {
         /// Every segment starting at or after `from`, none before.
@@ -169,6 +174,32 @@ pub enum FinalState {
     },
 }
 
+/// Where the pass of a whole meeting is: its phase, and `done` of it, from
+/// 0 to 1 (engine final_pass.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub struct PassProgress {
+    pub phase: PassPhase,
+    pub done: f64,
+}
+
+impl PassProgress {
+    pub const QUEUED: Self = Self {
+        phase: PassPhase::Queued,
+        done: 0.0,
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassPhase {
+    /// Behind other passes: the server runs one at a time.
+    Queued,
+    /// Every channel read once to find its pauses (fast).
+    Reading,
+    /// Range by range, in order (nearly all of the time).
+    Transcribing,
+}
+
 /// `POST /reports`: the meeting's report written by the server's model
 /// (engine report.rs). The client sends the transcript as Markdown with
 /// the speakers' names it gave them: the server never sees its voices.
@@ -180,6 +211,11 @@ pub struct ReportRequest {
     #[serde(default)]
     pub notes: String,
     pub transcript: String,
+    /// The meeting's tasks, found first (`POST /tasks`): the report's
+    /// action items are these, not a list of its own. None from a client
+    /// older than it, or without tasks: the model lists them itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<Task>,
 }
 
 /// `POST /reports` answers with the report as Markdown.
@@ -382,6 +418,24 @@ pub fn decode_audio(frame: &[u8]) -> Option<(usize, Vec<f32>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_running_pass_reads_with_or_without_its_progress() {
+        let old: FinalState =
+            serde_json::from_str(r#"{"state":"running","audio_s":12.0}"#).unwrap();
+        assert!(matches!(old, FinalState::Running { progress: None, .. }));
+        let new = FinalState::Running {
+            audio_s: 12.0,
+            progress: Some(PassProgress {
+                phase: PassPhase::Transcribing,
+                done: 0.5,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_string(&new).unwrap(),
+            r#"{"state":"running","audio_s":12.0,"progress":{"phase":"transcribing","done":0.5}}"#
+        );
+    }
 
     #[test]
     fn audio_round_trip() {

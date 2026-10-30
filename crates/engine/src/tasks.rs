@@ -38,39 +38,55 @@ const MAX_TASK: usize = 300;
 const CALENDAR_DAYS: usize = 62;
 
 const INSTRUCTIONS: &str = "\
-You list the tasks people committed to in a meeting, from its transcript (and the notes the \
-person recording it took, to understand it), for a task tracker. Each one becomes a row that \
-a person will confirm or delete: list only what you are sure of. Missing a vague one is \
-better than inventing one.
+You list the tasks agreed in a meeting, from its transcript (and the notes the person \
+recording it took, to understand it), for a task tracker. Each one becomes a row that a \
+person will confirm or delete, reading only the row: list only what you are sure of. \
+Missing a vague one is better than inventing one.
 
-A task is an explicit commitment: a person and an action to do after the meeting. \
-\"I'll send the quote\", \"Luca, can you check the contract by Friday?\" \"Sure.\", \
-\"Anna prepares the slides\". Not a decision, not an idea, not a maybe (\"we could\", \
-\"maybe I'll look\"), not a wish (\"we should someday\"), not a question left open, not \
-something done during the meeting.
+A task is something a person is to do after the meeting that the meeting agreed on:
+- one person asks another and they accept (\"Luca, can you check the contract by Friday?\" \
+\"Sure.\");
+- someone takes something on for the others, or is given it (\"I'll send the quote\", \
+\"Anna prepares the slides\");
+- something agreed to do if something happens: the task with its condition in it \
+(\"if they do not answer by tomorrow morning, we write them an e-mail\" is the task \
+\"Write them an e-mail if they have not answered by tomorrow morning\").
+Not a decision, not an idea, not a maybe (\"we could\", \"maybe I'll look\"), not a wish \
+(\"we should someday\"), not a question left open, not something done during the meeting.
+In a round of updates (a stand-up: each person says what they did and what they will do), \
+what someone says they will work on is their own plan, not a task: list it only when \
+someone else waits for it or asked for it, or when it is something to do with someone else \
+(to ask them, write to them, release to them).
 
 Answer with JSON only, nothing before or after it, in this shape:
 {\"tasks\": [{\"task\": \"...\", \"owner\": \"...\", \"due\": \"YYYY-MM-DD\", \"time\": \"MM:SS\"}]}
 
-- task: what is to be done, one short sentence starting with a verb, in the language of the \
-transcript (an Italian meeting gets Italian tasks).
+- task: one short sentence, in the language of the transcript (an Italian meeting gets \
+Italian tasks), starting with a verb in the infinitive (\"Inviare\", \"Chiedere\"; \
+\"Send\", \"Ask\"). It must be understood by someone who was not there: say what it is \
+about, from the discussion around it (whom to ask and what, which system, which document), \
+with the numbers and names the meeting gives (a ticket, a story, a version). \
+\"Continue this\", \"Ask David\", \"Publish it\" are not tasks: write what this, what \
+to ask, what to publish, or leave the task out.
 - owner: the person who will do it, only when the meeting says so or they clearly take it on \
-themselves (\"I'll do it\" is the speaker's). It is who does it, not who speaks: when Anna \
-says \"Luca will do it\", the owner is Luca. Write them exactly as the transcript labels \
-that speaker (the bold name before a turn's time, \"Speaker 2\" included). null when no one \
-is named, or when the person does not speak in the transcript.
+themselves (\"I'll do it\" is the speaker's). It is who does it, not who speaks or who \
+proposed it: when Anna says \"Luca will do it\", or suggests it and Luca takes it, the owner \
+is Luca. Write them exactly as the transcript labels that speaker (the bold name before a \
+turn's time, \"Speaker 2\" included). null when no one is named, or when the person does \
+not speak in the transcript.
 - due: only when the meeting says when it is due and the date follows from the meeting's \
 date given below, as YYYY-MM-DD, copied from the list of the days after it, never counted \
 (\"Friday\" and \"next Tuesday\" are the first Friday and Tuesday in that list; \"end of the \
 month\" its last day). null otherwise (\"soon\", \"next sprint\"): never guess one.
-- time: the time printed at the start of the turn where it was committed to (MM:SS or \
-H:MM:SS), exactly as in the transcript. A task must have one: one that is only in the notes \
-is not listed.
+- time: the time printed at the start of the turn where it was agreed (MM:SS or H:MM:SS), \
+exactly as in the transcript. A task must have one: one that is only in the notes is not \
+listed.
 
 Rules:
 - Only what the transcript says: never invent tasks, names or dates.
 - One entry per task, in the order they were agreed; the same task said twice is one entry.
-- The transcript comes from speech recognition: read misheard words for what they must have been.
+- The transcript comes from speech recognition: read misheard words for what they must have \
+been, and never copy a word that is not one of the language: say what it means instead.
 - {\"tasks\": []} when no one committed to anything.";
 
 /// The tasks agreed in the meeting of `request`, in order. Blocks for

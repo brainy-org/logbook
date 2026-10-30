@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::warn;
 
 /// Seconds a request may take by default.
 pub const TIMEOUT: u64 = 120;
@@ -40,6 +41,25 @@ pub fn agent(options: &Options) -> Agent {
 /// report it reasoned until then half the time and wrote nothing.
 pub const MAX_ANSWER_TOKENS: u32 = 8192;
 
+/// Tries of a request the provider refuses for its rate.
+const RATE_TRIES: u32 = 3;
+/// The longest wait for the rate, whatever the provider says.
+const MAX_RATE_WAIT: Duration = Duration::from_secs(70);
+/// The wait when the provider does not say.
+const RATE_WAIT: Duration = Duration::from_secs(20);
+
+/// How long the provider says to wait (`retry-after`, in seconds).
+fn rate_wait(response: &ureq::http::Response<ureq::Body>) -> Duration {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .map(|s| Duration::from_secs_f64(s.max(1.0) + 1.0))
+        .unwrap_or(RATE_WAIT)
+        .min(MAX_RATE_WAIT)
+}
+
 /// One chat completion at `options.url`: the first choice's text. The
 /// answer's limit (`MAX_ANSWER_TOKENS`) is added to `body`.
 pub fn complete(agent: &Agent, options: &Options, mut body: Value) -> Result<String> {
@@ -52,18 +72,35 @@ pub fn complete(agent: &Agent, options: &Options, mut body: Value) -> Result<Str
         "max_completion_tokens"
     };
     body[limit] = MAX_ANSWER_TOKENS.into();
-    let mut request = agent.post(&url);
-    if let Some(key) = &options.key {
-        request = request.header("Authorization", &format!("Bearer {key}"));
-    }
-    let mut response = request
-        .send_json(body)
-        .with_context(|| format!("could not reach {url}"))?;
-    let status = response.status();
-    let text = response.body_mut().read_to_string()?;
-    if !status.is_success() {
+    let mut tries = 1;
+    let text = loop {
+        let mut request = agent.post(&url);
+        if let Some(key) = &options.key {
+            request = request.header("Authorization", &format!("Bearer {key}"));
+        }
+        let mut response = request
+            .send_json(&body)
+            .with_context(|| format!("could not reach {url}"))?;
+        let status = response.status();
+        let wait = rate_wait(&response);
+        let text = response.body_mut().read_to_string()?;
+        if status.is_success() {
+            break text;
+        }
+        // Over the provider's rate (Groq's free tier: 8000 tokens a
+        // minute, about one request of a meeting): the wait it says.
+        let limited = status == 429 || (status == 413 && text.contains("rate_limit_exceeded"));
+        if limited && tries < RATE_TRIES {
+            warn!(
+                "{url} answered {status}: over its rate; trying again in {} s",
+                wait.as_secs()
+            );
+            std::thread::sleep(wait);
+            tries += 1;
+            continue;
+        }
         bail!("{url} answered {status}: {}", text.trim());
-    }
+    };
     let completion: Completion = serde_json::from_str(&text).context("not a chat completion")?;
     let choice = completion
         .choices
@@ -165,13 +202,37 @@ mod tests {
 
     /// One HTTP exchange with a canned answer; the request it read.
     fn serve(status: &str, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        let (url, handle) = serve_each(vec![(status.to_string(), String::new(), body.to_string())]);
+        (
+            url,
+            std::thread::spawn(move || handle.join().unwrap().remove(0)),
+        )
+    }
+
+    /// One exchange per answer (status, extra headers, body), in turn;
+    /// the requests read.
+    fn serve_each(
+        answers: Vec<(String, String, String)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let response = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-            body.len()
-        );
         let handle = std::thread::spawn(move || {
+            answers
+                .into_iter()
+                .map(|(status, headers, body)| {
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    exchange(&listener, &response)
+                })
+                .collect()
+        });
+        (url, handle)
+    }
+
+    fn exchange(listener: &TcpListener, response: &str) -> String {
+        {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = Vec::new();
             let mut buf = [0u8; 4096];
@@ -197,8 +258,35 @@ mod tests {
             }
             stream.write_all(response.as_bytes()).unwrap();
             String::from_utf8_lossy(&request).into_owned()
-        });
-        (url, handle)
+        }
+    }
+
+    #[test]
+    fn a_request_over_the_rate_waits_and_goes_again() {
+        let completion = json!({"choices": [{"message": {"content": "Done."}}]}).to_string();
+        let limited = r#"{"error":{"code":"rate_limit_exceeded"}}"#.to_string();
+        let (url, server) = serve_each(vec![
+            (
+                "429 Too Many Requests".into(),
+                "retry-after: 0\r\n".into(),
+                limited.clone(),
+            ),
+            (
+                "413 Payload Too Large".into(),
+                "retry-after: 0\r\n".into(),
+                limited,
+            ),
+            ("200 OK".into(), String::new(), completion),
+        ]);
+        let options = options(url);
+        let answer = complete(&agent(&options), &options, json!({"model": "test"})).unwrap();
+        assert_eq!(answer, "Done.");
+        assert_eq!(server.join().unwrap().len(), 3);
+        // Other refusals are errors at once.
+        let (url, server) = serve("400 Bad Request", r#"{"error":"no"}"#);
+        let options = super::tests::options(url);
+        assert!(complete(&agent(&options), &options, json!({"model": "test"})).is_err());
+        server.join().unwrap();
     }
 
     fn options(url: String) -> Options {

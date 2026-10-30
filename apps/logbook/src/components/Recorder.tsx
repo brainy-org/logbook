@@ -19,7 +19,9 @@ import {
   type ModelsStatus,
   type RecorderState,
   type Shot,
+  type Step,
 } from '../lib/api.js';
+import { percent, stepDone, stepLabel } from '../lib/finishing.js';
 import { android } from '../lib/platform.js';
 import { AREA, AREA_KEYS, SCREEN_KEYS } from '../lib/shots.js';
 import { NotesEditor, type NotesHandle } from './NotesEditor.js';
@@ -38,6 +40,8 @@ interface Props {
 const NOTES_DELAY_MS = 400;
 
 export function Recorder({ state, utterances, levels, logs, models }: Props) {
+  // The models' state is known only for a local backend.
+  const local = models !== null;
   const [showTranscript, setShowTranscript] = useState(
     () => !window.matchMedia('(max-width: 639px)').matches,
   );
@@ -186,6 +190,8 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
           levels={levels}
           elapsed={elapsed}
           lastLog={logs[logs.length - 1]}
+          step={state.step}
+          local={local}
           notice={notice}
           onStop={() => void stop()}
           canStop={recording || state.phase === 'preparing'}
@@ -205,12 +211,20 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   );
 }
 
+/** " 61%": how far finishing is, when it can be told. */
+function finishingShare(step: Step): string {
+  const done = stepDone(step);
+  return done === null ? '' : ` ${percent(done)}`;
+}
+
 function Pill({
   phase,
   channels,
   levels,
   elapsed,
   lastLog,
+  step,
+  local,
   notice,
   onStop,
   canStop,
@@ -220,6 +234,8 @@ function Pill({
   levels: number[];
   elapsed: number;
   lastLog: LogLine | undefined;
+  step: Step | null;
+  local: boolean;
   notice: string | null;
   onStop: () => void;
   canStop: boolean;
@@ -238,7 +254,11 @@ function Pill({
         ) : (
           <span className="max-w-md truncate text-sm text-neutral-600 dark:text-neutral-300">
             {phase === 'preparing' ? 'Getting ready' : 'Finishing'}
-            {lastLog ? ` · ${lastLog.message}` : '…'}
+            {phase === 'finishing' && step
+              ? ` · ${stepLabel(step, local)}${finishingShare(step)}`
+              : lastLog
+                ? ` · ${lastLog.message}`
+                : '…'}
           </span>
         )}
         {canStop ? (

@@ -418,8 +418,26 @@ impl Brainy {
 
     /// Gives the speaker labelled `from` the label `to` on the meeting's
     /// page: the heading line of each of its turns ("**from** · 00:04"),
-    /// and its name in the header's list of speakers. Returns how many
-    /// blocks changed.
+    /// the report's action items they own ("- [ ] … — **from**"), and its
+    /// name in the header's list of speakers. Returns how many blocks
+    /// changed.
+    /// Sets the text property `property` of the collection rows `rows`
+    /// (their page ids) to `value`, in one change.
+    pub async fn set_rows(&self, rows: &[String], property: &str, value: &str) -> Result<()> {
+        let rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|id| serde_json::json!({ "page_id": id, "properties": { property: value } }))
+            .collect();
+        let _: serde_json::Value = self
+            .send(
+                Method::PATCH,
+                "/api/v1/rows",
+                &serde_json::json!({ "rows": rows }),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn rename_speaker(&self, page: &str, from: &str, to: &str) -> Result<usize> {
         let blocks = self.blocks(page).await?;
         let mut changed = 0;
@@ -428,6 +446,7 @@ impl Brainy {
                 renamed_header(&block.markdown, from, to)
             } else if block.depth == 0 {
                 renamed_turn(&block.markdown, from, to)
+                    .or_else(|| renamed_action(&block.markdown, from, to))
             } else {
                 None
             };
@@ -497,6 +516,21 @@ fn renamed_turn(markdown: &str, from: &str, to: &str) -> Option<String> {
     let prefix = format!("**{}** · ", escape(from));
     let rest = markdown.strip_prefix(&prefix)?;
     Some(format!("**{}** · {rest}", escape(to)))
+}
+
+/// An action item of the report with its owner's new label, if it is
+/// `from`'s: "- [ ] Send the quote — **from**", a due date after it or not.
+pub(crate) fn renamed_action(markdown: &str, from: &str, to: &str) -> Option<String> {
+    if !markdown.trim_start().starts_with("- [") {
+        return None;
+    }
+    let owner = format!(" — **{}**", escape(from));
+    let at = markdown.rfind(&owner)?;
+    let after = &markdown[at + owner.len()..];
+    if !(after.is_empty() || after.starts_with(" · ") || after.starts_with('\n')) {
+        return None;
+    }
+    Some(format!("{} — **{}**{after}", &markdown[..at], escape(to)))
 }
 
 /// The header ("Recorded … · 12 min · Marco, Speaker 2") with `from`
@@ -615,6 +649,27 @@ mod tests {
             None
         );
         assert_eq!(renamed_turn("Speaker 2 said so", "Speaker 2", "Luca"), None);
+        assert_eq!(
+            renamed_action(
+                "- [ ] Send it — **Speaker 2** · 2026-10-31",
+                "Speaker 2",
+                "Luca"
+            )
+            .as_deref(),
+            Some("- [ ] Send it — **Luca** · 2026-10-31")
+        );
+        assert_eq!(
+            renamed_action("- [ ] Send it — **Speaker 2**", "Speaker 2", "Luca").as_deref(),
+            Some("- [ ] Send it — **Luca**")
+        );
+        assert_eq!(
+            renamed_action("- [ ] Send it — **Speaker 22**", "Speaker 2", "Luca"),
+            None
+        );
+        assert_eq!(
+            renamed_action("Ask **Speaker 2** — **Speaker 2**", "Speaker 2", "Luca"),
+            None
+        );
         assert_eq!(
             renamed_header(
                 "Recorded 2026-10-27 09:15 · 12 min · Marco, Speaker 2, Speaker 3 (Luca?)",

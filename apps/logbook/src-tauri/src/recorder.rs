@@ -18,6 +18,8 @@ use logbook_client::remote::{self, Audio};
 use logbook_client::series::{self, Limits, Notebook};
 use logbook_engine::protocol::{ChannelConfig, Utterance};
 use serde::Serialize;
+#[cfg(not(target_os = "android"))]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
 /// How often the meter is updated.
@@ -52,6 +54,8 @@ pub struct State {
     /// Which meeting of the recording this is, from 0: the notes start
     /// empty in each.
     pub part: usize,
+    /// Once the recording has stopped: where finishing its meeting is.
+    pub step: Option<meeting::Step>,
 }
 
 struct Running {
@@ -114,6 +118,7 @@ impl Recorder {
                 me: publish.me.clone(),
                 notes: String::new(),
                 part: 0,
+                step: None,
             };
             *running = Some(Running {
                 state: state.clone(),
@@ -135,6 +140,9 @@ impl Recorder {
             // The service kept the recording and its meetings' ends going.
             #[cfg(target_os = "android")]
             crate::android::end(&app);
+            // A meeting it left pending is tried again (finisher.rs).
+            #[cfg(not(target_os = "android"))]
+            app.state::<crate::App>().finisher.start(&app);
             running.lock().unwrap().take();
             #[cfg(not(target_os = "android"))]
             crate::screenshot::unlisten(&app);
@@ -264,6 +272,16 @@ impl series::Series for Events {
             // The meeting that closed keeps its notes; this one's start empty.
             r.state.part = n;
             r.state.notes = String::new();
+            let _ = self.app.emit("meeting-state", Some(&r.state));
+        }
+    }
+
+    fn meeting_step(&mut self, _n: usize, step: &meeting::Step) {
+        let mut guard = self.running.lock().unwrap();
+        if let Some(r) = guard.as_mut()
+            && r.state.phase == Phase::Finishing
+        {
+            r.state.step = Some(step.clone());
             let _ = self.app.emit("meeting-state", Some(&r.state));
         }
     }

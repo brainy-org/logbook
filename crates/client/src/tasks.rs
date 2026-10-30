@@ -133,7 +133,7 @@ fn record(pending: &mut Pending, row: Row) -> Result<()> {
 }
 
 /// The columns logbook writes: their names and the types it adds them as.
-const OWNER: &str = "Owner";
+pub(crate) const OWNER: &str = "Owner";
 const DUE: &str = "Due";
 const STATUS: &str = "Status";
 const MEETING: &str = "Meeting";

@@ -11,9 +11,12 @@ builds for Android, as a recorder for a server ("Android" below).
 | `src-tauri/src/recorder.rs` | the recording, one at a time: `series::meetings` run with the settings' channels and the default limits (a meeting closes after 15 minutes without a phrase, or at 8 hours), events to the pages (`meeting-state`, whose `part` counts the meetings of the recording; `utterance`, on the recording's clock; `levels`; `meetings-changed` or `meeting-failed` for a meeting that ends while the next records; `meeting-done` or `meeting-failed` at the end) |
 | `src-tauri/src/settings.rs` | `settings.json` in the app's config folder (the meeting's `Mode`, chosen on the home page and saved by `start_meeting`, decides the channels: the call, the microphone diarized); the server's and brainy's tokens and the model's key in `secrets.json` beside it (mode 600); the backend, one `Local` kept while its model settings stay the same (the models load once) |
 | `src-tauri/src/logs.rs` | crates/client's `tracing` lines to the pages (`log`) |
+| `src-tauri/src/finisher.rs` | the meetings left pending finished while the app is open, desktop and Android alike: `finishing::finish_all` with `wait`, at the app's start, at a recording's end, from Finish now or Try again (`finish_pending`) and when the settings are saved (a token or an address changed); each meeting's state to the pages as it changes (`finishing`: its step, `meeting::Step`, and how far, or what stopped it, `finishing::Problem`, and when it is tried again), kept for `list_pending` |
 | `src-tauri/src/screenshot.rs` | the desktop's screenshots for the notes: the screen under the pointer (xcap), the app's window hidden while it is taken when it is in front, or on macOS an area (`screencapture -i`, the system's ⌘⇧4 selection, Esc to give up); the buttons (`take_screenshot`) or `SCREEN` (⌘⇧1, Ctrl+Shift+1) and `AREA` (⌘⇧2), macOS's order without its keys, registered only while a meeting is recorded (`screenshot` events); the system's shutter sound for both, so a screenshot taken from another app is heard; the `shot` scheme the pages load them from |
 | `src/App.tsx` | the frame; the recorder's state lives here, across views (the live transcript's last 300 phrases: a meeting of hours has tens of thousands) |
 | `src/components/Home.tsx` | before a meeting: its title and mode (Call, In the room, Room + call) with what each records, what will happen to it, the pending meetings |
+| `src/components/PendingMeetings.tsx` | the pending meetings on the home page, oldest first: each one's step with a bar where it says how far (sending, the server's pass), the time it has taken otherwise; what stopped it (the server or brainy not reached, with the countdown to the next try; a token refused, with Open settings; refused or failed, with Try again) and its full error under Details |
+| `src/lib/finishing.ts` | the steps' labels and how far they are, and the problems' texts, for the card and the recorder's pill |
 | `src/components/Recorder.tsx` | notes, live transcript, the meter and stop; drawn again (`key`: the state's `part`) when the recording's next meeting starts, its notes empty; a screenshot put where the cursor is (or was last) |
 | `src/lib/shots.ts` | the screenshots' `shot` addresses and shortcuts (their lines in the notes, `![Screenshot 10:32](screenshot-….png)`, are crates/client `shots.rs`) |
 | `src/components/NotesEditor.tsx` | the notes, edited as they look, for writing while listening (from a UX review): paragraphs, headings 1–3 (Backspace at the start makes a paragraph), lists, actions (`[] `), code (left with Enter on an empty last line, ⌘Enter or Esc), screenshots (a block with its caption: a click selects, a double click, Space or its button enlarges, draggable; put in place of an empty line, or after the line being written without moving the cursor); no quotes, rules or strikes, no toolbar or menu; a paragraph always last. In and out as Markdown (tiptap-markdown), the form the client keeps and the report reads: a screenshot is written as a block of its own (`addStorage`), or the next block starts on its line; any image that is not a screenshot is left out |
@@ -30,8 +33,13 @@ builds for Android, as a recorder for a server ("Android" below).
   step added in `recorder.rs` is a step `logbook finish` skips for the
   same meeting left pending.
 - **Pending meetings are finished through `Pending::claim`**
-  (`finish_pending`): a meeting the recorder (or a `logbook finish`)
+  (`finisher.rs`): a meeting the recorder (or a `logbook finish`)
   holds is left to it. `Pending::open` only reads, for the list.
+- **A run of the finisher is started again, never cut short.** Asked for
+  while one goes on, it ends that run before its next meeting (or its
+  wait), then starts one with the settings then. Stopping a run in the
+  middle of a meeting would drop it between a brainy write and the note
+  of it, and the next attempt would write that part again.
 - **Secrets never go to the pages.** `get_settings` says whether the
   token and the key are set; `save_settings` takes new ones and writes
   them to `secrets.json` (mode 600, beside `settings.json`). A command that returns one puts it within reach
@@ -119,7 +127,7 @@ Built with `scripts/app.sh android` (README).
 
 | File | What it does |
 |---|---|
-| `src-tauri/src/android.rs` | before the microphone opens: the permissions, the battery exemption asked once, the foreground service started (its Stop is `Recorder::stop`); at the end the service stopped; `Finisher`, pending meetings finished again with backoff while the app lives |
+| `src-tauri/src/android.rs` | before the microphone opens: the permissions, the battery exemption asked once, the foreground service started (its Stop is `Recorder::stop`); at the end the service stopped and the finisher started (finisher.rs) |
 | `plugins/recording/` | `tauri-plugin-recording`: the Rust handle (`RecordingExt`, `run_mobile_plugin`) and `android/` (Kotlin): `RecordingPlugin` (permissions, start, update, stop, battery optimization) and `RecordingService` (foreground service of type microphone, its notification, the wake and Wi-Fi locks); its manifest brings the permissions and the service |
 | `src-tauri/gen/android/` | the Android project `tauri android init` made (kept; its build outputs are not): `minSdk` 28, `MainActivity` keeping the pages inside the system bars and the keyboard |
 | crates/client `audio.rs`, `aaudio` | the microphone through AAudio with the `UNPROCESSED` preset, else `VOICE_RECOGNITION` (cpal sets none) |

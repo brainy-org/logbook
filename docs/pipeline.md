@@ -262,15 +262,27 @@ promotes or deletes each row in brainy
 stay in the report.
 
 1. **Found** (`crates/engine/src/tasks.rs`, `POST /tasks` or the model
-   here) at the same time as the report, from the same transcript and
-   notes, with the meeting's date (`YYYY-MM-DD`, its weekday named in
-   the request). The transcript goes in parts of 80 000 characters (the
-   report's `PART`, two to three hours), one request each, whatever the
-   meeting's length; each part is told the tasks found before it (at
-   most 100 in all). The prompt asks for explicit commitments only, an
-   owner only when named or self-assigned (the doer, not the speaker),
-   a due date only when said and resolvable, and the turn's time.
-2. **Checked**: the answer is JSON found wherever it is in the text (a
+   here) before the report, from the same transcript and notes, with
+   the meeting's date (`YYYY-MM-DD`, its weekday named in the request).
+   The transcript goes in parts of 80 000 characters (the report's
+   `PART`, two to three hours), one request each, whatever the meeting's
+   length; each part is told the tasks found before it (at most 100 in
+   all). The prompt asks for what the meeting agreed only: asked and
+   accepted, taken on or given, or agreed on a condition (the condition
+   in the task); in a round of updates, a person's own plan only when
+   someone else waits for it or it involves someone else. Each task is
+   written to be understood alone (what it is about, with the numbers and
+   names said: "Ask David" is not one), the owner only when named or
+   self-assigned (the doer, not the speaker or who proposed it), a due
+   date only when said and resolvable, and the turn's time
+   (`docs/decisions/2026-10-30-tasks-are-the-report-s-action-items.md`).
+2. **The report's action items** are those tasks: the report is asked
+   after them (`ReportRequest::tasks`) and its model writes a placeholder
+   under its action items heading, which the engine replaces with the
+   tasks' lines (`report::with_actions`): the rows and the report never
+   list two different things. Without tasks (no collection, a model that
+   could not be reached) the model lists them itself.
+3. **Checked**: the answer is JSON found wherever it is in the text (a
    `<think>` block, a fence, a sentence around it); an item without a
    task, or without a time of the transcript, is dropped (no moment to
    link to); an owner that is not a speaker's label is none, a due date
@@ -279,9 +291,9 @@ stay in the report.
    part and a warning; only a model that cannot be reached is an error,
    and that is no tasks and a warning too: the page and the report go
    on.
-3. **Recorded** in the pending meeting (`meeting.json`, `tasks`: what
+4. **Recorded** in the pending meeting (`meeting.json`, `tasks`: what
    was found, the rows written, `writing`) before any row is written.
-4. **Written** with the person's token (`crates/client/src/tasks.rs`):
+5. **Written** with the person's token (`crates/client/src/tasks.rs`):
    the collection gets the columns it lacks (`extend_collection`: Owner
    text, Due date, Status with Open, Done and "To confirm", Meeting and
    Moment URLs), each row is created (`create_page` in the collection)
@@ -294,6 +306,11 @@ stay in the report.
    brainy not answering keeps the meeting pending (before the report
    goes on the page): `finish` writes the rows left. A refusal (4xx)
    gives up the rest, with a warning.
+
+A speaker renamed afterwards (the app's meeting page) is renamed in its
+tasks too: the rows' Owner (`PATCH /api/v1/rows`), the report's action
+items on the page and in the history. A row deleted in brainy does not
+stop the rename; the app says the rows were not renamed.
 
 ## Measured
 

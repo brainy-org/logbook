@@ -83,6 +83,9 @@ export function App() {
         refresh();
       }),
       events.meetingsChanged(refresh),
+      events.finishing((state) =>
+        setPending((all) => all.map((p) => (p.id === state.id ? { ...p, finishing: state } : p))),
+      ),
     );
   }, [refresh]);
 

@@ -48,8 +48,8 @@ crates/cli/      logbook: play (a file at the pace of speech), live (microphone 
                  with --system, the call), finish (pending meetings), speakers,
                  devices, bench: options and printing only
 apps/logbook/    the app, macOS, Windows and Android: pages (React, brainy's look) and src-tauri/
-                 (recorder, settings and their secrets, logs, screenshots for the
-                 notes; android.rs and the
+                 (recorder, pending meetings finished and their progress, settings and
+                 their secrets, logs, screenshots for the notes; android.rs and the
                  Android project in gen/android); plugins/recording: the Android
                  foreground service, wake lock and permissions (Kotlin)  → docs/app.md
 scripts/         server.sh (builds and runs the server), client.sh, app.sh (the app:
@@ -124,7 +124,9 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   them to the brainy page and records how far it got
   (`published_until`); sending a segment again, or one that starts
   before `until`, writes it twice or out of order on a page nobody
-  rewrites (`docs/pipeline.md`, "Final pass").
+  rewrites (`docs/pipeline.md`, "Final pass"). The one exception is a
+  page brainy no longer has (deleted, trashed): a new page from the
+  first segment (`write_or_anew`), never the meeting held for it.
 - **A final range's speaker slots are its own**: each range is diarized
   alone, so slot 0 of one range and of the next are unrelated; only
   voices (`speakers::Linker`) make them the meeting's speakers. Carrying a

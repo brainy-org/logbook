@@ -1,7 +1,8 @@
 // Before a meeting: its title, what it is (a call, people in the room, or
 // both: its channels, kept for the next), the start button, and what will happen to
 // it (where it is transcribed, whether it goes to brainy, who writes the
-// report), as the settings say. Meetings left pending are offered here.
+// report), as the settings say. Meetings left pending are shown here as
+// they are finished (PendingMeetings.tsx).
 // On Android the phone's microphone is the only channel: the people around
 // it, told apart; no mode to choose.
 import { useEffect, useState, type FormEvent } from 'react';
@@ -31,6 +32,7 @@ import {
 import { android } from '../lib/platform.js';
 import { mutedTextClass, primaryButtonClass, secondaryButtonSmClass } from './form-styles.js';
 import { ModelsProgress } from './ModelsProgress.js';
+import { PendingMeetings } from './PendingMeetings.js';
 
 const MODES: { mode: Mode; label: string; icon: LucideIcon; hears: string }[] = [
   { mode: 'call', label: 'Call', icon: Monitor, hears: 'Your microphone and the call' },
@@ -72,7 +74,6 @@ export function Home({
   const [mode, setMode] = useState<Mode>('call');
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const [finishing, setFinishing] = useState(false);
   // Android: whether battery optimization leaves the recording alone.
   const [unrestricted, setUnrestricted] = useState(true);
 
@@ -235,28 +236,14 @@ export function Home({
           </ul>
         )}
 
-        {pending.length > 0 && (
-          <div className="mt-8 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-start rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm dark:border-amber-700 dark:bg-amber-950/30">
-            <span>
-              {pending.length === 1
-                ? 'A meeting is waiting to be finished'
-                : `${pending.length} meetings are waiting to be finished`}{' '}
-              (the server or brainy could not be reached).
-              {android && ' Tried again on its own while the app is open.'}
-            </span>
-            <button
-              type="button"
-              disabled={finishing}
-              className={`${secondaryButtonSmClass} shrink-0 whitespace-nowrap`}
-              onClick={() => {
-                setFinishing(true);
-                onFinishPending();
-              }}
-            >
-              {finishing ? 'Finishing…' : 'Finish now'}
-            </button>
-          </div>
-        )}
+        <PendingMeetings
+          pending={pending}
+          device={here}
+          server={s?.serverUrl ?? 'the server'}
+          local={local}
+          onFinish={onFinishPending}
+          onOpenSettings={onOpenSettings}
+        />
         {lastWarning && !failure && models?.state !== 'failed' && (
           <p className={`mt-6 text-xs ${mutedTextClass}`}>Last message: {lastWarning.message}</p>
         )}

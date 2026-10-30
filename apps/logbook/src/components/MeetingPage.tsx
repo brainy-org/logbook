@@ -270,7 +270,12 @@ function Speakers({
             ? ' (from little speech: naming them again in another meeting helps).'
             : '.')
         : `Their voice is not saved (${renamed.voice_error}).`;
-      onRenamed(m, `${editing} is now ${name.trim()}. ${voice}`);
+      const rows = renamed.rows_error
+        ? ` Their tasks still name ${editing} in brainy (${renamed.rows_error}).`
+        : renamed.rows > 0
+          ? ` ${renamed.rows === 1 ? 'Their task names' : `Their ${renamed.rows} tasks name`} them.`
+          : '';
+      onRenamed(m, `${editing} is now ${name.trim()}. ${voice}${rows}`);
       setEditing(null);
     } catch (err) {
       onError(String(err));

@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use crate::parakeet::SAMPLE_RATE;
 use crate::progressive::{self, Progressive, RangeModels};
-use crate::protocol::{ChannelConfig, SpeakerVoice, Utterance};
+use crate::protocol::{ChannelConfig, PassPhase, PassProgress, SpeakerVoice, Utterance};
 use crate::recording::RangeReader;
 
 /// Pieces the VAD cuts a channel into, to find where ranges may end.
@@ -45,17 +45,33 @@ pub struct Final {
 
 /// `offset`: where on the meeting's clock the channels' `start` is (the
 /// times given back are on it); `voices`: the meeting's speakers before
-/// it, whose numbers are kept.
+/// it, whose numbers are kept. `progress` is told after each part read and
+/// each range transcribed: what it does there costs once per minute or so
+/// of audio.
 pub fn run(
     models: &RangeModels,
     threshold: f32,
     channels: Vec<Recorded>,
     offset: f64,
     voices: &[SpeakerVoice],
+    progress: &mut dyn FnMut(PassProgress),
 ) -> Result<Final> {
     let configs: Vec<ChannelConfig> = channels.iter().map(|r| r.config.clone()).collect();
     let mut pass = Progressive::new(configs, threshold, voices)?;
     let part = (PART * SAMPLE_RATE as f64) as usize;
+    let total: f64 = channels.iter().map(|r| r.seconds).sum();
+    let share = |seconds: f64| {
+        if total > 0.0 {
+            (seconds / total).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    };
+    progress(PassProgress {
+        phase: PassPhase::Reading,
+        done: 0.0,
+    });
+    let mut read = 0.0;
     for (i, recorded) in channels.iter().enumerate() {
         let mut at = 0.0;
         while at < recorded.seconds {
@@ -73,10 +89,23 @@ pub fn run(
                     pass.quiet(i, at + end);
                 }
             }
-            at += pcm.len() as f64 / SAMPLE_RATE as f64;
+            let seconds = pcm.len() as f64 / SAMPLE_RATE as f64;
+            at += seconds;
+            read += seconds;
+            progress(PassProgress {
+                phase: PassPhase::Reading,
+                done: share(read),
+            });
         }
     }
     pass.finish();
+    progress(PassProgress {
+        phase: PassPhase::Transcribing,
+        done: 0.0,
+    });
+    // How far each channel is transcribed: ranges come in order, and
+    // cover only the speech, so it is where the last one ended.
+    let mut reached = vec![0.0f64; channels.len()];
     let mut utterances = Vec::new();
     loop {
         let ranges = pass.next_ranges();
@@ -88,6 +117,12 @@ pub fn run(
                 .read(recorded.start + range.from, recorded.start + range.to)?;
             let result = progressive::transcribe_range(models, &pcm, &range)?;
             pass.transcribed(&range, result);
+            let to = &mut reached[range.channel];
+            *to = to.max(range.to.min(recorded.seconds));
+            progress(PassProgress {
+                phase: PassPhase::Transcribing,
+                done: share(reached.iter().sum()),
+            });
         }
         while let Some((_, ready)) = pass.ready() {
             utterances.extend(ready.into_iter().map(|u| u.shifted(offset)));

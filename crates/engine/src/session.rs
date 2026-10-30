@@ -482,7 +482,10 @@ fn live(
                 }
                 Some(f) => {
                     f.pass.finish();
-                    let id = shared.finals.start(audio).map_err(|e| format!("{e:#}"))?;
+                    let id = shared
+                        .finals
+                        .start(audio, None)
+                        .map_err(|e| format!("{e:#}"))?;
                     f.id = Some(id.clone());
                     let _ = out.send(ServerMessage::Finalizing { audio_s: audio, id });
                 }

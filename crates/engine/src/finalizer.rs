@@ -11,13 +11,17 @@
 
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::Engine;
 use crate::final_pass::Recorded;
 use crate::progressive::Range;
-use crate::protocol::{FinalState, SpeakerVoice};
+use crate::protocol::{FinalState, PassPhase, PassProgress, SpeakerVoice};
 use tracing::{info, warn};
+
+/// How often a whole meeting's pass notes its progress (and at each new
+/// phase): a file written, on a server's disk, every few seconds at most.
+const PROGRESS_EVERY: Duration = Duration::from_secs(2);
 
 use crate::finals::Finals;
 use crate::recording::{RangeReader, RecordedFile};
@@ -62,7 +66,18 @@ pub fn spawn(engine: Arc<Engine>, finals: Arc<Finals>) -> Sender<FinalJob> {
                         offset,
                         voices,
                     } => {
-                        let state = engine.final_pass(channels, offset, &voices);
+                        let audio_s = channels.iter().map(|c| c.seconds).fold(0.0, f64::max);
+                        let mut noted: Option<(Instant, PassPhase)> = None;
+                        let mut progress = |p: PassProgress| {
+                            let due = noted.is_none_or(|(at, phase)| {
+                                phase != p.phase || at.elapsed() >= PROGRESS_EVERY
+                            });
+                            if due {
+                                finals.progress(&id, audio_s, p);
+                                noted = Some((Instant::now(), p.phase));
+                            }
+                        };
+                        let state = engine.final_pass(channels, offset, &voices, &mut progress);
                         drop(files);
                         whole_done(&finals, id, state)
                     }

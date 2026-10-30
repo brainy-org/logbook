@@ -17,6 +17,8 @@
 //! in PCM otherwise: each session has its own encoder per channel, flushed
 //! before `stop`, so the server gets exactly the samples captured.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -35,6 +37,8 @@ use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
+use crate::meeting::{Step, Steps};
+
 /// Audio for the session: a channel index and 16 kHz mono samples. The
 /// session stops when the sender is dropped.
 pub type Audio = UnboundedReceiver<(u8, Vec<i16>)>;
@@ -49,6 +53,8 @@ const POLL_FAILURES: u32 = 10;
 /// Tries of an upload the server does not answer, `RETRY_MIN` apart and
 /// doubling: about a minute before the meeting is left pending.
 const UPLOAD_TRIES: u32 = 6;
+/// How often an upload tells how far it has got.
+const SENT_EVERY: Duration = Duration::from_secs(1);
 /// Audio read from the kept files at once, to send again or to upload.
 const KEPT_PART: u64 = 10 * SAMPLE_RATE as u64;
 
@@ -188,6 +194,11 @@ pub trait Events {
     /// connection is lost): a pause in it is a pause in the meeting only
     /// while it runs (meeting.rs, `Closer`).
     fn connected(&mut self, _up: bool) {}
+    /// Who is told the steps of the meeting's finishing, once it has
+    /// ended (meeting.rs, `finish`).
+    fn steps(&self) -> crate::meeting::Steps {
+        crate::meeting::Steps::default()
+    }
 }
 
 /// With `final_pass`, the session asks for the final pass, which follows
@@ -415,7 +426,7 @@ async fn connect(server: &Server, url: &str, start: &Start<'_>) -> Result<(Socke
         Err(tungstenite::Error::Http(response))
             if response.status() == tungstenite::http::StatusCode::UNAUTHORIZED =>
         {
-            bail!(refused(server));
+            return Err(refused(server).into());
         }
         Err(error) => {
             return Err(anyhow::Error::new(error).context(format!("could not connect to {url}")));
@@ -651,8 +662,15 @@ pub async fn upload(
     offset: f64,
     voices: Vec<SpeakerVoice>,
     audio: Vec<KeptChannel>,
+    steps: &Steps,
 ) -> Result<String> {
     let samples: u64 = audio.iter().map(|a| a.to.saturating_sub(a.from)).sum();
+    let audio_s = audio
+        .iter()
+        .map(|a| a.to.saturating_sub(a.from))
+        .max()
+        .unwrap_or(0) as f64
+        / SAMPLE_RATE as f64;
     tracing::info!(
         "uploading the meeting from {:.0} s ({:.0} s of audio, about {:.0} MB)…",
         offset,
@@ -664,13 +682,14 @@ pub async fn upload(
         offset,
         voices,
     })?;
-    let audio: Vec<std::sync::Arc<KeptChannel>> =
-        audio.into_iter().map(std::sync::Arc::new).collect();
+    let audio: Vec<Arc<KeptChannel>> = audio.into_iter().map(Arc::new).collect();
     let url = format!("{}/finals", server.http);
     let client = http()?;
     let mut retry = RETRY_MIN;
     let mut tries = 1;
     let response = loop {
+        // Samples the request has taken, every channel's: how far it is.
+        let sent = Arc::new(AtomicU64::new(0));
         // A form is consumed by its request: built again for each try.
         let mut form = reqwest::multipart::Form::new().part(
             "meeting",
@@ -679,15 +698,22 @@ pub async fn upload(
         for channel in &audio {
             form = form.part(
                 "audio",
-                reqwest::multipart::Part::stream(encoded(channel.clone())),
+                reqwest::multipart::Part::stream(encoded(channel.clone(), sent.clone())),
             );
         }
-        match server
-            .authorized(client.post(&url))
-            .multipart(form)
-            .send()
-            .await
-        {
+        let request = server.authorized(client.post(&url)).multipart(form).send();
+        tokio::pin!(request);
+        let mut tick = tokio::time::interval(SENT_EVERY);
+        let answer = loop {
+            tokio::select! {
+                answer = &mut request => break answer,
+                _ = tick.tick() => {
+                    let done = sent.load(Ordering::Relaxed) as f64 / samples.max(1) as f64;
+                    steps.tell(Step::Sending { done: done.min(1.0), audio_s });
+                }
+            }
+        };
+        match answer {
             Ok(response) => break response,
             // The server not up yet, or the network back in a moment.
             Err(error) if (error.is_connect() || error.is_timeout()) && tries < UPLOAD_TRIES => {
@@ -719,12 +745,14 @@ pub async fn upload(
 
 /// A channel's audio part (engine codec.rs), encoded on a thread of its
 /// own as the request takes it: a few MB in memory at a time.
-fn encoded(channel: std::sync::Arc<KeptChannel>) -> reqwest::Body {
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(4);
+fn encoded(channel: Arc<KeptChannel>, sent: Arc<AtomicU64>) -> reqwest::Body {
+    // Each part with the samples it holds, counted in `sent` once the
+    // request takes it.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<(Vec<u8>, u64), std::io::Error>>(4);
     std::thread::spawn(move || {
         let run = || -> Result<()> {
             let (mut encoder, header) = StreamEncoder::new(channel.to - channel.from)?;
-            if tx.blocking_send(Ok(header)).is_err() {
+            if tx.blocking_send(Ok((header, 0))).is_err() {
                 return Ok(());
             }
             let rate = SAMPLE_RATE as f64;
@@ -738,21 +766,28 @@ fn encoded(channel: std::sync::Arc<KeptChannel>) -> reqwest::Body {
                 at += pcm.len() as u64;
                 let mut bytes = Vec::new();
                 encoder.push(&to_i16(&pcm), &mut bytes)?;
-                if tx.blocking_send(Ok(bytes)).is_err() {
+                if tx.blocking_send(Ok((bytes, pcm.len() as u64))).is_err() {
                     return Ok(());
                 }
             }
             let mut bytes = Vec::new();
             encoder.finish(&mut bytes)?;
-            let _ = tx.blocking_send(Ok(bytes));
+            let _ = tx.blocking_send(Ok((bytes, 0)));
             Ok(())
         };
         if let Err(error) = run() {
             let _ = tx.blocking_send(Err(std::io::Error::other(format!("{error:#}"))));
         }
     });
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
+    let stream = futures_util::stream::unfold(rx, move |mut rx| {
+        let sent = sent.clone();
+        async move {
+            let item = rx.recv().await?.map(|(bytes, samples)| {
+                sent.fetch_add(samples, Ordering::Relaxed);
+                bytes
+            });
+            Some((item, rx))
+        }
     });
     reqwest::Body::wrap_stream(stream)
 }
@@ -768,7 +803,7 @@ pub async fn check(server: &Server) -> Result<()> {
         .await
         .with_context(|| format!("could not reach {url}"))?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        bail!(refused(server));
+        return Err(refused(server).into());
     }
     if response.status() != reqwest::StatusCode::NOT_FOUND {
         bail!(
@@ -792,7 +827,7 @@ pub async fn check_token(server: &Server) -> Result<()> {
     if let Ok(response) = answer
         && response.status() == reqwest::StatusCode::UNAUTHORIZED
     {
-        bail!(refused(server));
+        return Err(refused(server).into());
     }
     Ok(())
 }
@@ -857,8 +892,9 @@ pub enum Pass {
     Failed(String),
 }
 
-/// Waits for the final pass `id`; an error if the server cannot be reached.
-pub async fn poll(server: &Server, id: &str) -> Result<Pass> {
+/// Waits for the final pass `id`, telling `steps` how far it has got; an
+/// error if the server cannot be reached.
+pub async fn poll(server: &Server, id: &str, steps: &Steps) -> Result<Pass> {
     let url = format!("{}/finals/{id}", server.http);
     let client = http()?;
     let mut failures = 0;
@@ -888,7 +924,10 @@ pub async fn poll(server: &Server, id: &str) -> Result<Pass> {
                 }));
             }
             Ok(Some(FinalState::Failed { message })) => return Ok(Pass::Failed(message)),
-            Ok(Some(FinalState::Running { .. })) => failures = 0,
+            Ok(Some(FinalState::Running { audio_s, progress })) => {
+                failures = 0;
+                steps.tell(Step::of_pass(audio_s, progress));
+            }
             Err(error) => {
                 failures += 1;
                 if failures >= POLL_FAILURES {
@@ -901,10 +940,14 @@ pub async fn poll(server: &Server, id: &str) -> Result<Pass> {
 }
 
 /// What a 401 means to the person.
-fn refused(server: &Server) -> String {
-    match server.token {
+fn refused(server: &Server) -> crate::finishing::HttpStatus {
+    let message = match server.token {
         Some(_) => format!("{} refused the token", server.http),
         None => format!("{} needs a token (made on its admin page)", server.http),
+    };
+    crate::finishing::HttpStatus {
+        status: 401,
+        message,
     }
 }
 

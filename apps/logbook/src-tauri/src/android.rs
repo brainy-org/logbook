@@ -1,19 +1,12 @@
 //! What the app does on Android only: a recording kept alive with the
 //! screen off by the `recording` plugin's foreground service (its
 //! permissions asked first, the battery optimization exemption asked
-//! once), and the meetings left pending finished again and again until the
-//! server and brainy answer: the app is the only way to finish them there,
-//! no `logbook finish` on a phone (docs/decisions/2026-10-29-android-app.md).
-
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+//! once), and the meetings left pending finished again at its end
+//! (finisher.rs): the app is the only way to finish them there, no
+//! `logbook finish` on a phone (docs/decisions/2026-10-29-android-app.md).
 
 use anyhow::{Result, anyhow, bail};
-use logbook_client::finishing;
-use logbook_client::meeting::{Backend, Credentials, Outcome};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_recording::{PermissionState, RecordingExt};
 
 use crate::Answer;
@@ -76,13 +69,7 @@ pub fn end(app: &AppHandle) {
     if let Err(error) = app.recording().stop() {
         tracing::warn!("{error}");
     }
-    let state = app.state::<crate::App>();
-    if let Ok(backend) = state.backend(&state.settings()) {
-        let credentials = state.settings().credentials();
-        state
-            .finisher
-            .start(app.clone(), backend, state.data.clone(), credentials);
-    }
+    app.state::<crate::App>().finisher.start(app);
 }
 
 pub async fn unrestricted(app: &AppHandle) -> Answer<bool> {
@@ -97,61 +84,4 @@ pub async fn ask_unrestricted(app: &AppHandle, once: bool) -> Answer<bool> {
     blocking(move || handle.recording().ask_unrestricted(once))
         .await
         .map_err(|e| format!("{e:#}"))
-}
-
-/// The pending meetings finished, one run at a time, trying again with
-/// backoff (client `finishing.rs`, as `logbook finish --wait`) until only
-/// those waiting cannot fix are left. A run started while one goes on is
-/// not started: the running one lists the folders again each round.
-#[derive(Default)]
-pub struct Finisher {
-    running: Arc<AtomicBool>,
-}
-
-impl Finisher {
-    pub fn start(&self, app: AppHandle, backend: Backend, data: PathBuf, brainy: Credentials) {
-        if self.running.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let running = self.running.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut progress = Progress { app: app.clone() };
-            let result =
-                finishing::finish_all(&backend, &data, None, &brainy, true, &mut progress).await;
-            running.store(false, Ordering::SeqCst);
-            match result {
-                Ok(summary) if summary.left > 0 => tracing::warn!(
-                    "{} pending meeting(s) could not be finished: see above",
-                    summary.left
-                ),
-                Ok(_) => {}
-                Err(error) => tracing::warn!("{error:#}"),
-            }
-            let _ = app.emit("meetings-changed", ());
-        });
-    }
-}
-
-struct Progress {
-    app: AppHandle,
-}
-
-impl finishing::Progress for Progress {
-    fn finished(&mut self, dir: &Path, _outcome: &Outcome) {
-        tracing::info!("finished the pending meeting {}", dir.display());
-        let _ = self.app.emit("meetings-changed", ());
-    }
-
-    fn failed(&mut self, dir: &Path, error: &anyhow::Error, retry: bool) {
-        let then = if retry {
-            "tried again later"
-        } else {
-            "left pending"
-        };
-        tracing::warn!("{}: {error:#} ({then})", dir.display());
-    }
-
-    fn waiting(&mut self, wait: Duration) {
-        tracing::info!("pending meetings: trying again in {} s", wait.as_secs());
-    }
 }

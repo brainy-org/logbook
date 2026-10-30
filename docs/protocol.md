@@ -153,7 +153,7 @@ the client moves its times by where it started
   `400` with the reason. At most 4 GB (about 140 hours of two channels):
   the client encodes it and the server decodes it a part at a time, to
   its recordings folder.
-- `GET /finals/{id}`: `{"state":"running","audio_s":…}`,
+- `GET /finals/{id}`: `{"state":"running","audio_s":…,"progress":{"phase":"transcribing","done":0.42}}`,
   `{"state":"done","utterances":[...],"warnings":[...],"voices":[...],"from":5400.0}` or
   `{"state":"failed","message":"…"}`. `from` (seconds, on the meeting's
   clock): every segment starting at or after it is in `utterances`, none
@@ -168,9 +168,19 @@ the client moves its times by where it started
   (`docs/decisions/2026-10-29-replicas-share-the-data-folder.md`); `503`
   if it cannot read the data folder, which the client retries.
 
-- `POST /reports`, JSON `{"title":"…","notes":"…","transcript":"…"}`
-  (`title` and `notes` optional): the meeting's report by the server's
-  model (docs/pipeline.md, "Report"). `transcript` is the final
+- `progress`, only for the pass of a whole meeting (an upload): its
+  `phase`, `queued` (behind other passes: the server runs one at a
+  time), `reading` (every channel read once to find its pauses, fast) or
+  `transcribing` (range by range, nearly all of the time), and `done`,
+  from 0 to 1 of that phase (engine final_pass.rs). Noted every 2 s at
+  most and at each new phase, from the finalizer's thread, never per
+  sample. Missing for a live session's pass and from a server older than
+  it: the client shows the pass without how far.
+- `POST /reports`, JSON `{"title":"…","notes":"…","transcript":"…","tasks":[...]}`
+  (`title`, `notes` and `tasks` optional): the meeting's report by the
+  server's model (docs/pipeline.md, "Report"). `tasks`, as `/tasks`
+  answered them: the report's action items are these lines
+  (docs/pipeline.md, "Tasks"); without, the model lists its own. `transcript` is the final
   transcript as the client writes it, Markdown with the speakers' names.
   Answers `200 {"markdown":"…"}`; `501` on a server without a model
   (`--llm-url`); `502` with the reason when the model fails. At most

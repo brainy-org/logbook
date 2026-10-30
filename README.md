@@ -120,7 +120,9 @@ logbook-server, which transcribes it; the meeting goes to brainy and
 gets its report from the server's model, as with the desktop app on a
 server. No models on the phone. It keeps recording with the screen off
 (a notification shows it, with Stop) and finishes meetings left pending
-on its own while it is open. Why and how:
+on its own while it is open, as the desktop app does: the home page says
+where each one is (sending, transcribing on the server, with how far,
+writing to brainy) or what stopped it. Why and how:
 `docs/decisions/2026-10-29-android-app.md`.
 
 To build it on a Mac: the Android SDK and NDK and a JDK
@@ -232,9 +234,13 @@ model.
 names a page: its address, id or path of titles; with `--brainy` only.
 The same model then lists the tasks people committed to in the meeting,
 and each becomes a row of that collection: the task as its title,
-Owner (the speaker, as labelled on the page), Due (only when a date was
-said), Status "To confirm", and Meeting and Moment, links to the page
-and to the turn where it was said. They are proposals: a model misses
+Owner (the speaker, as labelled on the page, renamed with them when you
+name a speaker in the app), Due (only when a date was said), Status "To
+confirm", and Meeting and Moment, links to the page and to the turn
+where it was said. The report's action items are the same tasks. A
+larger model finds them far better: on Groq, `openai/gpt-oss-120b`
+rather than `openai/gpt-oss-20b`, whose list of the same meeting changes
+from one run to the next. They are proposals: a model misses
 tasks and invents some, so confirm each one (set it to Open, assign it)
 or delete it in brainy; one click on Moment shows what was said. Any
 collection will do, a team's board too: the columns it lacks are added

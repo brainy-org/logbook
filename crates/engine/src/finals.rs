@@ -26,7 +26,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
 
-use crate::protocol::FinalState;
+use crate::protocol::{FinalState, PassProgress};
 use crate::store;
 
 const KEEP: Duration = Duration::from_secs(3600);
@@ -130,10 +130,11 @@ impl Finals {
         })
     }
 
-    /// A new pass, running; returns its id.
-    pub fn start(&self, audio_s: f64) -> Result<String> {
+    /// A new pass, running; returns its id. `progress`, for the pass of a
+    /// whole meeting: queued, until the finalizer takes it.
+    pub fn start(&self, audio_s: f64, progress: Option<PassProgress>) -> Result<String> {
         let id = store::random_hex(16)?;
-        let state = FinalState::Running { audio_s };
+        let state = FinalState::Running { audio_s, progress };
         match &self.store {
             Store::Memory(entries) => {
                 let mut entries = entries.lock().unwrap();
@@ -143,6 +144,30 @@ impl Finals {
             Store::Disk(disk) => disk.write(&id, None, state)?,
         }
         Ok(id)
+    }
+
+    /// How far the running pass `id` has got. Only the finalizer, which
+    /// writes its result after, calls it: no result is overwritten. A
+    /// write that fails is only a stale progress.
+    pub fn progress(&self, id: &str, audio_s: f64, progress: PassProgress) {
+        let state = FinalState::Running {
+            audio_s,
+            progress: Some(progress),
+        };
+        match &self.store {
+            Store::Memory(entries) => {
+                if let Some(entry) = entries.lock().unwrap().get_mut(id)
+                    && entry.ready.is_none()
+                {
+                    entry.state = state;
+                }
+            }
+            Store::Disk(disk) => {
+                if let Err(e) = disk.write(id, None, state) {
+                    warn!("could not note a final pass's progress: {e:#}");
+                }
+            }
+        }
     }
 
     pub fn finish(&self, id: &str, state: FinalState) {
@@ -304,7 +329,7 @@ mod tests {
     #[test]
     fn a_pass_is_found_by_its_id() {
         let finals = Finals::default();
-        let id = finals.start(12.0).unwrap();
+        let id = finals.start(12.0, None).unwrap();
         assert_eq!(id.len(), 32);
         assert!(matches!(
             finals.get(&id).unwrap(),
@@ -316,7 +341,45 @@ mod tests {
             Some(FinalState::Failed { .. })
         ));
         assert!(finals.get("other").unwrap().is_none());
-        assert_ne!(finals.start(1.0).unwrap(), id);
+        assert_ne!(finals.start(1.0, None).unwrap(), id);
+    }
+
+    #[test]
+    fn a_pass_says_how_far_it_has_got_until_its_result() {
+        use crate::protocol::PassPhase;
+        let at = |done| PassProgress {
+            phase: PassPhase::Transcribing,
+            done,
+        };
+        let progress = |finals: &Finals, id: &str| match finals.get(id).unwrap() {
+            Some(FinalState::Running { progress, .. }) => progress,
+            other => panic!("{other:?}"),
+        };
+        let dir =
+            std::env::temp_dir().join(format!("logbook-finals-{}", store::random_hex(8).unwrap()));
+        let (memory, disk) = (Finals::default(), Finals::on_disk(&dir).unwrap());
+        for finals in [&memory, &disk] {
+            let id = finals.start(60.0, Some(PassProgress::QUEUED)).unwrap();
+            assert_eq!(progress(finals, &id), Some(PassProgress::QUEUED));
+            finals.progress(&id, 60.0, at(0.5));
+            assert_eq!(progress(finals, &id), Some(at(0.5)));
+            finals.finish(&id, failed());
+            assert!(matches!(
+                finals.get(&id).unwrap(),
+                Some(FinalState::Failed { .. })
+            ));
+        }
+        // A progress after the result leaves it (on disk only the
+        // finalizer writes either, in that order).
+        let id = memory.start(60.0, Some(PassProgress::QUEUED)).unwrap();
+        memory.finish(&id, failed());
+        memory.progress(&id, 60.0, at(0.9));
+        assert!(matches!(
+            memory.get(&id).unwrap(),
+            Some(FinalState::Failed { .. })
+        ));
+        drop(disk);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -326,7 +389,7 @@ mod tests {
         let a = Finals::on_disk(&dir).unwrap();
         let b = Finals::on_disk(&dir).unwrap();
 
-        let done = a.start(5.0).unwrap();
+        let done = a.start(5.0, None).unwrap();
         assert!(matches!(
             b.get(&done).unwrap(),
             Some(FinalState::Running { .. })
@@ -337,7 +400,7 @@ mod tests {
             Some(FinalState::Failed { .. })
         ));
 
-        let running = a.start(5.0).unwrap();
+        let running = a.start(5.0, None).unwrap();
         assert!(b.get("../../etc/passwd").unwrap().is_none());
         drop(a);
         assert!(b.get(&running).unwrap().is_none(), "its owner stopped");

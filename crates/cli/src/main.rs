@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use logbook_client::meeting::{self, Backend, Credentials, Outcome};
+use logbook_client::meeting::{self, Backend, Credentials, Outcome, Step};
 use logbook_client::remote::{self, Server};
 use logbook_client::series::{self, Limits};
 use logbook_client::{aec, audio, finishing, local, voices};
@@ -377,9 +377,17 @@ async fn run(cli: Cli) -> Result<()> {
                 url: brainy_url,
                 token: brainy_token,
             };
-            let summary =
-                finishing::finish_all(server, &data, dir.as_deref(), &brainy, wait, &mut Printed)
-                    .await?;
+            let summary = finishing::finish_all(
+                server,
+                &data,
+                dir.as_deref(),
+                &brainy,
+                wait,
+                &mut finishing::Clock,
+                &mut Printed,
+                |_| printed_steps(),
+            )
+            .await?;
             if summary.finished == 0 && summary.left == 0 {
                 eprintln!("no meeting is pending");
             }
@@ -490,6 +498,30 @@ impl finishing::Progress for Printed {
     fn waiting(&mut self, wait: std::time::Duration) {
         eprintln!("trying again in {} s…", wait.as_secs());
     }
+}
+
+/// A line at each step, and every 10% of one that says how far it is.
+fn printed_steps() -> meeting::Steps {
+    let last = std::sync::Mutex::new((String::new(), -1i64));
+    meeting::Steps::new(move |step| {
+        let (what, done) = match &step {
+            Step::Sending { done, .. } => ("sending the audio", Some(*done)),
+            Step::Queued => ("waiting its turn on the server", None),
+            Step::Reading { done, .. } => ("finding the pauses", Some(*done)),
+            Step::Transcribing { done, .. } => ("transcribing", *done),
+            Step::Publishing => ("writing to brainy", None),
+            Step::Report => ("writing the report and finding the tasks", None),
+        };
+        let tenth = done.map_or(-1, |d| (d * 10.0).floor() as i64);
+        let mut last = last.lock().unwrap();
+        if last.0 != what || last.1 != tenth {
+            match done {
+                Some(d) => eprintln!("  {what}: {:.0}%", d * 100.0),
+                None => eprintln!("  {what}…"),
+            }
+            *last = (what.to_string(), tenth);
+        }
+    })
 }
 
 fn print_outcome(outcome: &Outcome) {

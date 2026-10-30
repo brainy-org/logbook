@@ -13,6 +13,7 @@
 
 #[cfg(target_os = "android")]
 mod android;
+mod finisher;
 mod logs;
 mod recorder;
 #[cfg(not(target_os = "android"))]
@@ -35,6 +36,7 @@ use serde::Serialize;
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 
+use crate::finisher::{Finisher, Finishing};
 use crate::logs::Logs;
 use crate::recorder::Recorder;
 use crate::settings::{Backends, Mode, Secret, Secrets, Settings};
@@ -48,9 +50,8 @@ struct App {
     /// with a server.
     #[cfg(not(target_os = "android"))]
     models: Arc<Mutex<Option<local::Status>>>,
-    /// Pending meetings finished again until the server answers.
-    #[cfg(target_os = "android")]
-    finisher: android::Finisher,
+    /// Pending meetings finished again until the server and brainy answer.
+    finisher: Finisher,
     handle: AppHandle,
     logs: Logs,
 }
@@ -138,6 +139,8 @@ fn save_settings(
     }
     settings.save(&app.config).map_err(text)?;
     app.preload();
+    // A meeting stopped by a token or an address is tried with the new ones.
+    app.finisher.start(&app.handle);
     Ok(get_settings(app))
 }
 
@@ -494,6 +497,10 @@ struct PendingView {
     id: String,
     started: String,
     title: Option<String>,
+    /// Seconds of the meeting's audio, every channel's longest.
+    audio_s: f64,
+    /// Where finishing it is, once a run has seen it.
+    finishing: Option<Finishing>,
 }
 
 #[tauri::command]
@@ -501,65 +508,27 @@ fn list_pending(app: State<App>) -> Answer<Vec<PendingView>> {
     let mut out = Vec::new();
     for dir in Pending::list(&app.data).map_err(text)? {
         if let Ok(p) = Pending::open(&dir) {
+            let samples = (0..p.meeting.channels.len())
+                .map(|i| p.samples(i))
+                .max()
+                .unwrap_or(0);
             out.push(PendingView {
+                finishing: app.finisher.state(&p.id()),
                 id: p.id(),
                 started: p.meeting.shown_started(),
                 title: p.meeting.publish.title.clone(),
+                audio_s: samples as f64 / logbook_engine::protocol::SAMPLE_RATE as f64,
             });
         }
     }
     Ok(out)
 }
 
-/// On Android, the meetings left pending finished, and tried again until
-/// the server and brainy answer (`android::Finisher`): the app is the only
-/// way to finish them there.
-#[cfg(target_os = "android")]
+/// The meetings left pending finished, tried again until the server and
+/// brainy answer (finisher.rs): Finish now, or Try again after a problem.
 #[tauri::command]
-fn finish_pending(app: State<'_, App>) -> Answer<()> {
-    let settings = app.settings();
-    let backend = app.backend(&settings)?;
-    app.finisher.start(
-        app.handle.clone(),
-        backend,
-        app.data.clone(),
-        settings.credentials(),
-    );
-    Ok(())
-}
-
-/// Finishes the meetings left pending (the server or brainy could not be
-/// reached), one after the other; `meetings-changed` when done.
-#[cfg(not(target_os = "android"))]
-#[tauri::command]
-async fn finish_pending(app: State<'_, App>, handle: AppHandle) -> Answer<()> {
-    let settings = app.settings();
-    let backend = app.backend(&settings)?;
-    let credentials = settings.credentials();
-    let data = app.data.clone();
-    let dirs = Pending::list(&data).map_err(text)?;
-    tauri::async_runtime::spawn(async move {
-        for dir in dirs {
-            let result = async {
-                // One being recorded, or finished elsewhere, is left alone.
-                let Some(mut pending) = Pending::claim(&dir)? else {
-                    return Ok(None);
-                };
-                backend.prepare(false, 1).await?;
-                meeting::finish(&backend, &mut pending, &credentials)
-                    .await
-                    .map(Some)
-            }
-            .await;
-            match result {
-                Ok(Some(_)) => tracing::info!("finished the pending meeting {}", dir.display()),
-                Ok(None) => tracing::info!("{} is being recorded or finished", dir.display()),
-                Err(error) => tracing::warn!("{error:#}"),
-            }
-        }
-        let _ = handle.emit("meetings-changed", ());
-    });
-    Ok(())
+fn finish_pending(app: State<'_, App>) {
+    app.finisher.start(&app.handle);
 }
 
 #[derive(Serialize)]
@@ -681,24 +650,15 @@ pub fn run() {
                 backends: Mutex::new(backends),
                 #[cfg(not(target_os = "android"))]
                 models,
-                #[cfg(target_os = "android")]
-                finisher: android::Finisher::default(),
+                finisher: Finisher::default(),
                 handle,
                 logs: logs.clone(),
             });
             let app = tauri_app.state::<App>();
             app.preload();
-            // What a meeting left pending at the last run needs: the server.
-            #[cfg(target_os = "android")]
-            if let Ok(backend) = app.backend(&app.settings()) {
-                let settings = app.settings();
-                app.finisher.start(
-                    app.handle.clone(),
-                    backend,
-                    app.data.clone(),
-                    settings.credentials(),
-                );
-            }
+            // What a meeting left pending at the last run needs: the
+            // server, or the models here, and brainy.
+            app.finisher.start(&app.handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

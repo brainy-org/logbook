@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::meeting::{self, Backend, Credentials, Outcome};
+use serde::Serialize;
+
+use crate::meeting::{self, Backend, Credentials, Outcome, Steps};
 use crate::pending::Pending;
 
 /// The first wait after a round that could not reach something, doubled
@@ -96,6 +98,50 @@ pub fn is_transient(error: &anyhow::Error) -> bool {
     })
 }
 
+/// What stopped a meeting, as the person can act on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Problem {
+    /// It did not answer: tried again.
+    Unreachable,
+    /// It answered "not now" (busy, restarting): tried again.
+    Busy,
+    /// It refused the token (401, 403): not tried again until the token
+    /// changes.
+    Token,
+    /// It refused the request for another reason (a 4xx).
+    Refused,
+    /// Anything else: a final pass that failed, a folder that cannot be
+    /// read.
+    Failed,
+}
+
+impl Problem {
+    pub fn of(error: &anyhow::Error) -> Self {
+        let status = error.chain().find_map(|cause| {
+            if let Some(e) = cause.downcast_ref::<HttpStatus>() {
+                return Some(e.status);
+            }
+            cause
+                .downcast_ref::<reqwest::Error>()
+                .and_then(|e| e.status())
+                .map(|s| s.as_u16())
+        });
+        match status {
+            Some(401 | 403) => Problem::Token,
+            Some(status) if transient_status(status) => Problem::Busy,
+            Some(400..=499 | 501) => Problem::Refused,
+            _ if is_transient(error) => Problem::Unreachable,
+            _ => Problem::Failed,
+        }
+    }
+
+    /// Whether waiting can fix it (`is_transient`).
+    pub fn retried(self) -> bool {
+        matches!(self, Problem::Unreachable | Problem::Busy)
+    }
+}
+
 /// One try at one meeting.
 pub enum Attempt {
     Finished(Outcome),
@@ -113,6 +159,11 @@ pub trait Progress {
     /// pending for this run.
     fn failed(&mut self, dir: &Path, error: &anyhow::Error, retry: bool);
     fn waiting(&mut self, _wait: Duration) {}
+    /// Whether the run should end before its next meeting or round (the
+    /// settings changed: a new run takes them).
+    fn stopped(&mut self) -> bool {
+        false
+    }
 }
 
 /// How the run waits between rounds: the clock, or a test's.
@@ -161,30 +212,38 @@ impl Backoff {
 
 /// Every pending meeting under `data` (or only `dir`), oldest first,
 /// finished on `backend`; with `wait`, until none is left that waiting
-/// could finish.
+/// could finish. `steps` gives who is told each meeting's steps.
+#[allow(clippy::too_many_arguments)]
 pub async fn finish_all(
     backend: &Backend,
     data: &Path,
     dir: Option<&Path>,
     brainy: &Credentials,
     wait: bool,
+    sleep: &mut impl Sleep,
     progress: &mut impl Progress,
+    steps: impl Fn(&Path) -> Steps,
 ) -> Result<Summary> {
     let list = || match dir {
         Some(dir) => Ok(vec![dir.to_path_buf()]),
         None => Pending::list(data),
     };
-    let attempt = |dir: PathBuf| async move {
-        match Pending::claim(&dir) {
-            Ok(None) => Attempt::Busy,
-            Err(error) => Attempt::Failed(error),
-            Ok(Some(mut pending)) => match meeting::finish(backend, &mut pending, brainy).await {
-                Ok(outcome) => Attempt::Finished(outcome),
+    let attempt = |dir: PathBuf| {
+        let steps = steps(&dir);
+        async move {
+            match Pending::claim(&dir) {
+                Ok(None) => Attempt::Busy,
                 Err(error) => Attempt::Failed(error),
-            },
+                Ok(Some(mut pending)) => {
+                    match meeting::finish(backend, &mut pending, brainy, &steps).await {
+                        Ok(outcome) => Attempt::Finished(outcome),
+                        Err(error) => Attempt::Failed(error),
+                    }
+                }
+            }
         }
     };
-    run(list, attempt, wait, &mut Clock, progress).await
+    run(list, attempt, wait, sleep, progress).await
 }
 
 /// The rounds: each tries every meeting listed but those given up on,
@@ -212,6 +271,10 @@ where
             if given_up.contains(&dir) {
                 continue;
             }
+            if progress.stopped() {
+                summary.left += 1;
+                continue;
+            }
             progress.started(&dir);
             match attempt(dir.clone()).await {
                 Attempt::Finished(outcome) => {
@@ -233,8 +296,8 @@ where
                 }
             }
         }
-        if !wait || again == 0 {
-            summary.left = given_up.len() + again;
+        if !wait || again == 0 || progress.stopped() {
+            summary.left += given_up.len() + again;
             return Ok(summary);
         }
         if finished_any {
@@ -243,6 +306,10 @@ where
         let pause = backoff.wait();
         progress.waiting(pause);
         sleep.sleep(pause).await;
+        if progress.stopped() {
+            summary.left += given_up.len() + again;
+            return Ok(summary);
+        }
     }
 }
 
@@ -367,6 +434,71 @@ mod tests {
         assert!(!is_transient(&status(501)));
         assert!(is_transient(&anyhow::Error::new(Transient("lost".into()))));
         assert!(!is_transient(&anyhow::anyhow!("the final pass failed")));
+    }
+
+    #[test]
+    fn what_stopped_a_meeting() {
+        let status = |status| {
+            anyhow::Error::new(HttpStatus {
+                status,
+                message: String::new(),
+            })
+            .context("not written to brainy")
+        };
+        assert_eq!(Problem::of(&status(401)), Problem::Token);
+        assert_eq!(Problem::of(&status(403)), Problem::Token);
+        assert_eq!(Problem::of(&status(503)), Problem::Busy);
+        assert_eq!(Problem::of(&status(429)), Problem::Busy);
+        assert_eq!(Problem::of(&status(400)), Problem::Refused);
+        assert_eq!(Problem::of(&status(501)), Problem::Refused);
+        assert_eq!(Problem::of(&unreachable()), Problem::Unreachable);
+        assert_eq!(
+            Problem::of(&anyhow::Error::new(Transient("lost".into()))),
+            Problem::Unreachable
+        );
+        assert_eq!(
+            Problem::of(&anyhow::anyhow!("the final pass failed")),
+            Problem::Failed
+        );
+        // What it says is what the run does.
+        for error in [status(401), status(503), unreachable(), status(400)] {
+            assert_eq!(Problem::of(&error).retried(), is_transient(&error));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stopped_run_ends_before_its_next_meeting() {
+        struct StopAfterOne(usize);
+        impl Progress for StopAfterOne {
+            fn finished(&mut self, _: &Path, _: &Outcome) {
+                self.0 += 1;
+            }
+            fn failed(&mut self, _: &Path, _: &anyhow::Error, _: bool) {}
+            fn stopped(&mut self) -> bool {
+                self.0 >= 1
+            }
+        }
+        let tried = Arc::new(Mutex::new(Vec::new()));
+        let list = || Ok(vec![PathBuf::from("a"), PathBuf::from("b")]);
+        let attempt = |dir: PathBuf| {
+            let tried = tried.clone();
+            async move {
+                tried.lock().unwrap().push(dir);
+                Attempt::Finished(Outcome::default())
+            }
+        };
+        let mut progress = StopAfterOne(0);
+        let summary = run(list, attempt, true, &mut Recorded::default(), &mut progress)
+            .await
+            .unwrap();
+        assert_eq!(*tried.lock().unwrap(), [PathBuf::from("a")]);
+        assert_eq!(
+            summary,
+            Summary {
+                finished: 1,
+                left: 1
+            }
+        );
     }
 
     #[test]

@@ -46,6 +46,40 @@ export interface RecorderState {
   notes: string;
   /** Which meeting of the recording, from 0: a recording left running is cut into meetings. */
   part: number;
+  /** Once it has stopped: where finishing its meeting is. */
+  step: Step | null;
+}
+
+/** Where a meeting being finished is (client meeting.rs, `Step`); `done` from 0 to 1. */
+export type Step =
+  | { stage: 'sending'; done: number; audioS: number }
+  | { stage: 'queued' }
+  | { stage: 'reading'; done: number; audioS: number }
+  | { stage: 'transcribing'; done: number | null; audioS: number }
+  | { stage: 'publishing' }
+  | { stage: 'report' };
+
+/** Why finishing a meeting stopped (client finishing.rs, `Problem`). */
+export type ProblemKind = 'unreachable' | 'busy' | 'token' | 'refused' | 'failed';
+
+/** A pending meeting being finished, or stopped (src-tauri finisher.rs). */
+export interface Finishing {
+  id: string;
+  active: boolean;
+  /** Being recorded, or finished by `logbook finish`. */
+  busy: boolean;
+  step: Step | null;
+  /** When the step started, ms since the epoch. */
+  since: number;
+  problem: {
+    kind: ProblemKind;
+    who: 'server' | 'brainy';
+    message: string;
+    /** Tried again on its own. */
+    retried: boolean;
+  } | null;
+  /** When it is tried again, ms since the epoch. */
+  retryAt: number | null;
 }
 
 /** How the models of a local backend get ready; null with a server. */
@@ -116,6 +150,9 @@ export interface Renamed {
   enrolled: { name: string; seconds: number; prints: number } | null;
   voice_error: string | null;
   page_blocks: number;
+  /** Task rows whose Owner they now are. */
+  rows: number;
+  rows_error: string | null;
 }
 
 export interface Voice {
@@ -128,6 +165,9 @@ export interface PendingMeeting {
   id: string;
   started: string;
   title: string | null;
+  /** Seconds of its audio. */
+  audioS: number;
+  finishing: Finishing | null;
 }
 
 /** A screenshot taken: its file, and the caption of its line in the notes. */
@@ -197,6 +237,8 @@ export const events = {
     listen<Outcome | null>('meeting-done', (e) => f(e.payload)),
   failed: (f: (m: string) => void) => listen<string>('meeting-failed', (e) => f(e.payload)),
   meetingsChanged: (f: () => void) => listen('meetings-changed', () => f()),
+  /** A pending meeting's state as it is finished. */
+  finishing: (f: (m: Finishing) => void) => listen<Finishing>('finishing', (e) => f(e.payload)),
   /** A screenshot taken by the shortcut while a meeting is recorded. */
   screenshot: (f: (s: Shot) => void) => listen<Shot>('screenshot', (e) => f(e.payload)),
   screenshotFailed: (f: (m: string) => void) =>

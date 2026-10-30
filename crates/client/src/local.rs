@@ -20,13 +20,14 @@ use logbook_engine::finals::Finals;
 use logbook_engine::llm;
 use logbook_engine::mirror::{Fetching, Mirror};
 use logbook_engine::protocol::{
-    ChannelConfig, FinalState, ReportRequest, SpeakerVoice, Task, TasksRequest,
+    ChannelConfig, FinalState, PassProgress, ReportRequest, SpeakerVoice, Task, TasksRequest,
 };
 use logbook_engine::session::{self, Feed, Resume, Shared};
 use logbook_engine::{Engine, Options, batcher, report, tasks};
 use serde::Serialize;
 use tokio::sync::OnceCell;
 
+use crate::meeting::{Step, Steps};
 use crate::remote::{self, Audio, Events, Finalized, Live};
 
 /// How often a final pass running here is looked at.
@@ -247,10 +248,11 @@ impl Local {
         channels: Vec<Recorded>,
         offset: f64,
         voices: Vec<SpeakerVoice>,
+        steps: &Steps,
     ) -> Result<Finalized> {
         let loaded = self.loaded(1).await?;
         let audio_s = channels.iter().map(|c| c.seconds).fold(0.0, f64::max);
-        let id = loaded.finals.start(audio_s)?;
+        let id = loaded.finals.start(audio_s, Some(PassProgress::QUEUED))?;
         loaded
             .finalizer
             .send(FinalJob::Whole {
@@ -263,7 +265,10 @@ impl Local {
             .context("the finalizer has stopped")?;
         loop {
             match loaded.finals.get(&id)? {
-                Some(FinalState::Running { .. }) => tokio::time::sleep(POLL).await,
+                Some(FinalState::Running { audio_s, progress }) => {
+                    steps.tell(Step::of_pass(audio_s, progress));
+                    tokio::time::sleep(POLL).await
+                }
                 Some(FinalState::Done {
                     utterances,
                     warnings,

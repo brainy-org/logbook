@@ -31,8 +31,8 @@ use logbook_engine::mirror::Mirror;
 use logbook_engine::parakeet::Latency;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::protocol::{
-    AudioIn, ClientMessage, Codec, FinalState, Report, ReportRequest, ServerMessage, Started,
-    Tasks, TasksRequest, Upload,
+    AudioIn, ClientMessage, Codec, FinalState, PassProgress, Report, ReportRequest, ServerMessage,
+    Started, Tasks, TasksRequest, Upload,
 };
 use logbook_engine::recording::{self, Recording};
 use logbook_engine::session::{self, Feed, Input, Resume, Shared};
@@ -386,7 +386,7 @@ async fn start_upload(shared: &Shared, mut multipart: Multipart) -> Result<Strin
     let files = writer.await??;
     received?;
     let audio_s = files.iter().map(|f| f.samples()).max().unwrap_or(0) as f64 / SAMPLE_RATE as f64;
-    let id = shared.finals.start(audio_s)?;
+    let id = shared.finals.start(audio_s, Some(PassProgress::QUEUED))?;
     info!(
         audio_s = format!("{audio_s:.1}"),
         offset = upload.offset,
