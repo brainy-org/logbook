@@ -150,8 +150,8 @@ export interface Voice {
   seconds: number;
   /** The meetings it comes from (the latest 5 at most). */
   meetings: number;
-  /** The latest of them, `YYYYMMDD-HHMMSS`: when they were last named. */
-  last: string;
+  /** The latest meeting they were heard in, recognized or named: `YYYYMMDD-HHMMSS`. */
+  heard: string;
   /** No meeting gave 30 s of their voice: they may not be recognized every time. */
   weak: boolean;
 }
@@ -207,6 +207,8 @@ export const api = {
   speakerCandidates: (id: string, label: string) =>
     invoke<string[]>('speaker_candidates', { id, label }),
   writeReport: (id: string) => invoke<MeetingView>('write_report', { id }),
+  /** A meeting published without brainy, written to a new page. */
+  sendToBrainy: (id: string) => invoke<MeetingView>('send_to_brainy', { id }),
   saveMeetingNotes: (id: string, notes: string) =>
     invoke<void>('save_meeting_notes', { id, notes }),
   /** Into the trash: `restoreMeeting` undoes it, `purgeMeeting` makes it final. */

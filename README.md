@@ -88,7 +88,8 @@ computer accordingly, and remembers the choice), start it, write your notes whil
 beside them; ⌘⇧1, or Ctrl+Shift+1, from any app, or the Screen button,
 puts a screenshot of the screen under the pointer in the notes, and on
 the brainy page; ⌘⇧2 or Area an area you select, on macOS), stop it: the final transcript, the report and the page in
-brainy follow, and the meeting stays in the list on the left. Click a
+brainy follow, and the meeting stays in the list on the left (one
+ended with brainy off goes there later with Send to brainy). Click a
 speaker ("Speaker 2") to give them a name, or pick one of the names
 their voice is close to: the transcript, the brainy
 page and the voices known by name change with it, the report is written
@@ -96,7 +97,8 @@ again with the new names a few seconds later, and the next meetings
 name them by themselves. With many voices known, choose who is expected
 before you start: the speakers are named from those voices only. Voices,
 in the sidebar, lists the people known by voice: find one as you type,
-sort them by name or by when they were last named, see who needs more
+sort them by name or by when they were last heard (recognized in a
+meeting or named), either way round, see who needs more
 voice (less than 30 s from any one meeting), rename or forget them. In the settings: on this computer or on a
 server (a logbook-server, with your token on it), the microphone and the output to record, brainy on or off (its token is
 kept on this computer, readable by you only), and the language model for the

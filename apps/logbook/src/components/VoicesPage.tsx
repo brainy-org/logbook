@@ -1,13 +1,14 @@
 // The voices known by name: the people a meeting's speakers are named
 // from, kept on this computer only (crates/client voices.rs). A list made
 // for hundreds of people: searched as one types (any case, any accent),
-// sorted by when they were last named or by name, the ones with too little
+// sorted by when they were last heard (recognized or named) or by name,
+// either way round, the ones with too little
 // voice to be recognized every time marked and filterable. A person can be
 // renamed (refused onto someone else's name) or forgotten, after asking.
 // Their voiceprints never reach this page: only names, seconds and the
 // meetings they come from.
 import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AudioLines, Check, Pencil, Search, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, AudioLines, Check, Pencil, Search, Trash2, X } from 'lucide-react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { android } from '../lib/platform.js';
 import { api, type MeetingSummary, type Voice } from '../lib/api.js';
@@ -18,7 +19,7 @@ import {
   quietDangerButtonClass,
 } from './form-styles.js';
 
-type Sort = 'last' | 'name';
+type Sort = 'heard' | 'name';
 
 /** Lower case without accents: "Élodie" is found typing "elo". */
 const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -54,7 +55,7 @@ const initials = (name: string) =>
     .join('');
 
 interface Props {
-  /** The meetings kept, to link the one a person was last named in. */
+  /** The meetings kept, to link the one a person was last heard in. */
   meetings: MeetingSummary[];
   onOpenMeeting: (id: string) => void;
 }
@@ -63,7 +64,9 @@ export function VoicesPage({ meetings, onOpenMeeting }: Props) {
   const [voices, setVoices] = useState<Voice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState<Sort>('last');
+  const [sort, setSort] = useState<Sort>('heard');
+  // Reversed from each sort's natural order: the most recent first, A to Z.
+  const [reversed, setReversed] = useState(false);
   const [weakOnly, setWeakOnly] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -99,12 +102,15 @@ export function VoicesPage({ meetings, onOpenMeeting }: Props) {
   // Folded names once per load, sorted once per sort: a keystroke only filters.
   const sorted = useMemo(() => {
     const all = (voices ?? []).map((v) => ({ voice: v, key: fold(v.name) }));
-    return all.sort((a, b) =>
-      sort === 'name'
-        ? collator.compare(a.voice.name, b.voice.name)
-        : b.voice.last.localeCompare(a.voice.last) || collator.compare(a.voice.name, b.voice.name),
+    const byName = (a: (typeof all)[number], b: (typeof all)[number]) =>
+      collator.compare(a.voice.name, b.voice.name);
+    all.sort((a, b) =>
+      sort === 'name' ? byName(a, b) : b.voice.heard.localeCompare(a.voice.heard) || byName(a, b),
     );
-  }, [voices, sort]);
+    return reversed ? all.reverse() : all;
+  }, [voices, sort, reversed]);
+  const order =
+    sort === 'name' ? (reversed ? 'Z to A' : 'A to Z') : reversed ? 'Oldest first' : 'Newest first';
   const weak = useMemo(() => sorted.filter((v) => v.voice.weak).length, [sorted]);
   const shown = useMemo(
     () =>
@@ -163,7 +169,7 @@ export function VoicesPage({ meetings, onOpenMeeting }: Props) {
           {total > 0 && (
             <>
               <div className="sticky top-0 z-10 -mx-1 mt-6 flex flex-wrap items-center gap-2 bg-white px-1 py-2 dark:bg-neutral-950">
-                <div className="relative min-w-0 flex-1 basis-56">
+                <div className="relative min-w-0 flex-1 basis-40 max-sm:basis-full">
                   <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-neutral-400" />
                   <input
                     ref={search}
@@ -198,19 +204,32 @@ export function VoicesPage({ meetings, onOpenMeeting }: Props) {
                 <Segmented
                   label="Sort"
                   value={sort}
-                  onChange={setSort}
+                  onChange={(s) => {
+                    setSort(s);
+                    setReversed(false);
+                  }}
                   options={[
-                    { value: 'last', label: 'Last named' },
+                    { value: 'heard', label: 'Last heard' },
                     { value: 'name', label: 'Name' },
                   ]}
                 />
+                <button
+                  type="button"
+                  onClick={() => setReversed(!reversed)}
+                  // One icon, so the toolbar stays on one line: the order is in its title.
+                  title={`${order}: click to reverse`}
+                  aria-label={`${order}: reverse the order`}
+                  className="flex size-8 shrink-0 items-center justify-center rounded-md border border-neutral-300 text-neutral-700 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                >
+                  {reversed ? <ArrowUp className="size-4" /> : <ArrowDown className="size-4" />}
+                </button>
                 {weak > 0 && (
                   <button
                     type="button"
                     aria-pressed={weakOnly}
                     onClick={() => setWeakOnly(!weakOnly)}
                     title="People with less than 30 s of voice from any one meeting"
-                    className={`h-8 rounded-md border px-2.5 text-xs font-medium whitespace-nowrap ${
+                    className={`h-8 shrink-0 rounded-md border px-2.5 text-xs font-medium whitespace-nowrap ${
                       weakOnly
                         ? 'border-amber-400 bg-amber-50 text-amber-800 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-300'
                         : 'border-neutral-300 text-neutral-700 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-800'
@@ -246,7 +265,7 @@ export function VoicesPage({ meetings, onOpenMeeting }: Props) {
                       key={v.name}
                       voice={v}
                       match={highlight(v.name, key, wanted)}
-                      lastTitle={titles.get(v.last)}
+                      lastTitle={titles.get(v.heard)}
                       editing={editing === v.name}
                       taken={(name) =>
                         voices!.find(
@@ -310,7 +329,7 @@ function Row({
   onForget: () => void;
   onOpenMeeting: (id: string) => void;
 }) {
-  const date = meetingDate(v.last);
+  const date = meetingDate(v.heard);
   return (
     <li className="group flex items-start gap-3 px-3 py-2.5">
       <span
@@ -336,14 +355,14 @@ function Row({
               {voiceLength(v.seconds)} of voice · {v.meetings} meeting{v.meetings === 1 ? '' : 's'}
               {date && (
                 <>
-                  {' · last named '}
+                  {' · last heard '}
                   {date}
                   {lastTitle !== undefined && (
                     <>
                       {' in '}
                       <button
                         type="button"
-                        onClick={() => onOpenMeeting(v.last)}
+                        onClick={() => onOpenMeeting(v.heard)}
                         className="max-w-48 truncate align-bottom text-accent hover:underline"
                       >
                         {lastTitle}

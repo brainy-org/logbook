@@ -5,7 +5,7 @@
 // offered, and the report is written again with the new names a few
 // seconds after the last rename (or on leaving the meeting).
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ExternalLink, RefreshCw, Trash2, UserRound } from 'lucide-react';
+import { ExternalLink, RefreshCw, Send, Trash2, UserRound } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, clock, duration, type MeetingView } from '../lib/api.js';
 import { Markdown } from './Markdown.js';
@@ -33,6 +33,9 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [writing, setWriting] = useState(false);
+  const [sending, setSending] = useState(false);
+  // Read by the rename's timer: no report written while the page is.
+  const sendingNow = useRef(false);
   // A rename waiting for the report to be written again with it.
   const due = useRef<{ id: string; timer: number } | null>(null);
   const naming = useRef(false);
@@ -89,7 +92,7 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
   const rewriteSoon = (meetingId: string) => {
     if (due.current) window.clearTimeout(due.current.timer);
     const fire = () => {
-      if (naming.current) {
+      if (naming.current || sendingNow.current) {
         due.current = { id: meetingId, timer: window.setTimeout(fire, REWRITE_DELAY_MS) };
         return;
       }
@@ -97,6 +100,30 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
       void rewrite();
     };
     due.current = { id: meetingId, timer: window.setTimeout(fire, REWRITE_DELAY_MS) };
+  };
+
+  // A meeting published without brainy, to a new page. A report due
+  // after a rename is written first: both load and save the meeting.
+  const send = async () => {
+    if (due.current) {
+      window.clearTimeout(due.current.timer);
+      due.current = null;
+      await rewrite();
+    }
+    setSending(true);
+    sendingNow.current = true;
+    setError(null);
+    try {
+      const m = await api.sendToBrainy(meeting.id);
+      setMeeting(m);
+      onChanged();
+      if (m.reportError) setError(`On brainy, without the report: ${m.reportError}`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      sendingNow.current = false;
+      setSending(false);
+    }
   };
 
   const started = new Date(meeting.started);
@@ -107,6 +134,19 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
         data-tauri-drag-region
         className="flex h-11 shrink-0 items-center justify-end gap-1 px-4"
       >
+        {!meeting.page && (
+          <button
+            type="button"
+            disabled={writing || sending}
+            className={secondaryButtonSmClass}
+            onClick={() => void send()}
+          >
+            <span className="flex items-center gap-1.5">
+              <Send className="size-3.5" />
+              {sending ? 'Sending…' : 'Send to brainy'}
+            </span>
+          </button>
+        )}
         {meeting.page && (
           <button
             type="button"
@@ -144,7 +184,7 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
 
           <Speakers
             meeting={meeting}
-            busy={writing}
+            busy={writing || sending}
             onNaming={(on) => (naming.current = on)}
             onRenamed={(m, message) => {
               setMeeting(m);
@@ -208,7 +248,7 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
               )}
               <button
                 type="button"
-                disabled={writing}
+                disabled={writing || sending}
                 onClick={() => void rewrite()}
                 className={`${secondaryButtonSmClass} mt-6`}
               >

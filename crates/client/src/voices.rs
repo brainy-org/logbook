@@ -76,6 +76,23 @@ pub struct Person {
     /// One per time the person was named: a voice heard through another
     /// microphone or codec is a print of its own.
     pub prints: Vec<Print>,
+    /// The latest meeting (its id) a speaker took their name in by voice,
+    /// without being named: when they were last heard. Only an id, never
+    /// a voice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heard: Option<String>,
+}
+
+impl Person {
+    /// The latest meeting they were heard in: recognized there, or named.
+    pub fn last_heard(&self) -> &str {
+        let named = self.prints.iter().map(|p| p.meeting.as_str()).max();
+        named
+            .into_iter()
+            .chain(self.heard.as_deref())
+            .max()
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -143,6 +160,7 @@ impl Library {
             None => self.people.push(Person {
                 name: name.to_string(),
                 prints: vec![print],
+                heard: None,
             }),
         }
     }
@@ -338,6 +356,20 @@ pub fn forget_meeting(data: &Path, id: &str) -> Result<()> {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
         _ => Ok(()),
     }
+}
+
+/// The people known by name among `labels`, the speakers of meeting
+/// `meeting` as written on its page, were heard there.
+pub fn heard_in(data: &Path, meeting: &str, labels: &[String]) -> Result<()> {
+    let mut lib = Library::load(data)?;
+    let mut changed = false;
+    for p in &mut lib.people {
+        if labels.contains(&p.name) && p.heard.as_deref().is_none_or(|h| h < meeting) {
+            p.heard = Some(meeting.to_string());
+            changed = true;
+        }
+    }
+    if changed { lib.save(data) } else { Ok(()) }
 }
 
 /// The meetings whose voices are kept, oldest first.
@@ -629,6 +661,29 @@ mod tests {
         // The prints follow the person: their voice is still named.
         let v = voice(&[1.0, 0.1, 0.0], 20.0);
         assert_eq!(lib.name(&v, &[]), Some(Named::Sure("Luca Bianchi".into())));
+    }
+
+    #[test]
+    fn a_person_was_last_heard_where_recognized_or_named() {
+        let data = std::env::temp_dir().join(format!("logbook-heard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let mut lib = Library::new();
+        let mut p = print(&[1.0, 0.0]);
+        p.meeting = "20261027-091500".into();
+        lib.add("Luca", p);
+        lib.save(&data).unwrap();
+        assert_eq!(lib.people[0].last_heard(), "20261027-091500");
+        heard_in(
+            &data,
+            "20261030-100000",
+            &["Luca".into(), "Speaker 2".into()],
+        )
+        .unwrap();
+        // An older meeting finished late does not move it back.
+        heard_in(&data, "20261028-100000", &["Luca".into()]).unwrap();
+        let lib = Library::load(&data).unwrap();
+        assert_eq!(lib.people[0].last_heard(), "20261030-100000");
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]

@@ -438,6 +438,22 @@ async fn write_report(app: State<'_, App>, id: String) -> Answer<MeetingView> {
     Ok(view(kept))
 }
 
+/// Writes a kept meeting published without brainy to a new page, under
+/// the parent page of the settings.
+#[tauri::command]
+async fn send_to_brainy(app: State<'_, App>, id: String) -> Answer<MeetingView> {
+    let settings = app.settings();
+    let brainy = settings
+        .credentials()
+        .any(None)
+        .map_err(|_| "brainy needs its address and a token: set them in Settings".to_string())?;
+    let parent = Some(settings.brainy.parent.trim()).filter(|p| !p.is_empty());
+    let kept = meeting::send_to_brainy(&app.data, &id, &brainy, parent)
+        .await
+        .map_err(text)?;
+    Ok(view(kept))
+}
+
 /// The notes of a kept meeting, edited after it.
 #[tauri::command]
 fn save_meeting_notes(app: State<App>, id: String, notes: String) -> Answer<()> {
@@ -513,9 +529,9 @@ struct Voice {
     seconds: f64,
     /// The meetings their prints come from (at most the latest 5).
     meetings: usize,
-    /// The latest of those meetings (its id, `YYYYMMDD-HHMMSS`): when they
-    /// were last named.
-    last: String,
+    /// The latest meeting they were heard in, recognized or named (its
+    /// id, `YYYYMMDD-HHMMSS`; `Person::last_heard`).
+    heard: String,
     /// No print has `GOOD_ENROLL` seconds: they may not be recognized
     /// every time (a person is matched by their best print).
     weak: bool,
@@ -534,7 +550,7 @@ fn list_voices(app: State<App>) -> Answer<Vec<Voice>> {
             Voice {
                 seconds: p.prints.iter().map(|q| q.seconds).sum(),
                 meetings: meetings.len(),
-                last: meetings.last().map_or_else(String::new, |m| m.to_string()),
+                heard: p.last_heard().to_string(),
                 weak: p.prints.iter().all(|q| q.seconds < voices::GOOD_ENROLL),
                 name: p.name,
             }
@@ -677,6 +693,7 @@ pub fn run() {
             rename_speaker,
             speaker_candidates,
             write_report,
+            send_to_brainy,
             save_meeting_notes,
             delete_meeting,
             restore_meeting,

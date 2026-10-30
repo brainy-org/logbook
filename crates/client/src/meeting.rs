@@ -685,6 +685,12 @@ pub async fn finish(
     if let Err(error) = remember_voices(pending, &shown) {
         warn!("the meeting's voices were not kept to be named: {error:#}");
     }
+    if let Some(writer) = &pending.meeting.writer {
+        let labels: Vec<String> = writer.speakers().into_iter().map(|s| s.2).collect();
+        if let Err(error) = voices::heard_in(pending.data(), &pending.id(), &labels) {
+            warn!("when the people were last heard was not kept: {error:#}");
+        }
+    }
     let mut kept_meeting = history::Kept {
         id: pending.id(),
         title: title(pending, &shown),
@@ -840,6 +846,60 @@ async fn put_report(
             kept.report_error = Some(format!("{error:#}"));
         }
     }
+}
+
+/// Writes kept meeting `id`, published without brainy, to a new page
+/// under `parent` (a reference `resolve_page` reads; the top without
+/// one): its header, its transcript with the names it has now, and under
+/// the header its report, or its notes without one, as `finish` puts
+/// them. The page is kept with the meeting once made: a report that fails
+/// to go on it leaves `report_error`, and "write the report" puts it
+/// there.
+pub async fn send_to_brainy(
+    data: &Path,
+    id: &str,
+    b: &Brainy,
+    parent: Option<&str>,
+) -> Result<history::Kept> {
+    let mut kept = history::load(data, id)?;
+    if kept.page.is_some() {
+        bail!("this meeting has a brainy page already");
+    }
+    let parent = match parent {
+        Some(parent) => Some(b.resolve_page(parent).await.context("the parent page")?),
+        None => None,
+    };
+    let started = DateTime::parse_from_rfc3339(&kept.started)
+        .with_context(|| format!("the meeting's start {} is not a time", kept.started))?;
+    let mut header = kept
+        .writer
+        .header(&minute(&started), kept.duration_s, &[])
+        .trim()
+        .to_string();
+    if !kept.warnings.is_empty() {
+        header.push_str(&format!(" · Note: {}", kept.warnings.join("; ")));
+    }
+    let markdown = format!("{header}\n\n---\n\n{}", kept.transcript());
+    let page = b
+        .create_page(&kept.title, parent.as_deref(), &markdown)
+        .await?;
+    info!("written to brainy: {}", page.url);
+    kept.page = Some(page.clone());
+    history::save(data, &kept)?;
+    let images = history::images(data, id)?;
+    match kept.report.clone() {
+        Some(report) => put_report(Some(b), &mut kept, report, &images).await,
+        None if !kept.notes.trim().is_empty() => {
+            let notes = format!("## Notes\n\n{}", kept.notes.trim());
+            match insert_under_header(b, &page, &notes, &images).await {
+                Ok(blocks) => kept.report_blocks = blocks,
+                Err(error) => warn!("the notes were not written to the page: {error:#}"),
+            }
+        }
+        None => {}
+    }
+    history::save(data, &kept)?;
+    Ok(kept)
 }
 
 /// A speaker renamed in a kept meeting.
