@@ -77,11 +77,19 @@ pub fn remove(path: &Path) -> Result<bool> {
 }
 
 /// The names `dir` holds written to disk: a rename or a deletion that
-/// must survive the computer stopping.
+/// must survive the computer stopping. On Windows, a no-op: a folder
+/// cannot be opened as a file there (access denied, os error 5), and NTFS
+/// journals a rename itself.
+#[cfg(unix)]
 pub fn sync_dir(dir: &Path) -> Result<()> {
     std::fs::File::open(dir)
         .and_then(|d| d.sync_all())
         .with_context(|| format!("could not write {}", dir.display()))
+}
+
+#[cfg(not(unix))]
+pub fn sync_dir(_dir: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// Whether `name` is a temporary file `replace` or `create` left behind
