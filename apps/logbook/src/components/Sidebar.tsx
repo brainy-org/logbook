@@ -1,9 +1,9 @@
 // The meetings, the latest first and grouped by day, the one being
-// recorded on top, and the settings at the bottom. A meeting's right
+// recorded on top, and the voices known by name and the settings at the bottom. A meeting's right
 // click opens the system's menu (Delete); Backspace or Delete on its row
 // deletes it too, undone from the app's notice (App.tsx).
 import type { MouseEvent } from 'react';
-import { Plus, Settings } from 'lucide-react';
+import { Plus, Settings, Users } from 'lucide-react';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
 import { Menu } from '@tauri-apps/api/menu';
 import { android } from '../lib/platform.js';
@@ -118,6 +118,14 @@ export function Sidebar({ view, recorder, meetings, onView, onDelete }: Props) {
         ))}
       </nav>
       <div className="border-t border-neutral-200 p-2 dark:border-neutral-800">
+        <button
+          type="button"
+          onClick={() => onView({ kind: 'voices' })}
+          className={`${row} ${view.kind === 'voices' ? active : ''}`}
+        >
+          <Users className="size-4 text-neutral-500" />
+          Voices
+        </button>
         <button
           type="button"
           onClick={() => onView({ kind: 'settings' })}

@@ -143,10 +143,17 @@ export interface Renamed {
   page_blocks: number;
 }
 
+/** A person known by voice; their voiceprints never leave the Rust side. */
 export interface Voice {
   name: string;
-  prints: number;
+  /** Seconds of their voice, all meetings together. */
   seconds: number;
+  /** The meetings it comes from (the latest 5 at most). */
+  meetings: number;
+  /** The latest of them, `YYYYMMDD-HHMMSS`: when they were last named. */
+  last: string;
+  /** No meeting gave 30 s of their voice: they may not be recognized every time. */
+  weak: boolean;
 }
 
 export interface PendingMeeting {
@@ -209,6 +216,8 @@ export const api = {
   listPending: () => invoke<PendingMeeting[]>('list_pending'),
   finishPending: () => invoke<void>('finish_pending'),
   listVoices: () => invoke<Voice[]>('list_voices'),
+  /** Refused when someone else already has the name. */
+  renameVoice: (from: string, to: string) => invoke<void>('rename_voice', { from, to }),
   forgetVoice: (name: string) => invoke<void>('forget_voice', { name }),
   /** Android: whether battery optimization leaves the app alone (true elsewhere). */
   backgroundState: () => invoke<boolean>('background_state'),

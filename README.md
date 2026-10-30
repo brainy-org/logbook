@@ -94,7 +94,10 @@ their voice is close to: the transcript, the brainy
 page and the voices known by name change with it, the report is written
 again with the new names a few seconds later, and the next meetings
 name them by themselves. With many voices known, choose who is expected
-before you start: the speakers are named from those voices only. In the settings: on this computer or on a
+before you start: the speakers are named from those voices only. Voices,
+in the sidebar, lists the people known by voice: find one as you type,
+sort them by name or by when they were last named, see who needs more
+voice (less than 30 s from any one meeting), rename or forget them. In the settings: on this computer or on a
 server (a logbook-server, with your token on it), the microphone and the output to record, brainy on or off (its token is
 kept on this computer, readable by you only), and the language model for the
 report (a provider, Groq, OpenAI, Mistral or any OpenAI-compatible API,
@@ -239,6 +242,7 @@ them. After a meeting:
 ```bash
 scripts/client.sh speakers                                # known voices, the last meetings' speakers and who they could be
 scripts/client.sh speakers name last 2 "Luca Bianchi"     # Speaker 2 of the last meeting is Luca Bianchi
+scripts/client.sh speakers rename "Luca Bianchi" "Luca B."  # meetings already written keep the old name
 scripts/client.sh speakers forget "Luca Bianchi"
 ```
 
@@ -257,7 +261,8 @@ scripts/client.sh live --system --final --expect "Luca Bianchi,Anna"
 ```
 
 The voices are kept only on your computer: `voices.json` and, for
-the last 20 meetings, `voices/` in the data folder. Ask before you name
+the last 20 meetings, `voices/` in the data folder (a meeting deleted in
+the app takes its speakers' voices with it; the people named stay known). Ask before you name
 someone: a voiceprint is personal data.
 
 ### When the network or the server fails

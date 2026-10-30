@@ -1,20 +1,19 @@
 // The settings: where meetings are transcribed, what is recorded, whether
 // they go to brainy, and the
-// language model that writes the report; then the voices known by name. Secrets (the
+// language model that writes the report; then how many voices are known by
+// name, and the way to their page (VoicesPage.tsx). Secrets (the
 // server's and brainy's tokens, the model's key) are kept on this
 // computer (secrets.json, this user only) and never read back: the page
 // only knows whether they are set. On Android: a server always, the
 // microphone only, and whether the recording may go on in the background.
 import { useEffect, useState, type ReactNode } from 'react';
-import { Check, Laptop, Server, Trash2 } from 'lucide-react';
-import { ask } from '@tauri-apps/plugin-dialog';
+import { Check, ChevronRight, Laptop, Server } from 'lucide-react';
 import { android } from '../lib/platform.js';
 import { api, type Devices, type Settings, type SettingsView, type Voice } from '../lib/api.js';
 import {
   fieldClass,
   mutedTextClass,
   primaryButtonClass,
-  quietDangerButtonClass,
   secondaryButtonSmClass,
 } from './form-styles.js';
 
@@ -46,11 +45,17 @@ type Listed =
   | { state: 'listed'; names: string[] }
   | { state: 'failed'; message: string };
 
-export function SettingsPage({ recording }: { recording: boolean }) {
+export function SettingsPage({
+  recording,
+  onOpenVoices,
+}: {
+  recording: boolean;
+  onOpenVoices: () => void;
+}) {
   const [view, setView] = useState<SettingsView | null>(null);
   const [s, setS] = useState<Settings | null>(null);
   const [devices, setDevices] = useState<Devices>({ inputs: [], outputs: [] });
-  const [voices, setVoices] = useState<Voice[]>([]);
+  const [voices, setVoices] = useState<Voice[] | null>(null);
   const [token, setToken] = useState<string | undefined>(undefined);
   const [key, setKey] = useState<string | undefined>(undefined);
   const [serverToken, setServerToken] = useState<string | undefined>(undefined);
@@ -449,45 +454,20 @@ export function SettingsPage({ recording }: { recording: boolean }) {
           </Section>
 
           <Section title="Voices known by name">
-            <p className={`text-sm ${mutedTextClass}`}>
-              Name a speaker in a meeting and their voice is kept on {here} only, to name them in
-              the next meetings. Ask before you name someone: a voiceprint is personal data.
-            </p>
-            {voices.length === 0 ? (
-              <p className="text-sm text-neutral-500">No voice yet.</p>
-            ) : (
-              <ul className="divide-y divide-neutral-200 rounded-md border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-                {voices.map((v) => (
-                  <li key={v.name} className="flex items-center justify-between px-3 py-2 text-sm">
-                    <span>
-                      {v.name}{' '}
-                      <span className="text-neutral-500">
-                        · {Math.round(v.seconds)} s from {v.prints} meeting
-                        {v.prints === 1 ? '' : 's'}
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      title={`Forget ${v.name}'s voice`}
-                      className={quietDangerButtonClass}
-                      onClick={async () => {
-                        if (
-                          !(await ask(`${v.name} will no longer be recognized.`, {
-                            title: `Forget ${v.name}'s voice?`,
-                            kind: 'warning',
-                          }))
-                        )
-                          return;
-                        await api.forgetVoice(v.name);
-                        setVoices(await api.listVoices());
-                      }}
-                    >
-                      <Trash2 className="size-4" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="flex items-center justify-between gap-3">
+              <p className={`text-sm ${mutedTextClass}`}>
+                {voices === null
+                  ? 'Kept on ' + here + ' only.'
+                  : `${voices.length === 0 ? 'None yet' : `${voices.length} ${voices.length === 1 ? 'person' : 'people'}`}, kept on ${here} only.`}
+              </p>
+              <button
+                type="button"
+                onClick={onOpenVoices}
+                className={`${secondaryButtonSmClass} flex shrink-0 items-center gap-1`}
+              >
+                Manage voices <ChevronRight className="size-3.5" />
+              </button>
+            </div>
             <p className="text-xs text-neutral-500">
               {android ? 'Data folder' : 'Data folder, shared with the logbook CLI'}: {view.data}
             </p>

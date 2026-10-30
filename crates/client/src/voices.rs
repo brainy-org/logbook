@@ -13,8 +13,9 @@
 //! close to someone's voice are many, with five people they are few.
 //!
 //! Voiceprints are biometric data: they never leave this computer, the
-//! meetings' ones are kept for the last KEEP_MEETINGS meetings only, and
-//! `logbook speakers forget` (or the app's settings) removes a person.
+//! meetings' ones are kept for the last KEEP_MEETINGS meetings only (and
+//! go when the meeting is deleted: history.rs `purge`), and
+//! `logbook speakers forget` (or the app's voices page) removes a person.
 
 use std::path::{Path, PathBuf};
 
@@ -151,6 +152,32 @@ impl Library {
         let before = self.people.len();
         self.people.retain(|p| p.name != name);
         self.people.len() != before
+    }
+
+    /// Gives person `from` the name `to`, their prints kept. Refused when
+    /// someone else already has that name (any case, as `expected` reads
+    /// it): two people under one name would be one voice to the pages.
+    /// Changing only the case of one's own name is allowed.
+    pub fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+        let to = to.trim();
+        if to.is_empty() {
+            bail!("the name is empty");
+        }
+        let at = self
+            .people
+            .iter()
+            .position(|p| p.name == from)
+            .with_context(|| format!("no voice is known as {from}"))?;
+        if let Some(other) = self
+            .people
+            .iter()
+            .enumerate()
+            .find(|(i, p)| *i != at && p.name.eq_ignore_ascii_case(to))
+        {
+            bail!("a voice is already known as {}", other.1.name);
+        }
+        self.people[at].name = to.to_string();
+        Ok(())
     }
 
     /// The people named `names` only (any case), the others left out;
@@ -298,6 +325,19 @@ pub fn remember(data: &Path, meeting: &str, heard: &Heard) -> Result<()> {
         let _ = std::fs::remove_file(dir.join(format!("{oldest}.json")));
     }
     Ok(())
+}
+
+/// Drops the voices kept from meeting `id` (its speakers, named or not),
+/// once the meeting itself is gone; the voices known by name stay.
+pub fn forget_meeting(data: &Path, id: &str) -> Result<()> {
+    anyhow::ensure!(
+        !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        "{id:?} is not a meeting"
+    );
+    match std::fs::remove_file(heard_dir(data).join(format!("{id}.json"))) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
 }
 
 /// The meetings whose voices are kept, oldest first.
@@ -479,6 +519,14 @@ pub fn forget(data: &Path, name: &str) -> Result<()> {
     lib.save(data)
 }
 
+/// Gives person FROM the name TO (`logbook speakers rename`, the app's
+/// voices page). Meetings already written keep the name they had.
+pub fn rename(data: &Path, from: &str, to: &str) -> Result<()> {
+    let mut lib = Library::load(data)?;
+    lib.rename(from.trim(), to)?;
+    lib.save(data)
+}
+
 pub fn heard(started: &str, page: Option<String>, speakers: Vec<HeardSpeaker>) -> Heard {
     Heard {
         encoder: encoder(),
@@ -561,6 +609,26 @@ mod tests {
         let only = lib.clone().only(&["Anna".into()]);
         assert_eq!(only.name(&voice(&[1.0, 0.1, 0.0], 20.0), &[]), None);
         assert_eq!(lib.only(&[]).people.len(), 2);
+    }
+
+    #[test]
+    fn a_person_is_renamed_but_never_onto_someone_else() {
+        let mut lib = Library::new();
+        lib.add("Luca", print(&[1.0, 0.0, 0.0]));
+        lib.add("Anna", print(&[0.0, 1.0, 0.0]));
+        // Someone else's name, in any case: refused, nothing changed.
+        assert!(lib.rename("Luca", "anna").is_err());
+        assert!(lib.rename("Luca", "  ").is_err());
+        assert!(lib.rename("Bo", "Carla").is_err());
+        assert_eq!(lib.people[0].name, "Luca");
+        // A new name, and one's own in another case.
+        lib.rename("Luca", " Luca Bianchi ").unwrap();
+        lib.rename("Anna", "ANNA").unwrap();
+        assert_eq!(lib.people[0].name, "Luca Bianchi");
+        assert_eq!(lib.people[1].name, "ANNA");
+        // The prints follow the person: their voice is still named.
+        let v = voice(&[1.0, 0.1, 0.0], 20.0);
+        assert_eq!(lib.name(&v, &[]), Some(Named::Sure("Luca Bianchi".into())));
     }
 
     #[test]

@@ -503,12 +503,22 @@ fn finish_pending(app: State<'_, App>) {
     app.finisher.start(&app.handle);
 }
 
+/// A person known by voice as the voices page shows them: never their
+/// prints, which stay in this process (a voiceprint is personal data).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Voice {
     name: String,
-    prints: usize,
+    /// Seconds of their voice, all prints together.
     seconds: f64,
+    /// The meetings their prints come from (at most the latest 5).
+    meetings: usize,
+    /// The latest of those meetings (its id, `YYYYMMDD-HHMMSS`): when they
+    /// were last named.
+    last: String,
+    /// No print has `GOOD_ENROLL` seconds: they may not be recognized
+    /// every time (a person is matched by their best print).
+    weak: bool,
 }
 
 #[tauri::command]
@@ -517,12 +527,26 @@ fn list_voices(app: State<App>) -> Answer<Vec<Voice>> {
     Ok(lib
         .people
         .into_iter()
-        .map(|p| Voice {
-            seconds: p.prints.iter().map(|q| q.seconds).sum(),
-            prints: p.prints.len(),
-            name: p.name,
+        .map(|p| {
+            let mut meetings: Vec<&str> = p.prints.iter().map(|q| q.meeting.as_str()).collect();
+            meetings.sort_unstable();
+            meetings.dedup();
+            Voice {
+                seconds: p.prints.iter().map(|q| q.seconds).sum(),
+                meetings: meetings.len(),
+                last: meetings.last().map_or_else(String::new, |m| m.to_string()),
+                weak: p.prints.iter().all(|q| q.seconds < voices::GOOD_ENROLL),
+                name: p.name,
+            }
         })
         .collect())
+}
+
+/// Gives a person known by voice another name; refused when someone else
+/// has it (`Library::rename`).
+#[tauri::command]
+fn rename_voice(app: State<App>, from: String, to: String) -> Answer<()> {
+    voices::rename(&app.data, &from, &to).map_err(text)
 }
 
 #[tauri::command]
@@ -660,6 +684,7 @@ pub fn run() {
             list_pending,
             finish_pending,
             list_voices,
+            rename_voice,
             forget_voice,
             background_state,
             ask_background,

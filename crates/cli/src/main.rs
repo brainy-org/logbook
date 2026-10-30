@@ -281,6 +281,9 @@ enum SpeakersAction {
         speaker: String,
         name: String,
     },
+    /// Give a person known by voice another name; the meetings already
+    /// written keep the one they had.
+    Rename { name: String, new_name: String },
     /// Forget the voice of a person.
     Forget { name: String },
 }
@@ -423,6 +426,11 @@ async fn run(cli: Cli) -> Result<()> {
                         e.name
                     );
                 }
+                Ok(())
+            }
+            Some(SpeakersAction::Rename { name, new_name }) => {
+                voices::rename(&data, &name, &new_name)?;
+                eprintln!("{name}'s voice is now known as {}", new_name.trim());
                 Ok(())
             }
             Some(SpeakersAction::Forget { name }) => {

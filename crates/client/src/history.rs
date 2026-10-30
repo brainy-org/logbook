@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::brainy::Page;
 use crate::transcript::Writer;
-use crate::voices::Library;
+use crate::voices::{self, Library};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Kept {
@@ -168,8 +168,11 @@ pub fn restore(data: &Path, id: &str) -> Result<()> {
     move_meeting(&trash_dir(data), data, id)
 }
 
-/// Removes a trashed meeting for good.
+/// Removes a trashed meeting for good, with the voices kept from it to
+/// be named (voices.rs): a meeting deleted leaves no voice of the people
+/// in it but those named, which stay known by name.
 pub fn purge(data: &Path, id: &str) -> Result<()> {
+    voices::forget_meeting(data, id)?;
     let trash = trash_dir(data);
     let _ = std::fs::remove_dir_all(images(&trash, id)?);
     match std::fs::remove_file(path(&trash, id)?) {
@@ -180,6 +183,14 @@ pub fn purge(data: &Path, id: &str) -> Result<()> {
 
 /// Removes every trashed meeting: those whose undo was not waited for.
 pub fn empty_trash(data: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir(&trash_dir(data))) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".json")) {
+                let _ = voices::forget_meeting(data, id);
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(trash_dir(data));
 }
 
@@ -227,9 +238,21 @@ mod tests {
         assert!(list(&data).unwrap().is_empty());
         restore(&data, &kept.id).unwrap();
         assert_eq!(list(&data).unwrap().len(), 1);
+        // Its speakers' voices, kept to be named, go with it for good.
+        let heard = data.join("voices").join(format!("{}.json", kept.id));
+        std::fs::create_dir_all(heard.parent().unwrap()).unwrap();
+        std::fs::write(&heard, "{}").unwrap();
         trash(&data, &kept.id).unwrap();
+        assert!(heard.exists());
         purge(&data, &kept.id).unwrap();
         assert!(restore(&data, &kept.id).is_err());
+        assert!(!heard.exists());
+        // Or at the next start, for one whose undo was not waited for.
+        std::fs::write(&heard, "{}").unwrap();
+        save(&data, &kept).unwrap();
+        trash(&data, &kept.id).unwrap();
+        empty_trash(&data);
+        assert!(!heard.exists());
         let _ = std::fs::remove_dir_all(&data);
     }
 }

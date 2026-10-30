@@ -251,13 +251,27 @@ function Speakers({
   const [saving, setSaving] = useState(false);
   // The names the speaker being named could be, likeliest first.
   const [candidates, setCandidates] = useState<string[]>([]);
-  // Every voice known by name, for the field to complete.
+  // Every voice known by name, searched as the name is typed.
   const [known, setKnown] = useState<string[]>([]);
+  const [open, setOpen] = useState(false);
+  // The suggestion the arrows are on; -1: none, Enter names what is typed.
+  const [active, setActive] = useState(-1);
+
+  // The voices that could be the speaker first, then the others that
+  // match what is typed; never a name another speaker here already has.
+  const taken = meeting.speakers.map((s) => s.label);
+  const query = name.trim().toLowerCase();
+  const suggestions = [
+    ...candidates.map((n) => ({ name: n, close: true })),
+    ...known.filter((n) => !candidates.includes(n)).map((n) => ({ name: n, close: false })),
+  ].filter((v) => !taken.includes(v.name) && v.name.toLowerCase().includes(query));
 
   const setEditing = (label: string | null) => {
     setEditingState(label);
     onNaming(label !== null);
     setCandidates([]);
+    setActive(-1);
+    setOpen(label !== null);
     if (label === null) return;
     api.speakerCandidates(meeting.id, label).then(setCandidates, () => undefined);
     api.listVoices().then(
@@ -293,33 +307,68 @@ function Speakers({
       {meeting.speakers.map((s) =>
         editing === s.label ? (
           <form key={s.label} onSubmit={submit} className="flex items-center gap-1.5">
-            <input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Escape' && setEditing(null)}
-              placeholder={`Who is ${s.label}?`}
-              list="known-voices"
-              className={`${compactFieldClass} w-44`}
-            />
-            <datalist id="known-voices">
-              {known.map((n) => (
-                <option key={n} value={n} />
-              ))}
-            </datalist>
-            {candidates
-              .filter((c) => c !== name.trim())
-              .map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  title={`Their voice is close to ${c}'s`}
-                  onClick={() => setName(c)}
-                  className="rounded-full border border-dashed border-neutral-300 px-2 py-0.5 text-xs text-neutral-600 hover:border-accent hover:text-accent dark:border-neutral-600 dark:text-neutral-300"
-                >
-                  {c}?
-                </button>
-              ))}
+            <div className="relative">
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setActive(-1);
+                  setOpen(true);
+                }}
+                onFocus={() => setOpen(true)}
+                onBlur={() => setOpen(false)}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setOpen(true);
+                    const n = suggestions.length;
+                    if (n === 0) return;
+                    setActive((i) =>
+                      e.key === 'ArrowDown' ? (i + 1) % n : i <= 0 ? n - 1 : i - 1,
+                    );
+                  } else if (e.key === 'Enter' && open && suggestions[active]) {
+                    // The suggestion goes in the field; Enter again names.
+                    e.preventDefault();
+                    setName(suggestions[active].name);
+                    setOpen(false);
+                    setActive(-1);
+                  } else if (e.key === 'Escape') {
+                    if (open && suggestions.length > 0) setOpen(false);
+                    else setEditing(null);
+                  }
+                }}
+                placeholder={`Who is ${s.label}?`}
+                className={`${compactFieldClass} w-52`}
+              />
+              {open && suggestions.length > 0 && (
+                <ul className="absolute top-full left-0 z-10 mt-1 max-h-64 w-64 overflow-y-auto rounded-md border border-neutral-200 bg-white py-1 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+                  {suggestions.map((v, i) => (
+                    <li key={v.name}>
+                      <button
+                        type="button"
+                        // Before the field's blur closes the list.
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setName(v.name);
+                          setOpen(false);
+                          setActive(-1);
+                        }}
+                        onMouseEnter={() => setActive(i)}
+                        className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left ${
+                          i === active ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+                        }`}
+                      >
+                        {v.name}
+                        {v.close && (
+                          <span className={`text-xs ${mutedTextClass}`}>voice close</span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <button
               type="submit"
               disabled={saving || busy || !name.trim()}

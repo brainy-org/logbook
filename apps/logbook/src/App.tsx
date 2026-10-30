@@ -1,5 +1,5 @@
 // The app's frame: the meetings on the left, and on the right the meeting
-// being recorded, a past meeting, or the settings. The recorder's state
+// being recorded, a past meeting, the voices known by name, or the settings. The recorder's state
 // and the live transcript live here, so that they survive moving between
 // views while a meeting is recorded.
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -20,8 +20,10 @@ import { Recorder } from './components/Recorder.js';
 import { MeetingPage } from './components/MeetingPage.js';
 import { SettingsPage } from './components/SettingsPage.js';
 import { Home } from './components/Home.js';
+import { VoicesPage } from './components/VoicesPage.js';
 
-export type View = { kind: 'home' } | { kind: 'meeting'; id: string } | { kind: 'settings' };
+export type View =
+  { kind: 'home' } | { kind: 'meeting'; id: string } | { kind: 'voices' } | { kind: 'settings' };
 
 /** How long a deleted meeting can be brought back. */
 const UNDO_MS = 8000;
@@ -150,7 +152,9 @@ export function App() {
   const recording = recorder !== null;
   let main;
   if (view.kind === 'settings') {
-    main = <SettingsPage recording={recording} />;
+    main = <SettingsPage recording={recording} onOpenVoices={() => show({ kind: 'voices' })} />;
+  } else if (view.kind === 'voices') {
+    main = <VoicesPage meetings={meetings} onOpenMeeting={(id) => show({ kind: 'meeting', id })} />;
   } else if (view.kind === 'meeting') {
     main = (
       <MeetingPage
@@ -190,7 +194,7 @@ export function App() {
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-neutral-200 px-2 sm:hidden dark:border-neutral-800">
         <button
           type="button"
-          aria-label="Meetings and settings"
+          aria-label="Meetings, voices and settings"
           onClick={() => setDrawer(true)}
           className="rounded-md p-2 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
         >
