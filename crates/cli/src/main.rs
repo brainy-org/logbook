@@ -5,8 +5,7 @@
 //! files at once to find how many meetings a machine keeps up with.
 //! With `--final` the meeting is read again as it goes and once it ends;
 //! with `--brainy` the result becomes a page in brainy, with `--report`
-//! a language model writes its report, with `--tasks` it proposes the
-//! tasks agreed as rows of a brainy collection. A meeting with a final pass is
+//! a language model writes its report. A meeting with a final pass is
 //! also kept here until it is published (client pending.rs), and
 //! `finish` publishes the ones a lost server left behind. A recording is
 //! cut into meetings at a long pause or a meeting's length (client
@@ -99,18 +98,18 @@ struct Publish {
     /// by default the top of your default workspace.
     #[arg(long, env = "LOGBOOK_PARENT", requires = "brainy")]
     parent: Option<String>,
-    /// Propose the tasks agreed in the meeting as rows of this brainy
-    /// collection, "To confirm", each linked to its moment on the page:
-    /// its address, id or path of titles. The language model (as for
-    /// --report) finds them; columns it lacks are added. Without it, no tasks.
-    #[arg(long, env = "LOGBOOK_TASKS", requires = "brainy")]
-    tasks: Option<String>,
     /// The page's title; by default "Meeting" and the date.
     #[arg(long)]
     title: Option<String>,
     /// Your name, for what the microphone hears.
     #[arg(long, env = "LOGBOOK_ME", default_value = "Me")]
     me: String,
+    /// The people expected, among the voices known by name (`logbook
+    /// speakers`), e.g. --expect Luca,Anna: the speakers are named from
+    /// them only, which with many voices known names fewer people wrongly.
+    /// By default, from every voice known.
+    #[arg(long, value_delimiter = ',')]
+    expect: Vec<String>,
 }
 
 impl Publish {
@@ -123,10 +122,16 @@ impl Publish {
             brainy_url: self.brainy_url.clone(),
             brainy_token: self.brainy_token.clone(),
             parent: self.parent.clone(),
-            tasks: self.tasks.clone(),
             title: self.title.clone(),
             me: self.me.clone(),
+            expected: self.expect.clone(),
         }
+    }
+
+    /// A name no voice is known as, refused before any audio is taken.
+    fn check(&self, data: &Path) -> Result<()> {
+        voices::Library::load(data)?.expected(&self.expect)?;
+        Ok(())
     }
 }
 
@@ -335,6 +340,7 @@ async fn run(cli: Cli) -> Result<()> {
             publish,
             split,
         } => {
+            publish.check(&data)?;
             server.prepare(publish.publish().model(), 1).await?;
             let limits = split.limits();
             play(server, &data, &file, speed, !no_diarize, &publish, limits).await
@@ -364,6 +370,7 @@ async fn run(cli: Cli) -> Result<()> {
                 (true, false) => audio::Echo::Cancel,
             };
             let gain = if no_mic { aec::Gain::Off } else { mic_gain };
+            publish.check(&data)?;
             server.prepare(publish.publish().model(), 1).await?;
             live(server, &data, sources, echo, gain, &publish, split.limits()).await
         }
@@ -464,10 +471,24 @@ fn list_speakers(data: &Path) -> Result<()> {
     if !all.is_empty() {
         println!("\nlast meetings (`logbook speakers name MEETING SPEAKER NAME`):");
         for (id, heard) in all.iter().rev() {
+            let labels: Vec<String> = heard.speakers.iter().map(|s| s.label.clone()).collect();
             let speakers: Vec<String> = heard
                 .speakers
                 .iter()
-                .map(|s| format!("{} ({:.0} s)", s.label, s.voice.seconds))
+                .map(|s| {
+                    // The people it could be, for the NAME to give it.
+                    let could = lib.candidates(&s.voice, &labels, voices::CANDIDATES);
+                    if could.is_empty() {
+                        format!("{} ({:.0} s)", s.label, s.voice.seconds)
+                    } else {
+                        format!(
+                            "{} ({:.0} s; {}?)",
+                            s.label,
+                            s.voice.seconds,
+                            could.join("? ")
+                        )
+                    }
+                })
                 .collect();
             println!("  {id}  {}", speakers.join(", "));
         }
@@ -510,7 +531,7 @@ fn printed_steps() -> meeting::Steps {
             Step::Reading { done, .. } => ("finding the pauses", Some(*done)),
             Step::Transcribing { done, .. } => ("transcribing", *done),
             Step::Publishing => ("writing to brainy", None),
-            Step::Report => ("writing the report and finding the tasks", None),
+            Step::Report => ("writing the report", None),
         };
         let tenth = done.map_or(-1, |d| (d * 10.0).floor() as i64);
         let mut last = last.lock().unwrap();
@@ -535,30 +556,6 @@ fn print_outcome(outcome: &Outcome) {
         && let Some(report) = &outcome.report
     {
         println!("\n{report}");
-    }
-    if !outcome.tasks.is_empty() {
-        eprintln!(
-            "{} task(s) proposed in brainy, to confirm:",
-            outcome.tasks.len()
-        );
-        for t in &outcome.tasks {
-            let owner = t
-                .task
-                .owner
-                .as_deref()
-                .map(|o| format!(" — {o}"))
-                .unwrap_or_default();
-            let due = t
-                .task
-                .due
-                .as_deref()
-                .map(|d| format!(" (due {d})"))
-                .unwrap_or_default();
-            eprintln!("  {}{owner}{due}  {}", t.task.task, t.row.url);
-        }
-    }
-    if let Some(error) = &outcome.tasks_error {
-        eprintln!("the tasks were not all written: {error}");
     }
 }
 

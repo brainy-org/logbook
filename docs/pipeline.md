@@ -192,16 +192,15 @@ that stops leaves its running passes unknown within a minute
 A meeting is shown from its first word (client `transcript.rs`,
 `Writer::offset`): the page's first line ("Meeting started …") and its
 header at the end ("Recorded … · duration · speakers"), the default
-title, the history's start and duration, the date the tasks are read
-with, and every turn's time, which reads 00:00 at the first word. The
+title, the history's start and duration, and every turn's time, which reads 00:00 at the first word. The
 offset is the start of the first final segment, down to a whole second,
 fixed when the page is created (`write_page`) and saved with the writer
 in `meeting.json`, so `finish` and a resumed meeting print the same
 clock; without brainy it is fixed when the Markdown is written. A
 meeting of notes only has 0. Nothing else moves: segments, `until`,
 `published_until` and `final_until` stay on the meeting's samples. What
-is printed and read back (the report's and the tasks' transcript, the
-page's turns a task links to, the app's turns) is all on the displayed
+is printed and read back (the report's transcript, the app's turns) is
+all on the displayed
 clock
 (`docs/decisions/2026-10-29-the-meeting-starts-at-its-first-word.md`).
 
@@ -248,69 +247,11 @@ transcript (`meeting.rs`, `insert_under_header`); asked again, it
 replaces the blocks of the last one (`history::Kept::report_blocks`). A
 report that fails leaves the meeting published without it. A report
 written is kept in the pending folder (`report.md`) until it is on the
-page: a meeting finished again (its tasks' rows not all written) does
-not ask the model again.
+page: a meeting finished again does not ask the model again.
 
-## Tasks
-
-With a collection set (`--tasks`, the app's "Tasks to the collection"),
-the tasks agreed in the meeting are proposed in brainy as rows of that
-collection, "To confirm", each linked to the moment of the page where it
-was said. The model's tasks are proposals, not facts: the person
-promotes or deletes each row in brainy
-(`docs/decisions/2026-10-29-tasks-as-collection-rows.md`). Decisions
-stay in the report.
-
-1. **Found** (`crates/engine/src/tasks.rs`, `POST /tasks` or the model
-   here) before the report, from the same transcript and notes, with
-   the meeting's date (`YYYY-MM-DD`, its weekday named in the request).
-   The transcript goes in parts of 80 000 characters (the report's
-   `PART`, two to three hours), one request each, whatever the meeting's
-   length; each part is told the tasks found before it (at most 100 in
-   all). The prompt asks for what the meeting agreed only: asked and
-   accepted, taken on or given, or agreed on a condition (the condition
-   in the task); in a round of updates, a person's own plan only when
-   someone else waits for it or it involves someone else. Each task is
-   written to be understood alone (what it is about, with the numbers and
-   names said: "Ask David" is not one), the owner only when named or
-   self-assigned (the doer, not the speaker or who proposed it), a due
-   date only when said and resolvable, and the turn's time
-   (`docs/decisions/2026-10-30-tasks-are-the-report-s-action-items.md`).
-2. **The report's action items** are those tasks: the report is asked
-   after them (`ReportRequest::tasks`) and its model writes a placeholder
-   under its action items heading, which the engine replaces with the
-   tasks' lines (`report::with_actions`): the rows and the report never
-   list two different things. Without tasks (no collection, a model that
-   could not be reached) the model lists them itself.
-3. **Checked**: the answer is JSON found wherever it is in the text (a
-   `<think>` block, a fence, a sentence around it); an item without a
-   task, or without a time of the transcript, is dropped (no moment to
-   link to); an owner that is not a speaker's label is none, a due date
-   that is not a real date is none; repeats (case and punctuation
-   aside) are one. An answer that holds no list is no tasks from that
-   part and a warning; only a model that cannot be reached is an error,
-   and that is no tasks and a warning too: the page and the report go
-   on.
-4. **Recorded** in the pending meeting (`meeting.json`, `tasks`: what
-   was found, the rows written, `writing`) before any row is written.
-5. **Written** with the person's token (`crates/client/src/tasks.rs`):
-   the collection gets the columns it lacks (`extend_collection`: Owner
-   text, Due date, Status with Open, Done and "To confirm", Meeting and
-   Moment URLs), each row is created (`create_page` in the collection)
-   with Status "To confirm", the page's address in Meeting and the turn's
-   (`<page>#block-<id>`, the last turn heading at or before the task's
-   time) in Moment, and its text mentions the meeting's page (a
-   backlink there). Each row is recorded once brainy answers; `writing`
-   is saved before it is asked for, and a row asked for whose answer was
-   lost is looked up (title and Meeting) before it is written again.
-   brainy not answering keeps the meeting pending (before the report
-   goes on the page): `finish` writes the rows left. A refusal (4xx)
-   gives up the rest, with a warning.
-
-A speaker renamed afterwards (the app's meeting page) is renamed in its
-tasks too: the rows' Owner (`PATCH /api/v1/rows`), the report's action
-items on the page and in the history. A row deleted in brainy does not
-stop the rename; the app says the rows were not renamed.
+A speaker renamed afterwards (the app's meeting page) is renamed on the
+page and in the history; the app then writes the report again with the
+new names (docs/app.md).
 
 ## Measured
 

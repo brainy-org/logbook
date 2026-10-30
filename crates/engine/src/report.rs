@@ -16,10 +16,10 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::llm::{self, Options};
-use crate::protocol::{ReportRequest, Task};
+use crate::protocol::ReportRequest;
 
 /// The longest transcript sent in one request, in characters: some
 /// 90 000 tokens, six to nine hours of speech (a 28-minute meeting was
@@ -154,59 +154,12 @@ pub fn write(agent: &llm::Agent, options: &Options, request: &ReportRequest) -> 
             header(request)
         ),
     };
-    let mut user = user;
-    if !request.tasks.is_empty() {
-        user.push_str(&format!(
-            "\n\nThe meeting's action items are already listed: under the <Action items> \
-             heading write only the line {ACTIONS}, nothing else, and they are put there."
-        ));
-    }
     let answer = llm::complete(agent, options, chat(&options.model, INSTRUCTIONS, user))?;
-    let markdown = with_actions(&clean(&answer), &request.tasks);
+    let markdown = clean(&answer);
     if markdown.is_empty() {
         bail!("the model wrote an empty report");
     }
     Ok(markdown)
-}
-
-/// Where the report's action items go when they are the meeting's tasks.
-const ACTIONS: &str = "{{actions}}";
-
-/// The report with `tasks` as its action items, in place of `ACTIONS`:
-/// the rows of the tracker and the report's list are one list. A model
-/// that left the line out keeps the list it wrote (a warning).
-fn with_actions(markdown: &str, tasks: &[Task]) -> String {
-    if tasks.is_empty() {
-        return markdown.to_string();
-    }
-    if !markdown.contains(ACTIONS) {
-        warn!("the report has no place for the tasks: its own action items are kept");
-        return markdown.to_string();
-    }
-    let lines: Vec<String> = tasks
-        .iter()
-        .map(|t| {
-            let mut line = format!("- [ ] {}", t.task.trim());
-            if let Some(owner) = &t.owner {
-                line.push_str(&format!(" — **{owner}**"));
-            }
-            if let Some(due) = &t.due {
-                line.push_str(&format!(" · {due}"));
-            }
-            line
-        })
-        .collect();
-    markdown
-        .lines()
-        .map(|l| {
-            if l.trim().trim_start_matches(['-', '*', ' ']) == ACTIONS {
-                lines.join("\n")
-            } else {
-                l.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// What the report is written from: the transcript, or notes of its parts.
@@ -317,42 +270,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_action_items_are_the_tasks() {
-        let task = |task: &str, owner: Option<&str>, due: Option<&str>| Task {
-            task: task.into(),
-            owner: owner.map(Into::into),
-            due: due.map(Into::into),
-            at: 0.0,
-        };
-        let tasks = [
-            task("Inviare la mail", Some("Giovanna"), None),
-            task(
-                "Pubblicare le due versioni",
-                Some("Speaker 8"),
-                Some("2026-10-31"),
-            ),
-            task("Chiedere a David", None, None),
-        ];
-        let report = "## Riepilogo\n\nTesto.\n\n## Azioni\n\n{{actions}}";
-        assert_eq!(
-            with_actions(report, &tasks),
-            "## Riepilogo\n\nTesto.\n\n## Azioni\n\n\
-             - [ ] Inviare la mail — **Giovanna**\n\
-             - [ ] Pubblicare le due versioni — **Speaker 8** · 2026-10-31\n\
-             - [ ] Chiedere a David"
-        );
-        // Put in a list item by the model, the same.
-        assert!(
-            with_actions("## Azioni\n- {{actions}}", &tasks)
-                .starts_with("## Azioni\n- [ ] Inviare")
-        );
-        // Left out: the model's own list stays.
-        let own = "## Azioni\n\n- [ ] Altro";
-        assert_eq!(with_actions(own, &tasks), own);
-        assert_eq!(with_actions(report, &[]), report);
-    }
-
-    #[test]
     fn what_models_put_around_the_report_is_dropped() {
         assert_eq!(
             clean("<think>hm</think>\n## Summary\nOk."),
@@ -428,7 +345,6 @@ mod tests {
             title: "Weekly".into(),
             notes: "- budget".into(),
             transcript: "**Luca** · 00:04\n\nIl budget è approvato.".into(),
-            tasks: Vec::new(),
         };
         let report = write(&llm::agent(&options), &options, &request).unwrap();
         assert_eq!(report, "## Summary\nDone.");
@@ -461,7 +377,6 @@ mod tests {
             title: "Offsite".into(),
             notes: "- hiring".into(),
             transcript,
-            tasks: Vec::new(),
         };
         let report = write(&llm::agent(&options), &options, &request).unwrap();
         assert_eq!(report, "## Summary\nLong.");

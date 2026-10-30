@@ -1,5 +1,7 @@
 # Tasks are the report's action items, asked before it
 
+> Superseded: the tasks were removed (`2026-10-30-tasks-removed.md`).
+
 The tasks are found first and the report is written with them: its action
 items are the tasks' lines, put in by the engine in place of a placeholder
 the model writes (`report::with_actions`), not a second list of the

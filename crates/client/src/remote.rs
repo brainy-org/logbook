@@ -10,8 +10,7 @@
 //! final passes over HTTP, the audio streamed from where the final
 //! segments stopped; both try again for a while when the server does not
 //! answer, then give up, and the caller keeps the meeting pending.
-//! `report`: the meeting's report by the server's model; `tasks`, its
-//! tasks.
+//! `report`: the meeting's report by the server's model.
 //!
 //! The live audio goes in Opus when the server takes it (`ready` says so),
 //! in PCM otherwise: each session has its own encoder per channel, flushed
@@ -27,7 +26,7 @@ use logbook_engine::codec::{LiveEncoder, StreamEncoder};
 use logbook_engine::protocol::SAMPLE_RATE;
 use logbook_engine::protocol::{
     ChannelConfig, ClientMessage, Codec, FinalState, Report, ReportRequest, ServerMessage,
-    SpeakerVoice, Started, Task, Tasks, TasksRequest, Upload, Utterance, encode_audio,
+    SpeakerVoice, Started, Upload, Utterance, encode_audio,
 };
 use logbook_engine::recording::RangeReader;
 use serde::{Deserialize, Serialize};
@@ -854,34 +853,6 @@ pub async fn report(server: &Server, request: &ReportRequest) -> Result<String> 
     }
     let report: Report = response.json().await?;
     Ok(report.markdown)
-}
-
-/// The tasks agreed in the meeting, found by the server's model
-/// (`POST /tasks`).
-pub async fn tasks(server: &Server, request: &TasksRequest) -> Result<Vec<Task>> {
-    let url = format!("{}/tasks", server.http);
-    let response = server
-        .authorized(http()?.post(&url))
-        .json(request)
-        .send()
-        .await
-        .with_context(|| format!("could not reach {url}"))?;
-    let status = response.status();
-    if status == reqwest::StatusCode::NOT_IMPLEMENTED {
-        bail!("the server has no language model to find the tasks");
-    }
-    if status == reqwest::StatusCode::NOT_FOUND {
-        bail!("the server is older than the tasks (no /tasks)");
-    }
-    if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        bail!(
-            "the server could not find the tasks ({status}): {}",
-            text.trim()
-        );
-    }
-    let tasks: Tasks = response.json().await?;
-    Ok(tasks.tasks)
 }
 
 pub enum Pass {

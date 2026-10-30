@@ -20,10 +20,10 @@ use logbook_engine::finals::Finals;
 use logbook_engine::llm;
 use logbook_engine::mirror::{Fetching, Mirror};
 use logbook_engine::protocol::{
-    ChannelConfig, FinalState, PassProgress, ReportRequest, SpeakerVoice, Task, TasksRequest,
+    ChannelConfig, FinalState, PassProgress, ReportRequest, SpeakerVoice,
 };
 use logbook_engine::session::{self, Feed, Resume, Shared};
-use logbook_engine::{Engine, Options, batcher, report, tasks};
+use logbook_engine::{Engine, Options, batcher, report};
 use serde::Serialize;
 use tokio::sync::OnceCell;
 
@@ -106,12 +106,12 @@ impl Local {
         self
     }
 
-    /// A report or tasks need a model here: an error now, not at the
+    /// A report needs a model here: an error now, not at the
     /// meeting's end.
     pub fn check_model(&self, needed: bool) -> Result<()> {
         if needed && self.config.model().is_none() {
             bail!(
-                "the report and the tasks without a server need a language model \
+                "the report without a server needs a language model \
                  (LOGBOOK_LLM_URL and LOGBOOK_LLM_MODEL)"
             );
         }
@@ -128,16 +128,6 @@ impl Local {
             report::write(&llm::agent(&options), &options, &request)
         })
         .await?
-    }
-
-    /// The meeting's tasks found by the language model of `Config`.
-    pub async fn tasks(&self, request: TasksRequest) -> Result<Vec<Task>> {
-        let options = self
-            .config
-            .model()
-            .context("no language model is set to find the tasks")?;
-        tokio::task::spawn_blocking(move || tasks::find(&llm::agent(&options), &options, &request))
-            .await?
     }
 
     /// The models loaded, fetched first if missing; `sessions` at once

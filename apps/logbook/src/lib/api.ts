@@ -18,7 +18,7 @@ export interface Settings {
     headphones: boolean;
     micGainAuto: boolean;
   };
-  brainy: { enabled: boolean; url: string; parent: string; tasks: string };
+  brainy: { enabled: boolean; url: string; parent: string };
   model: { report: boolean; url: string; name: string };
 }
 
@@ -121,15 +121,6 @@ export interface MeetingView {
   notes: string;
   report: string | null;
   reportError: string | null;
-  /** Proposed in brainy as rows to confirm, each linked to its moment on the page. */
-  tasks: {
-    task: string;
-    owner: string | null;
-    due: string | null;
-    at: number;
-    row: string;
-    moment: string;
-  }[];
   warnings: string[];
   speakers: { label: string; nameable: boolean }[];
   turns: {
@@ -150,9 +141,6 @@ export interface Renamed {
   enrolled: { name: string; seconds: number; prints: number } | null;
   voice_error: string | null;
   page_blocks: number;
-  /** Task rows whose Owner they now are. */
-  rows: number;
-  rows_error: string | null;
 }
 
 export interface Voice {
@@ -194,8 +182,9 @@ export const api = {
   /** The text models of an OpenAI-compatible API; `key` undefined: the one kept. */
   listModels: (url: string, key?: string) => invoke<string[]>('list_models', { url, key }),
   /** `mode` is kept in the settings for the next meeting. */
-  startMeeting: (title: string, mode: Mode) =>
-    invoke<RecorderState>('start_meeting', { title, mode }),
+  /** `expected`: the voices known by name the speakers are named from; none, every one. */
+  startMeeting: (title: string, mode: Mode, expected: string[]) =>
+    invoke<RecorderState>('start_meeting', { title, mode, expected }),
   stopMeeting: () => invoke<void>('stop_meeting'),
   /** The notes of meeting `part` of the recording (`RecorderState.part`). */
   setNotes: (part: number, notes: string) => invoke<void>('set_notes', { part, notes }),
@@ -207,6 +196,9 @@ export const api = {
   getMeeting: (id: string) => invoke<MeetingView>('get_meeting', { id }),
   renameSpeaker: (id: string, from: string, to: string) =>
     invoke<{ renamed: Renamed; meeting: MeetingView }>('rename_speaker', { id, from, to }),
+  /** The names a speaker could be, likeliest first, from the voices known by name. */
+  speakerCandidates: (id: string, label: string) =>
+    invoke<string[]>('speaker_candidates', { id, label }),
   writeReport: (id: string) => invoke<MeetingView>('write_report', { id }),
   saveMeetingNotes: (id: string, notes: string) =>
     invoke<void>('save_meeting_notes', { id, notes }),

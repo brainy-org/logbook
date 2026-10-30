@@ -72,35 +72,6 @@ struct Uploaded {
     block_id: String,
 }
 
-/// A collection's properties, as `query_collection` describes them.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Collection {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub properties: Vec<Property>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct Property {
-    pub name: String,
-    /// brainy's type: `title`, `text`, `date`, `status`, `select`, `url`…
-    #[serde(rename = "type")]
-    pub kind: String,
-    #[serde(default)]
-    pub options: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct Queried {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    properties: Vec<Property>,
-    #[serde(default)]
-    rows: Vec<Created>,
-}
-
 impl Brainy {
     pub fn new(url: &str, token: &str) -> Result<Self> {
         Ok(Self {
@@ -213,93 +184,6 @@ impl Brainy {
             .next()
             .context("the page has no blocks")?;
         Ok(first.block_id)
-    }
-
-    /// A turn's heading block on the page ("**Luca** · 12:34"), by its time
-    /// in seconds: the moments a row of the meeting's tasks links to.
-    pub async fn turns(&self, page: &str) -> Result<Vec<(String, f64)>> {
-        Ok(self
-            .blocks(page)
-            .await?
-            .into_iter()
-            .filter(|b| b.depth == 0)
-            .filter_map(|b| Some((b.block_id, turn_time(&b.markdown)?)))
-            .collect())
-    }
-
-    /// The collection `id` (its page or inline block): its properties.
-    /// An error if it is not a collection.
-    pub async fn collection(&self, id: &str) -> Result<Collection> {
-        let queried: Queried = self
-            .send(
-                Method::POST,
-                &format!("/api/v1/collections/{id}/query"),
-                &json!({ "limit": 1 }),
-            )
-            .await?;
-        Ok(Collection {
-            name: queried.name,
-            properties: queried.properties,
-        })
-    }
-
-    /// Adds properties (brainy's specs: name, type, options) and options of
-    /// existing ones to a collection; names already there are skipped.
-    pub async fn extend_collection(
-        &self,
-        id: &str,
-        properties: &[serde_json::Value],
-        options: &serde_json::Value,
-    ) -> Result<()> {
-        let _: serde_json::Value = self
-            .send(
-                Method::POST,
-                &format!("/api/v1/collections/{id}/extend"),
-                &json!({ "properties": properties, "options": options }),
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// The address of the first row of collection `id` that `filters`
-    /// (brainy's: property, operator, value) keep, if any.
-    pub async fn find_row(
-        &self,
-        id: &str,
-        filters: &[serde_json::Value],
-    ) -> Result<Option<String>> {
-        let queried: Queried = self
-            .send(
-                Method::POST,
-                &format!("/api/v1/collections/{id}/query"),
-                &json!({ "filters": filters, "match": "all", "limit": 1 }),
-            )
-            .await?;
-        Ok(queried.rows.into_iter().next().map(|r| r.url))
-    }
-
-    /// A row of collection `id`: its title, its properties by name, and
-    /// Markdown in it; its address.
-    pub async fn create_row(
-        &self,
-        id: &str,
-        title: &str,
-        properties: &serde_json::Map<String, serde_json::Value>,
-        markdown: &str,
-    ) -> Result<String> {
-        let created: Created = self
-            .send(
-                Method::POST,
-                "/api/v1/pages",
-                &json!({
-                    "title": title,
-                    "parent_id": id,
-                    "properties": properties,
-                    "content": markdown,
-                }),
-            )
-            .await?;
-        Ok(created.url)
     }
 
     /// Rewrites the page's first block (one block of Markdown): the
@@ -418,26 +302,8 @@ impl Brainy {
 
     /// Gives the speaker labelled `from` the label `to` on the meeting's
     /// page: the heading line of each of its turns ("**from** · 00:04"),
-    /// the report's action items they own ("- [ ] … — **from**"), and its
-    /// name in the header's list of speakers. Returns how many blocks
-    /// changed.
-    /// Sets the text property `property` of the collection rows `rows`
-    /// (their page ids) to `value`, in one change.
-    pub async fn set_rows(&self, rows: &[String], property: &str, value: &str) -> Result<()> {
-        let rows: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|id| serde_json::json!({ "page_id": id, "properties": { property: value } }))
-            .collect();
-        let _: serde_json::Value = self
-            .send(
-                Method::PATCH,
-                "/api/v1/rows",
-                &serde_json::json!({ "rows": rows }),
-            )
-            .await?;
-        Ok(())
-    }
-
+    /// and its name in the header's list of speakers. Returns how many
+    /// blocks changed.
     pub async fn rename_speaker(&self, page: &str, from: &str, to: &str) -> Result<usize> {
         let blocks = self.blocks(page).await?;
         let mut changed = 0;
@@ -446,7 +312,6 @@ impl Brainy {
                 renamed_header(&block.markdown, from, to)
             } else if block.depth == 0 {
                 renamed_turn(&block.markdown, from, to)
-                    .or_else(|| renamed_action(&block.markdown, from, to))
             } else {
                 None
             };
@@ -492,45 +357,11 @@ impl Brainy {
     }
 }
 
-/// The time of a turn's heading line ("**Luca** · 1:02:03"), in seconds.
-pub(crate) fn turn_time(markdown: &str) -> Option<f64> {
-    let line = markdown.trim();
-    let rest = line.strip_prefix("**")?;
-    let (_, time) = rest.rsplit_once("** · ")?;
-    let mut total = 0u64;
-    let fields: Vec<&str> = time.split(':').collect();
-    if !(2..=3).contains(&fields.len()) {
-        return None;
-    }
-    for field in fields {
-        if field.is_empty() || !field.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
-        total = total * 60 + field.parse::<u64>().ok()?;
-    }
-    Some(total as f64)
-}
-
 /// A turn's heading line with the speaker's new label, if it is `from`'s.
 fn renamed_turn(markdown: &str, from: &str, to: &str) -> Option<String> {
     let prefix = format!("**{}** · ", escape(from));
     let rest = markdown.strip_prefix(&prefix)?;
     Some(format!("**{}** · {rest}", escape(to)))
-}
-
-/// An action item of the report with its owner's new label, if it is
-/// `from`'s: "- [ ] Send the quote — **from**", a due date after it or not.
-pub(crate) fn renamed_action(markdown: &str, from: &str, to: &str) -> Option<String> {
-    if !markdown.trim_start().starts_with("- [") {
-        return None;
-    }
-    let owner = format!(" — **{}**", escape(from));
-    let at = markdown.rfind(&owner)?;
-    let after = &markdown[at + owner.len()..];
-    if !(after.is_empty() || after.starts_with(" · ") || after.starts_with('\n')) {
-        return None;
-    }
-    Some(format!("{} — **{}**{after}", &markdown[..at], escape(to)))
 }
 
 /// The header ("Recorded … · 12 min · Marco, Speaker 2") with `from`
@@ -650,27 +481,6 @@ mod tests {
         );
         assert_eq!(renamed_turn("Speaker 2 said so", "Speaker 2", "Luca"), None);
         assert_eq!(
-            renamed_action(
-                "- [ ] Send it — **Speaker 2** · 2026-10-31",
-                "Speaker 2",
-                "Luca"
-            )
-            .as_deref(),
-            Some("- [ ] Send it — **Luca** · 2026-10-31")
-        );
-        assert_eq!(
-            renamed_action("- [ ] Send it — **Speaker 2**", "Speaker 2", "Luca").as_deref(),
-            Some("- [ ] Send it — **Luca**")
-        );
-        assert_eq!(
-            renamed_action("- [ ] Send it — **Speaker 22**", "Speaker 2", "Luca"),
-            None
-        );
-        assert_eq!(
-            renamed_action("Ask **Speaker 2** — **Speaker 2**", "Speaker 2", "Luca"),
-            None
-        );
-        assert_eq!(
             renamed_header(
                 "Recorded 2026-10-27 09:15 · 12 min · Marco, Speaker 2, Speaker 3 (Luca?)",
                 "Speaker 3 (Luca?)",
@@ -683,20 +493,6 @@ mod tests {
             renamed_header("Recorded … · 1 min · Marco", "Anna", "Bo"),
             None
         );
-    }
-
-    #[test]
-    fn a_turn_heading_gives_its_time() {
-        assert_eq!(turn_time("**Luca** · 12:34"), Some(754.0));
-        assert_eq!(
-            turn_time("**Speaker 2 \\(Luca?\\)** · 1:02:03"),
-            Some(3723.0)
-        );
-        assert_eq!(
-            turn_time("Recorded 2026-10-29 09:00 · 12 min · Marco"),
-            None
-        );
-        assert_eq!(turn_time("**bold** text"), None);
     }
 
     #[test]

@@ -211,57 +211,12 @@ pub struct ReportRequest {
     #[serde(default)]
     pub notes: String,
     pub transcript: String,
-    /// The meeting's tasks, found first (`POST /tasks`): the report's
-    /// action items are these, not a list of its own. None from a client
-    /// older than it, or without tasks: the model lists them itself.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tasks: Vec<Task>,
 }
 
 /// `POST /reports` answers with the report as Markdown.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Report {
     pub markdown: String,
-}
-
-/// `POST /tasks`: the tasks agreed in the meeting, found by the server's
-/// model (engine tasks.rs), from the same transcript as the report.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TasksRequest {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub notes: String,
-    pub transcript: String,
-    /// The day the meeting took place, `YYYY-MM-DD` (the client's local
-    /// date): a due date said as "Friday" is resolved from it.
-    pub date: String,
-}
-
-/// `POST /tasks` answers with the tasks found, in the order they were
-/// discussed; none when the model's answer could not be read.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct Tasks {
-    pub tasks: Vec<Task>,
-}
-
-/// A task someone took on or was given in the meeting, as the model
-/// proposes it: a person confirms it (docs/decisions/
-/// 2026-10-29-tasks-as-collection-rows.md).
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct Task {
-    /// What is to be done, in the meeting's language.
-    pub task: String,
-    /// The speaker who owns it, exactly as the transcript labels them;
-    /// None when it is nobody's, or someone who did not speak.
-    #[serde(default)]
-    pub owner: Option<String>,
-    /// `YYYY-MM-DD`, only when a date was said.
-    #[serde(default)]
-    pub due: Option<String>,
-    /// Seconds from the meeting's start of the turn where it was agreed:
-    /// every task has one, so that its row links to that moment.
-    pub at: f64,
 }
 
 /// A run of words from one speaker of one channel. Times are seconds from the

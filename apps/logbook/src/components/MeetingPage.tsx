@@ -1,11 +1,11 @@
-// A past meeting: its report, your notes and the final transcript, the
-// tasks proposed in brainy (to confirm there, each a click from its
-// moment on the page), and its
+// A past meeting: its report, your notes and the final transcript, and its
 // speakers, each of which can be given a name ("Speaker 2" → "Luca"):
 // here, on the brainy page, and in the voices known by name, so that the
-// next meetings name them by themselves.
+// next meetings name them by themselves. The names a speaker could be are
+// offered, and the report is written again with the new names a few
+// seconds after the last rename (or on leaving the meeting).
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ExternalLink, ListChecks, RefreshCw, Trash2, UserRound } from 'lucide-react';
+import { ExternalLink, RefreshCw, Trash2, UserRound } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, clock, duration, type MeetingView } from '../lib/api.js';
 import { Markdown } from './Markdown.js';
@@ -33,6 +33,9 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [writing, setWriting] = useState(false);
+  // A rename waiting for the report to be written again with it.
+  const due = useRef<{ id: string; timer: number } | null>(null);
+  const naming = useRef(false);
 
   useEffect(() => {
     api.getMeeting(id).then(
@@ -43,6 +46,17 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
       (e) => setError(String(e)),
     );
   }, [id]);
+
+  // Leaving the meeting writes its report now, not never.
+  useEffect(
+    () => () => {
+      if (!due.current) return;
+      window.clearTimeout(due.current.timer);
+      void api.writeReport(due.current.id).catch(() => undefined);
+      due.current = null;
+    },
+    [id],
+  );
 
   if (!meeting) {
     return (
@@ -68,6 +82,21 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
     } finally {
       setWriting(false);
     }
+  };
+
+  // After a rename, once no other follows for a while: one report for
+  // several names, never one written while a name is being typed.
+  const rewriteSoon = (meetingId: string) => {
+    if (due.current) window.clearTimeout(due.current.timer);
+    const fire = () => {
+      if (naming.current) {
+        due.current = { id: meetingId, timer: window.setTimeout(fire, REWRITE_DELAY_MS) };
+        return;
+      }
+      due.current = null;
+      void rewrite();
+    };
+    due.current = { id: meetingId, timer: window.setTimeout(fire, REWRITE_DELAY_MS) };
   };
 
   const started = new Date(meeting.started);
@@ -115,10 +144,13 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
 
           <Speakers
             meeting={meeting}
+            busy={writing}
+            onNaming={(on) => (naming.current = on)}
             onRenamed={(m, message) => {
               setMeeting(m);
               setNotice(message);
               onChanged();
+              if (m.report) rewriteSoon(m.id);
             }}
             onError={setError}
           />
@@ -126,16 +158,10 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
           {notice && (
             <p className="mt-3 rounded-md bg-accent/10 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-200">
               {notice}{' '}
-              {meeting.report && (
-                <button
-                  type="button"
-                  disabled={writing}
-                  className="text-accent hover:underline disabled:no-underline disabled:opacity-70"
-                  onClick={() => void rewrite()}
-                >
-                  {writing ? 'Writing the report…' : 'Write the report again with the new names'}
-                </button>
-              )}
+              {meeting.report &&
+                (writing
+                  ? 'Writing the report again with the new names…'
+                  : 'The report will be written again with the new names.')}
             </p>
           )}
           {error && (
@@ -151,8 +177,6 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
               {w}
             </p>
           ))}
-
-          {meeting.tasks.length > 0 && <Tasks meeting={meeting} onError={setError} />}
 
           <nav className="mt-8 mb-5 flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
             {(['report', 'notes', 'transcript'] as const).map((t) => (
@@ -205,57 +229,42 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
   );
 }
 
-/** The tasks proposed as rows "To confirm": each opens its row or its moment on the page. */
-function Tasks({ meeting, onError }: { meeting: MeetingView; onError: (e: string) => void }) {
-  const open = (url: string) => openUrl(url).catch((e) => onError(String(e)));
-  return (
-    <section className="mt-6 rounded-md border border-neutral-200 px-4 py-3 dark:border-neutral-800">
-      <h2 className="flex items-center gap-1.5 text-sm font-medium">
-        <ListChecks className="size-4" />
-        {meeting.tasks.length === 1 ? '1 task' : `${meeting.tasks.length} tasks`} to confirm in
-        brainy
-      </h2>
-      <ul className="mt-2 space-y-1.5 text-sm">
-        {meeting.tasks.map((t) => (
-          <li key={t.row} className="flex items-baseline gap-2">
-            <button
-              type="button"
-              title="Where it was said"
-              onClick={() => void open(t.moment)}
-              className="shrink-0 font-mono text-xs text-neutral-500 hover:text-accent"
-            >
-              {clock(t.at)}
-            </button>
-            <button
-              type="button"
-              title="Open the row in brainy"
-              onClick={() => void open(t.row)}
-              className="text-left hover:text-accent"
-            >
-              {t.task}
-            </button>
-            <span className={`ml-auto shrink-0 text-xs ${mutedTextClass}`}>
-              {[t.owner, t.due].filter(Boolean).join(' · ')}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
+/** How long after the last rename the report is written again. */
+const REWRITE_DELAY_MS = 8000;
 
 function Speakers({
   meeting,
+  busy,
+  onNaming,
   onRenamed,
   onError,
 }: {
   meeting: MeetingView;
+  /** The report is being written: a rename now would race it. */
+  busy: boolean;
+  onNaming: (on: boolean) => void;
   onRenamed: (m: MeetingView, message: string) => void;
   onError: (e: string | null) => void;
 }) {
-  const [editing, setEditing] = useState<string | null>(null);
+  const [editing, setEditingState] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
+  // The names the speaker being named could be, likeliest first.
+  const [candidates, setCandidates] = useState<string[]>([]);
+  // Every voice known by name, for the field to complete.
+  const [known, setKnown] = useState<string[]>([]);
+
+  const setEditing = (label: string | null) => {
+    setEditingState(label);
+    onNaming(label !== null);
+    setCandidates([]);
+    if (label === null) return;
+    api.speakerCandidates(meeting.id, label).then(setCandidates, () => undefined);
+    api.listVoices().then(
+      (v) => setKnown(v.map((x) => x.name)),
+      () => undefined,
+    );
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -270,12 +279,7 @@ function Speakers({
             ? ' (from little speech: naming them again in another meeting helps).'
             : '.')
         : `Their voice is not saved (${renamed.voice_error}).`;
-      const rows = renamed.rows_error
-        ? ` Their tasks still name ${editing} in brainy (${renamed.rows_error}).`
-        : renamed.rows > 0
-          ? ` ${renamed.rows === 1 ? 'Their task names' : `Their ${renamed.rows} tasks name`} them.`
-          : '';
-      onRenamed(m, `${editing} is now ${name.trim()}. ${voice}${rows}`);
+      onRenamed(m, `${editing} is now ${name.trim()}. ${voice}`);
       setEditing(null);
     } catch (err) {
       onError(String(err));
@@ -295,11 +299,30 @@ function Speakers({
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => e.key === 'Escape' && setEditing(null)}
               placeholder={`Who is ${s.label}?`}
+              list="known-voices"
               className={`${compactFieldClass} w-44`}
             />
+            <datalist id="known-voices">
+              {known.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+            {candidates
+              .filter((c) => c !== name.trim())
+              .map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  title={`Their voice is close to ${c}'s`}
+                  onClick={() => setName(c)}
+                  className="rounded-full border border-dashed border-neutral-300 px-2 py-0.5 text-xs text-neutral-600 hover:border-accent hover:text-accent dark:border-neutral-600 dark:text-neutral-300"
+                >
+                  {c}?
+                </button>
+              ))}
             <button
               type="submit"
-              disabled={saving || !name.trim()}
+              disabled={saving || busy || !name.trim()}
               className={primaryButtonSmClass}
             >
               {saving ? 'Saving…' : 'Name'}

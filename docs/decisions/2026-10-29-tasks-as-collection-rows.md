@@ -1,5 +1,7 @@
 # A meeting's tasks as rows to confirm in a brainy collection
 
+> Superseded: the tasks were removed (`2026-10-30-tasks-removed.md`).
+
 **Verdict.** The tasks agreed in a meeting become rows of a brainy
 collection the person chooses (`--tasks`, the app's "Tasks to the
 collection"), written with their own token at the meeting's end. The rows

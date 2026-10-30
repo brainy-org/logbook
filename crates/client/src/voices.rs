@@ -8,6 +8,9 @@
 //! from (`<data>/voices/<meeting>.json`). A speaker is named when its voice
 //! is close to one person's and to no one else's; otherwise it stays
 //! "Speaker N", with the likeliest name as a question when there is one.
+//! A meeting started with its expected people (`--expect`, the app's
+//! picker) is named from them only: with a library of hundreds, strangers
+//! close to someone's voice are many, with five people they are few.
 //!
 //! Voiceprints are biometric data: they never leave this computer, the
 //! meetings' ones are kept for the last KEEP_MEETINGS meetings only, and
@@ -43,6 +46,12 @@ pub const MIN_ENROLL: f64 = 10.0;
 pub const GOOD_ENROLL: f64 = 30.0;
 /// The meetings whose voices are kept to be named afterwards.
 const KEEP_MEETINGS: usize = 20;
+/// The prints kept per person, the latest: a person is matched by their
+/// best print, so one named in every meeting would otherwise grow without
+/// end and draw strangers' voices to their name.
+const MAX_PRINTS: usize = 5;
+/// The names offered for a speaker being named (`candidates`).
+pub const CANDIDATES: usize = 3;
 
 /// The encoder the voices come from: another model's embeddings are in
 /// another space, and the library is not used with them.
@@ -125,7 +134,11 @@ impl Library {
 
     pub fn add(&mut self, name: &str, print: Print) {
         match self.people.iter_mut().find(|p| p.name == name) {
-            Some(p) => p.prints.push(print),
+            Some(p) => {
+                p.prints.push(print);
+                let over = p.prints.len().saturating_sub(MAX_PRINTS);
+                p.prints.drain(..over);
+            }
             None => self.people.push(Person {
                 name: name.to_string(),
                 prints: vec![print],
@@ -140,15 +153,83 @@ impl Library {
         self.people.len() != before
     }
 
+    /// The people named `names` only (any case), the others left out;
+    /// everyone with no names.
+    pub fn only(mut self, names: &[String]) -> Self {
+        if !names.is_empty() {
+            self.people
+                .retain(|p| names.iter().any(|n| n.eq_ignore_ascii_case(&p.name)));
+        }
+        self
+    }
+
+    /// `names` as the library spells them; an error for one it does not
+    /// know, before a meeting is named from them.
+    pub fn expected(&self, names: &[String]) -> Result<Vec<String>> {
+        names
+            .iter()
+            .map(|n| n.trim())
+            .filter(|n| !n.is_empty())
+            .map(|n| {
+                self.people
+                    .iter()
+                    .find(|p| p.name.eq_ignore_ascii_case(n))
+                    .map(|p| p.name.clone())
+                    .with_context(|| format!("no voice is known as {n} (`logbook speakers`)"))
+            })
+            .collect()
+    }
+
     /// The name of a speaker whose voice is `voice`, if any; `taken` are
     /// the names already given in this meeting (one person, one speaker).
+    /// When the likeliest is taken the next one may be offered, never
+    /// given: the taken person is still the closer voice, and one person
+    /// split in two by diarization is more likely than a lookalike.
     pub fn name(&self, voice: &SpeakerVoice, taken: &[String]) -> Option<Named> {
         if voice.seconds < MIN_SECONDS {
             return None;
         }
+        let scores = self.scores(voice, &[]);
+        let at = scores
+            .iter()
+            .position(|(_, n)| !taken.iter().any(|t| t == n))?;
+        let (best, name) = scores[at];
+        let second = scores
+            .iter()
+            .enumerate()
+            .find(|(i, _)| *i != at)
+            .map_or(f32::MIN, |(_, s)| s.0);
+        if best < MAYBE {
+            return None;
+        }
+        if best >= SURE && best - second >= MARGIN {
+            Some(Named::Sure(name.to_string()))
+        } else {
+            Some(Named::Maybe(name.to_string()))
+        }
+    }
+
+    /// The people a speaker could be, likeliest first, at most `k`: those
+    /// whose voice is at least as close as a name offered as a question.
+    pub fn candidates(&self, voice: &SpeakerVoice, taken: &[String], k: usize) -> Vec<String> {
+        if voice.seconds < MIN_SECONDS {
+            return Vec::new();
+        }
+        self.scores(voice, taken)
+            .into_iter()
+            .take_while(|(score, _)| *score >= MAYBE)
+            .take(k)
+            .map(|(_, name)| name.to_string())
+            .collect()
+    }
+
+    /// Every person but `taken`, by their best print's similarity to
+    /// `voice`, highest first.
+    fn scores(&self, voice: &SpeakerVoice, taken: &[String]) -> Vec<(f32, &str)> {
         let mut scores: Vec<(f32, &str)> = self
             .people
             .iter()
+            .filter(|p| !taken.contains(&p.name))
             .map(|p| {
                 let best = p
                     .prints
@@ -159,16 +240,7 @@ impl Library {
             })
             .collect();
         scores.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let (best, name) = *scores.first()?;
-        let second = scores.get(1).map_or(f32::MIN, |s| s.0);
-        if taken.iter().any(|t| t == name) || best < MAYBE {
-            return None;
-        }
-        if best >= SURE && best - second >= MARGIN {
-            Some(Named::Sure(name.to_string()))
-        } else {
-            Some(Named::Maybe(name.to_string()))
-        }
+        scores
     }
 }
 
@@ -327,6 +399,29 @@ pub fn name(data: &Path, meeting: &str, speaker: &str, name: &str) -> Result<Enr
     })
 }
 
+/// The names offered for SPEAKER (its label) of kept meeting MEETING,
+/// likeliest first; `taken`, the meeting's other speakers' names, are not.
+pub fn candidates(
+    data: &Path,
+    meeting: &str,
+    speaker: &str,
+    taken: &[String],
+) -> Result<Vec<String>> {
+    let path = heard_dir(data).join(format!("{meeting}.json"));
+    let heard: Heard = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    if heard.encoder != encoder() {
+        return Ok(Vec::new());
+    }
+    let Ok(s) = heard_speaker(&heard, speaker) else {
+        return Ok(Vec::new());
+    };
+    Ok(Library::load(data)?.candidates(&s.voice, taken, CANDIDATES))
+}
+
 /// The one speaker of `heard` that `wanted` names: its label, any case,
 /// or the number of "Speaker N".
 fn heard_speaker<'a>(heard: &'a Heard, wanted: &str) -> Result<&'a HeardSpeaker> {
@@ -436,6 +531,49 @@ mod tests {
         assert_eq!(lib.name(&between, &[]), Some(Named::Maybe("Luca".into())));
         // Like no one.
         assert_eq!(lib.name(&voice(&[0.0, 0.0, 1.0], 20.0), &[]), None);
+    }
+
+    #[test]
+    fn the_next_likeliest_is_offered_when_the_likeliest_is_taken() {
+        let mut lib = Library::new();
+        lib.add("Luca", print(&[1.0, 0.0, 0.0]));
+        lib.add("Anna", print(&[0.8, 0.6, 0.0]));
+        lib.add("Bo", print(&[0.0, 0.0, 1.0]));
+        let v = voice(&[0.8, 0.6, 0.0], 20.0);
+        // Anna (1.0) beats Luca (0.8) by more than the margin.
+        assert_eq!(lib.name(&v, &[]), Some(Named::Sure("Anna".into())));
+        // Anna is someone else here: Luca is offered, not given.
+        assert_eq!(
+            lib.name(&v, &["Anna".into()]),
+            Some(Named::Maybe("Luca".into()))
+        );
+        assert_eq!(lib.candidates(&v, &[], 3), vec!["Anna", "Luca"]);
+        assert_eq!(lib.candidates(&v, &["Anna".into()], 3), vec!["Luca"]);
+    }
+
+    #[test]
+    fn a_meeting_names_from_its_expected_people_only() {
+        let mut lib = Library::new();
+        lib.add("Luca", print(&[1.0, 0.0, 0.0]));
+        lib.add("Anna", print(&[0.0, 1.0, 0.0]));
+        assert_eq!(lib.expected(&["anna ".into()]).unwrap(), vec!["Anna"]);
+        assert!(lib.expected(&["Bo".into()]).is_err());
+        let only = lib.clone().only(&["Anna".into()]);
+        assert_eq!(only.name(&voice(&[1.0, 0.1, 0.0], 20.0), &[]), None);
+        assert_eq!(lib.only(&[]).people.len(), 2);
+    }
+
+    #[test]
+    fn a_person_keeps_their_latest_prints() {
+        let mut lib = Library::new();
+        for i in 0..MAX_PRINTS + 2 {
+            let mut p = print(&[1.0, 0.0]);
+            p.meeting = i.to_string();
+            lib.add("Luca", p);
+        }
+        let prints = &lib.people[0].prints;
+        assert_eq!(prints.len(), MAX_PRINTS);
+        assert_eq!(prints[0].meeting, "2");
     }
 
     #[test]

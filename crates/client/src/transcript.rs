@@ -349,7 +349,7 @@ mod tests {
         assert!(md.contains("**Speaker 1** · 00:00\n"));
         assert!(md.contains("**Marco** · 00:08\n"));
         // Kept with the meeting (meeting.json, the history): the same
-        // clock for the text the report and the tasks are read from.
+        // clock for the text the report is read from.
         let saved: Writer = serde_json::from_str(&serde_json::to_string(&writer).unwrap()).unwrap();
         assert_eq!(saved.offset(), 432.0);
         assert!(

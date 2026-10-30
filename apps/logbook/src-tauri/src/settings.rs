@@ -94,9 +94,6 @@ pub struct BrainySettings {
     pub url: String,
     /// The page the meetings go under: address, id or path of titles.
     pub parent: String,
-    /// The collection the meetings' tasks are proposed in, as rows to
-    /// confirm: address, id or path of titles; empty for no tasks.
-    pub tasks: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,7 +195,7 @@ impl Settings {
     }
 
     /// What happens to a meeting started now, titled `title`.
-    pub fn publish(&self, title: Option<String>) -> Publish {
+    pub fn publish(&self, title: Option<String>, expected: Vec<String>) -> Publish {
         let credentials = self.credentials();
         Publish {
             final_pass: true,
@@ -208,11 +205,11 @@ impl Settings {
             brainy_url: credentials.url,
             brainy_token: credentials.token,
             parent: Some(self.brainy.parent.trim().to_string()).filter(|p| !p.is_empty()),
-            tasks: Some(self.brainy.tasks.trim().to_string()).filter(|t| !t.is_empty()),
             title,
             me: Some(self.me.trim().to_string())
                 .filter(|m| !m.is_empty())
                 .unwrap_or_else(|| "Me".into()),
+            expected,
         }
     }
 

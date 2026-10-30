@@ -89,13 +89,15 @@ beside them; ⌘⇧1, or Ctrl+Shift+1, from any app, or the Screen button,
 puts a screenshot of the screen under the pointer in the notes, and on
 the brainy page; ⌘⇧2 or Area an area you select, on macOS), stop it: the final transcript, the report and the page in
 brainy follow, and the meeting stays in the list on the left. Click a
-speaker ("Speaker 2") to give them a name: the transcript, the brainy
-page and the voices known by name change with it, and the next meetings
-name them by themselves. In the settings: on this computer or on a
+speaker ("Speaker 2") to give them a name, or pick one of the names
+their voice is close to: the transcript, the brainy
+page and the voices known by name change with it, the report is written
+again with the new names a few seconds later, and the next meetings
+name them by themselves. With many voices known, choose who is expected
+before you start: the speakers are named from those voices only. In the settings: on this computer or on a
 server (a logbook-server, with your token on it), the microphone and the output to record, brainy on or off (its token is
-kept on this computer, readable by you only) and the collection the tasks are
-proposed in (rows "To confirm", listed on the meeting's page in the app too), and the language model for the
-report and the tasks (a provider, Groq, OpenAI, Mistral or any OpenAI-compatible API,
+kept on this computer, readable by you only), and the language model for the
+report (a provider, Groq, OpenAI, Mistral or any OpenAI-compatible API,
 and one of the models it lists; with a server, the server's). The app and the CLI share the data folder: the
 pending meetings and the voices.
 
@@ -176,7 +178,6 @@ export BRAINY_URL=https://brainy.example.com BRAINY_TOKEN=brainy_…   # a perso
 scripts/client.sh live --system --brainy --me Marco                  # Ctrl-C at the end of the meeting
 scripts/client.sh live --system --brainy --parent "Engineering/Meetings" --title "Weekly sync"
 scripts/client.sh live --system --brainy --report                    # and a report on the page
-scripts/client.sh live --system --brainy --tasks "Engineering/Tasks" # and the tasks proposed in a collection
 scripts/client.sh play meeting.m4a --final                           # the final transcript, printed
 ```
 
@@ -230,32 +231,13 @@ meeting's language): on the brainy page under its first line, or printed
 after the transcript. Without it the meeting's text never reaches the
 model.
 
-`--tasks` (or `LOGBOOK_TASKS`) names a brainy collection, as `--parent`
-names a page: its address, id or path of titles; with `--brainy` only.
-The same model then lists the tasks people committed to in the meeting,
-and each becomes a row of that collection: the task as its title,
-Owner (the speaker, as labelled on the page, renamed with them when you
-name a speaker in the app), Due (only when a date was said), Status "To
-confirm", and Meeting and Moment, links to the page and to the turn
-where it was said. The report's action items are the same tasks. A
-larger model finds them far better: on Groq, `openai/gpt-oss-120b`
-rather than `openai/gpt-oss-20b`, whose list of the same meeting changes
-from one run to the next. They are proposals: a model misses
-tasks and invents some, so confirm each one (set it to Open, assign it)
-or delete it in brainy; one click on Moment shows what was said. Any
-collection will do, a team's board too: the columns it lacks are added
-(none is removed or changed; one with another type, a person Owner say,
-is left empty), and "To confirm" is added to its Status. Without
-`--tasks`, no tasks are looked for. A meeting whose rows brainy could not
-take stays pending until `finish` writes the rest, never one twice.
-
 ### Speakers by name
 
 On the page the call's voices are "Speaker 1", "Speaker 2"… until you name
 them. After a meeting:
 
 ```bash
-scripts/client.sh speakers                                # known voices, the last meetings' speakers
+scripts/client.sh speakers                                # known voices, the last meetings' speakers and who they could be
 scripts/client.sh speakers name last 2 "Luca Bianchi"     # Speaker 2 of the last meeting is Luca Bianchi
 scripts/client.sh speakers forget "Luca Bianchi"
 ```
@@ -265,7 +247,16 @@ is written "Luca Bianchi". A doubtful one is written "Speaker 3 (Luca
 Bianchi?)". A speaker needs about 10 s of voice heard alone to be named.
 30 s or more makes recognition more reliable, and naming the same person
 again from another meeting (another microphone, a call) adds to their
-voice. The voices are kept only on your computer: `voices.json` and, for
+voice (the latest 5 prints of each person are kept).
+
+With many voices known, more strangers sound close to someone. Say who is
+expected, and the speakers are named from those voices only:
+
+```bash
+scripts/client.sh live --system --final --expect "Luca Bianchi,Anna"
+```
+
+The voices are kept only on your computer: `voices.json` and, for
 the last 20 meetings, `voices/` in the data folder. Ask before you name
 someone: a voiceprint is personal data.
 
@@ -352,10 +343,10 @@ models.
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--voice` / `LOGBOOK_VOICE` | `wespeaker-resnet34-lm.gguf` in the models folder | speaker encoder of the final pass (required): links each minute's speakers to the meeting's, with no limit of eight |
 | `--voice-threshold` | 0.45 | voice similarity above which two minutes' voices are one speaker |
-| `--llm-url` / `LOGBOOK_LLM_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model writes reports (`POST /reports`) and finds tasks (`POST /tasks`). The meeting's text goes there: a hosted provider reads every meeting whose client asks for a report or tasks (`--report`, `--tasks`) |
+| `--llm-url` / `LOGBOOK_LLM_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model writes reports (`POST /reports`). The meeting's text goes there: a hosted provider reads every meeting whose client asks for a report (`--report`) |
 | `--llm-model` / `LOGBOOK_LLM_MODEL` | none | its model; required with `--llm-url` |
 | `--llm-key` / `LOGBOOK_LLM_KEY` | none | its API key, if it asks for one |
-| `--report-parallel` | 4 | reports and task lists written at once |
+| `--report-parallel` | 4 | reports written at once |
 | `--llm-timeout` | 120 | seconds a request to the model may take |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes

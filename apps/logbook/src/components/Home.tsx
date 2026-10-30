@@ -1,5 +1,6 @@
 // Before a meeting: its title, what it is (a call, people in the room, or
-// both: its channels, kept for the next), the start button, and what will happen to
+// both: its channels, kept for the next), who is expected among the voices
+// known by name (its speakers are named from them only), the start button, and what will happen to
 // it (where it is transcribed, whether it goes to brainy, who writes the
 // report), as the settings say. Meetings left pending are shown here as
 // they are finished (PendingMeetings.tsx).
@@ -11,13 +12,13 @@ import {
   Cloud,
   FileText,
   Laptop,
-  ListChecks,
   Mic,
   Monitor,
   MonitorSpeaker,
   NotebookPen,
   Server,
   Users,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -28,9 +29,15 @@ import {
   type PendingMeeting,
   type RecorderState,
   type SettingsView,
+  type Voice,
 } from '../lib/api.js';
 import { android } from '../lib/platform.js';
-import { mutedTextClass, primaryButtonClass, secondaryButtonSmClass } from './form-styles.js';
+import {
+  compactFieldClass,
+  mutedTextClass,
+  primaryButtonClass,
+  secondaryButtonSmClass,
+} from './form-styles.js';
 import { ModelsProgress } from './ModelsProgress.js';
 import { PendingMeetings } from './PendingMeetings.js';
 
@@ -74,10 +81,13 @@ export function Home({
   const [mode, setMode] = useState<Mode>('call');
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [voices, setVoices] = useState<Voice[]>([]);
+  const [expected, setExpected] = useState<string[]>([]);
   // Android: whether battery optimization leaves the recording alone.
   const [unrestricted, setUnrestricted] = useState(true);
 
   useEffect(() => {
+    api.listVoices().then(setVoices, () => undefined);
     api.getSettings().then((view) => {
       setSettings(view);
       setMode(android ? 'room' : view.settings.audio.mode);
@@ -95,7 +105,7 @@ export function Home({
     setStarting(true);
     setError(null);
     try {
-      onStarted(await api.startMeeting(title, mode));
+      onStarted(await api.startMeeting(title, mode, expected));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -113,7 +123,7 @@ export function Home({
   return (
     <div className="flex h-full flex-col">
       <div data-tauri-drag-region className="h-11 shrink-0 max-sm:hidden" />
-      <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center overflow-y-auto px-8 pb-16 max-sm:justify-start max-sm:px-4 max-sm:pt-6 max-sm:pb-8">
+      <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center-safe overflow-y-auto px-8 pb-16 max-sm:justify-start max-sm:px-4 max-sm:pt-6 max-sm:pb-8">
         <div className="mb-8 flex size-12 items-center justify-center rounded-2xl bg-accent-fill text-white">
           <AudioLines className="size-6" />
         </div>
@@ -157,6 +167,13 @@ export function Home({
               </div>
               <p className={`mt-2 text-xs ${mutedTextClass}`}>{current.hears}</p>
             </>
+          )}
+          {voices.length > 0 && (
+            <Expected
+              voices={voices.map((v) => v.name)}
+              expected={expected}
+              onChange={setExpected}
+            />
           )}
           <button
             type="submit"
@@ -208,12 +225,6 @@ export function Home({
                 ? `Written to brainy${s.brainy.parent ? `, under ${s.brainy.parent}` : ''}`
                 : `Kept on ${here} only (brainy is off)`}
             </li>
-            {s.brainy.enabled && s.brainy.tasks.trim() && (
-              <li className="flex items-center gap-2">
-                <ListChecks className="size-4" />
-                {`Tasks proposed in ${s.brainy.tasks.trim()}, to confirm there`}
-              </li>
-            )}
             <li className="flex items-center gap-2">
               <FileText className="size-4" />
               {!report
@@ -247,6 +258,121 @@ export function Home({
         {lastWarning && !failure && models?.state !== 'failed' && (
           <p className={`mt-6 text-xs ${mutedTextClass}`}>Last message: {lastWarning.message}</p>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** The names offered at once while choosing who is expected. */
+const SUGGESTED = 6;
+
+/**
+ * Who is expected, among the voices known by name: none chosen, the
+ * speakers are named from every voice; some chosen, from them only, which
+ * with many voices known gives fewer wrong names. A field that offers the
+ * names it matches: only the people chosen take room, however many voices
+ * are known.
+ */
+function Expected({
+  voices,
+  expected,
+  onChange,
+}: {
+  voices: string[];
+  expected: string[];
+  onChange: (names: string[]) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const wanted = query.trim().toLowerCase();
+  const matches = voices
+    .filter((v) => !expected.includes(v) && v.toLowerCase().includes(wanted))
+    .slice(0, SUGGESTED);
+  const add = (name: string) => {
+    onChange([...expected, name]);
+    setQuery('');
+    setActive(0);
+  };
+  const remove = (name: string) => onChange(expected.filter((n) => n !== name));
+
+  return (
+    <div className="mt-6">
+      <p className="text-sm font-medium">Who is expected?</p>
+      <p className={`mt-0.5 text-xs ${mutedTextClass}`}>
+        {expected.length === 0
+          ? 'Optional: speakers are named from every voice known.'
+          : 'Speakers are named from these voices only.'}
+      </p>
+      <div className="relative mt-2 flex flex-wrap items-center gap-1.5">
+        {expected.map((name) => (
+          <span
+            key={name}
+            className="flex items-center gap-1 rounded-full border border-accent bg-accent/10 py-0.5 pr-1 pl-2.5 text-xs text-accent"
+          >
+            {name}
+            <button
+              type="button"
+              title={`Not ${name}`}
+              onClick={() => remove(name)}
+              className="rounded-full p-0.5 hover:bg-accent/20"
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        ))}
+        <div className="relative">
+          <input
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setActive(0);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => setOpen(false)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                const step = e.key === 'ArrowDown' ? 1 : -1;
+                setActive((i) => (i + step + matches.length) % Math.max(matches.length, 1));
+              } else if (e.key === 'Enter' && query.trim()) {
+                // A name, not the form: Enter on a name typed does not start the meeting.
+                e.preventDefault();
+                const name = matches[active];
+                if (name !== undefined) add(name);
+              } else if (e.key === 'Backspace' && !query && expected.length > 0) {
+                remove(expected.at(-1)!);
+              } else if (e.key === 'Escape') {
+                setOpen(false);
+              }
+            }}
+            placeholder={expected.length === 0 ? 'Add a name' : 'Add another'}
+            className={`${compactFieldClass} w-44`}
+          />
+          {open && matches.length > 0 && (
+            <ul className="absolute top-full left-0 z-10 mt-1 w-60 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+              {matches.map((name, i) => (
+                <li key={name}>
+                  <button
+                    type="button"
+                    // Before the field's blur closes the list.
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      add(name);
+                    }}
+                    onMouseEnter={() => setActive(i)}
+                    className={`w-full px-3 py-1.5 text-left ${
+                      i === active ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+                    }`}
+                  >
+                    {name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -197,8 +197,7 @@ async fn list_models(url: String, key: Option<String>) -> Answer<Vec<String>> {
         .map_err(text)
 }
 
-/// Whether brainy answers with the token, the parent page exists, and so
-/// does the tasks' collection.
+/// Whether brainy answers with the token, and the parent page exists.
 #[tauri::command]
 async fn check_brainy(app: State<'_, App>) -> Answer<()> {
     let settings = app.settings();
@@ -207,17 +206,6 @@ async fn check_brainy(app: State<'_, App>) -> Answer<()> {
     let parent = settings.brainy.parent.trim();
     if !parent.is_empty() {
         brainy.resolve_page(parent).await.map_err(text)?;
-    }
-    let tasks = settings.brainy.tasks.trim();
-    if !tasks.is_empty() {
-        let id = brainy
-            .resolve_page(tasks)
-            .await
-            .map_err(|e| format!("the tasks' collection: {e:#}"))?;
-        brainy
-            .collection(&id)
-            .await
-            .map_err(|e| format!("the tasks' collection is not a collection: {e:#}"))?;
     }
     Ok(())
 }
@@ -228,6 +216,7 @@ fn start_meeting(
     handle: AppHandle,
     title: Option<String>,
     mode: Mode,
+    expected: Vec<String>,
 ) -> Answer<recorder::State> {
     let mut settings = app.settings();
     if settings.audio.mode != mode {
@@ -243,7 +232,7 @@ fn start_meeting(
             handle,
             backend,
             app.data.clone(),
-            settings.publish(title),
+            settings.publish(title, expected),
             settings.sources(),
             settings.echo(),
             settings.gain(),
@@ -310,23 +299,9 @@ struct MeetingView {
     notes: String,
     report: Option<String>,
     report_error: Option<String>,
-    /// The tasks proposed in brainy, to confirm there.
-    tasks: Vec<TaskView>,
     warnings: Vec<String>,
     speakers: Vec<Speaker>,
     turns: Vec<Turn>,
-}
-
-/// A task proposed as a row, with where it was said.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TaskView {
-    task: String,
-    owner: Option<String>,
-    due: Option<String>,
-    at: f64,
-    row: String,
-    moment: String,
 }
 
 #[derive(Serialize)]
@@ -355,8 +330,8 @@ struct Phrase {
     text: String,
 }
 
-/// The times go out on the displayed clock, as the page and the tasks
-/// have them: 00:00 at the first word (`Writer::shown`).
+/// The times go out on the displayed clock, as the page
+/// has them: 00:00 at the first word (`Writer::shown`).
 fn view(kept: history::Kept) -> MeetingView {
     let mut turns: Vec<Turn> = Vec::new();
     let shown = |t: f64| kept.writer.shown(t);
@@ -399,18 +374,6 @@ fn view(kept: history::Kept) -> MeetingView {
         notes: kept.notes,
         report: kept.report,
         report_error: kept.report_error,
-        tasks: kept
-            .tasks
-            .into_iter()
-            .map(|t| TaskView {
-                task: t.task.task,
-                owner: t.task.owner,
-                due: t.task.due,
-                at: t.task.at,
-                row: t.row.url,
-                moment: t.row.moment,
-            })
-            .collect(),
         warnings: kept.warnings,
     }
 }
@@ -447,6 +410,15 @@ async fn rename_speaker(
         .map_err(text)?;
     let meeting = history::load(&app.data, &id).map(view).map_err(text)?;
     Ok(RenameView { renamed, meeting })
+}
+
+/// The names offered for speaker `label` of kept meeting `id`, likeliest
+/// first: none once its voice is no longer kept (the last meetings').
+#[tauri::command]
+fn speaker_candidates(app: State<App>, id: String, label: String) -> Answer<Vec<String>> {
+    let kept = history::load(&app.data, &id).map_err(text)?;
+    let taken: Vec<String> = kept.writer.speakers().into_iter().map(|s| s.2).collect();
+    voices::candidates(&app.data, &id, &label, &taken).map_err(text)
 }
 
 /// Writes the report again (after a rename, or a failure), in place of
@@ -679,6 +651,7 @@ pub fn run() {
             list_meetings,
             get_meeting,
             rename_speaker,
+            speaker_candidates,
             write_report,
             save_meeting_notes,
             delete_meeting,

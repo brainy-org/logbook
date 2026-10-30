@@ -17,7 +17,7 @@ export function stepLabel(step: Step, local: boolean): string {
     case 'publishing':
       return 'Writing the transcript to brainy';
     case 'report':
-      return 'Writing the report and finding tasks';
+      return 'Writing the report';
   }
 }
 

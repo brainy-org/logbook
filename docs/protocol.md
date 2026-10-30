@@ -176,30 +176,15 @@ the client moves its times by where it started
   most and at each new phase, from the finalizer's thread, never per
   sample. Missing for a live session's pass and from a server older than
   it: the client shows the pass without how far.
-- `POST /reports`, JSON `{"title":"…","notes":"…","transcript":"…","tasks":[...]}`
-  (`title`, `notes` and `tasks` optional): the meeting's report by the
-  server's model (docs/pipeline.md, "Report"). `tasks`, as `/tasks`
-  answered them: the report's action items are these lines
-  (docs/pipeline.md, "Tasks"); without, the model lists its own. `transcript` is the final
+- `POST /reports`, JSON `{"title":"…","notes":"…","transcript":"…"}`
+  (`title` and `notes` optional): the meeting's report by the
+  server's model (docs/pipeline.md, "Report"). `transcript` is the final
   transcript as the client writes it, Markdown with the speakers' names.
   Answers `200 {"markdown":"…"}`; `501` on a server without a model
   (`--llm-url`); `502` with the reason when the model fails. At most
   64 MB (a long meeting is reported in steps, one request to the model
   each, and holds its place for all of them); as many at once as
   `--report-parallel`, the others wait.
-
-- `POST /tasks`, JSON `{"title":"…","notes":"…","transcript":"…","date":"2026-10-29"}`
-  (`title` and `notes` optional; `date` the meeting's day, from which
-  a due date is resolved): the tasks agreed in the meeting, found by the
-  server's model (docs/pipeline.md, "Tasks"). Answers `200 {"tasks":
-  [{"task":"…","owner":"Luca"|null,"due":"2026-11-06"|null,"at":754}]}`
-  (`at`, seconds from the meeting's start of the turn where it was
-  agreed; `owner` a speaker's label in the transcript), in order; an
-  answer of the model that could not be read is `{"tasks": []}`. `501`
-  without a model, `502` when it cannot be reached; same limits as
-  `/reports`, and it takes one of its `--report-parallel` places. A
-  server older than it answers `404`: the client publishes without
-  tasks.
 
 An `audio` part is the channel in Opus (`crates/engine/src/codec.rs`):
 `LBO1`, the number of samples (u64 LE), the encoder's lookahead in
@@ -209,7 +194,7 @@ samples, so that sample i is the meeting's sample i.
 
 ## Tokens
 
-`/live`, `/finals`, `/finals/{id}`, `/reports` and `/tasks` need
+`/live`, `/finals`, `/finals/{id}` and `/reports` need
 `Authorization: Bearer <token>`, the token of a person (`lbk_` and 64
 hex digits), on the WebSocket's upgrade request as on every other; `401`
 without one the server knows, `503` if it cannot read its tokens. The client sends it from `--server-token`

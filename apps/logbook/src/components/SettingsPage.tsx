@@ -1,6 +1,6 @@
 // The settings: where meetings are transcribed, what is recorded, whether
-// they go to brainy (and their tasks to which collection), and the
-// language model that writes the report and finds the tasks; then the voices known by name. Secrets (the
+// they go to brainy, and the
+// language model that writes the report; then the voices known by name. Secrets (the
 // server's and brainy's tokens, the model's key) are kept on this
 // computer (secrets.json, this user only) and never read back: the page
 // only knows whether they are set. On Android: a server always, the
@@ -318,17 +318,6 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                     className={`${fieldClass} w-full`}
                   />
                 </Field>
-                <Field
-                  label="Tasks to the collection"
-                  help="The tasks agreed in each meeting are proposed there as rows “To confirm”, each linked to its moment on the page: confirm or delete them in brainy. Its address, or its path of titles; the columns it lacks (Owner, Due, Status, Meeting, Moment) are added. Empty: no tasks."
-                >
-                  <input
-                    value={s.brainy.tasks}
-                    onChange={(e) => update((n) => (n.brainy.tasks = e.target.value))}
-                    placeholder="Meetings/Tasks"
-                    className={`${fieldClass} w-full`}
-                  />
-                </Field>
                 <div>
                   <CheckButton
                     check={brainyCheck}
@@ -340,10 +329,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                     }
                     label="Save and check"
                   />
-                  <CheckResult
-                    check={brainyCheck}
-                    ok="brainy answers, and the page and the collection are there."
-                  />
+                  <CheckResult check={brainyCheck} ok="brainy answers, and the page is there." />
                 </div>
               </>
             )}
@@ -352,7 +338,7 @@ export function SettingsPage({ recording }: { recording: boolean }) {
           <Section title="Language model">
             <p className={`text-sm ${mutedTextClass}`}>
               It reads the meeting's text to write the report (summary, your notes completed,
-              decisions, action items) and, with a collection set under brainy, to find the tasks.{' '}
+              decisions, action items).{' '}
               {local
                 ? 'Without a server, the model below is used.'
                 : "On a server, the server's model is used (its --llm-url): nothing below."}
@@ -454,8 +440,8 @@ export function SettingsPage({ recording }: { recording: boolean }) {
                 </Field>
                 {provider.id !== 'other' && (
                   <p className="rounded-md bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/30">
-                    {provider.label} reads the text of every meeting it reports on or finds tasks
-                    in: fine for testing, not for meetings that must stay in the company.
+                    {provider.label} reads the text of every meeting it reports on: fine for
+                    testing, not for meetings that must stay in the company.
                   </p>
                 )}
               </>

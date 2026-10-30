@@ -1,7 +1,6 @@
 //! logbook-server: live transcription and diarization over a WebSocket
 //! (`/live`), final passes over HTTP (`/finals`), and with a language
-//! model the meeting's report (`/reports`) and its tasks (`/tasks`):
-//! docs/protocol.md. The
+//! model the meeting's report (`/reports`): docs/protocol.md. The
 //! models are loaded once and stay loaded; every session shares them.
 //! Each of those routes needs a person's token, made on the admin page
 //! (`/`, auth.rs).
@@ -32,12 +31,12 @@ use logbook_engine::parakeet::Latency;
 use logbook_engine::parakeet::SAMPLE_RATE;
 use logbook_engine::protocol::{
     AudioIn, ClientMessage, Codec, FinalState, PassProgress, Report, ReportRequest, ServerMessage,
-    Started, Tasks, TasksRequest, Upload,
+    Started, Upload,
 };
 use logbook_engine::recording::{self, Recording};
+use logbook_engine::report;
 use logbook_engine::session::{self, Feed, Input, Resume, Shared};
 use logbook_engine::{Engine, Options, batcher};
-use logbook_engine::{report, tasks};
 use tracing::{info, warn};
 
 /// The largest upload: 14 MB an hour a channel (`codec`), so about 140
@@ -258,10 +257,6 @@ async fn main() -> Result<()> {
             "/reports",
             post(write_report).layer(DefaultBodyLimit::max(MAX_REPORT)),
         )
-        .route(
-            "/tasks",
-            post(find_tasks).layer(DefaultBodyLimit::max(MAX_REPORT)),
-        )
         .route_layer(axum::middleware::from_fn_with_state(
             auth.clone(),
             auth::require_token,
@@ -440,41 +435,6 @@ async fn write_report(
         Ok(Ok(markdown)) => Json(Report { markdown }).into_response(),
         Ok(Err(error)) => {
             warn!("report failed: {error:#}");
-            (StatusCode::BAD_GATEWAY, format!("{error:#}")).into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-/// The tasks agreed in the meeting, by the server's model; 501 without
-/// one. An answer the model gave that could not be read is no tasks, not
-/// an error (engine tasks.rs). It takes a report's slot.
-async fn find_tasks(
-    State(state): State<Arc<AppState>>,
-    Extension(caller): Extension<auth::Caller>,
-    Json(request): Json<TasksRequest>,
-) -> Response {
-    info!(caller = caller.0, "tasks");
-    let Some(reporter) = &state.reporter else {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            "this server has no language model (--llm-url)",
-        )
-            .into_response();
-    };
-    let Ok(_slot) = reporter.slots.acquire().await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let state = state.clone();
-    let found = tokio::task::spawn_blocking(move || {
-        let reporter = state.reporter.as_ref().expect("checked above");
-        tasks::find(&reporter.agent, &reporter.options, &request)
-    })
-    .await;
-    match found {
-        Ok(Ok(tasks)) => Json(Tasks { tasks }).into_response(),
-        Ok(Err(error)) => {
-            warn!("tasks failed: {error:#}");
             (StatusCode::BAD_GATEWAY, format!("{error:#}")).into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
