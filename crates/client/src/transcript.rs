@@ -5,14 +5,13 @@
 //! appearance; a diarized microphone (a room) gives "Room 1", "Room 2"...
 //! A voice known by name (voices.rs) takes the name instead, or keeps its
 //! number with the name as a question ("Speaker 2 (Luca?)") when it is
-//! not sure. A speaker's label is chosen at its first segment and kept: the
-//! page is written once. A speaker's consecutive segments go under one
+//! not sure. A speaker's label is chosen at its first segment and kept. A speaker's consecutive segments go under one
 //! heading line.
 //!
 //! Times are printed on the meeting's displayed clock: 00:00 is its first
 //! word, not its first sample (a meeting of a series starts at the cut,
 //! up to 15 minutes before anyone speaks). The `Writer` carries that one
-//! offset, fixed when the page is created and kept with it; segments stay
+//! offset, fixed when the final transcript is made and kept with it; segments stay
 //! on the meeting's clock everywhere else
 //! (docs/decisions/2026-10-29-the-meeting-starts-at-its-first-word.md).
 
@@ -47,9 +46,8 @@ pub fn markdown(m: &Meeting) -> (String, Writer) {
     (out.trim_end().to_string() + "\n", writer)
 }
 
-/// The transcript written a part at a time, as the final segments come
-/// during the meeting: the names and the last speaker carry over from one
-/// part to the next, and are kept with a pending meeting.
+/// What names the transcript's speakers and prints its times: kept with
+/// a pending meeting and with the history, for renames.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Writer {
     me: String,
@@ -60,8 +58,8 @@ pub struct Writer {
     known: Vec<String>,
     previous: Option<String>,
     /// The seconds of the meeting printed as 00:00 (`first_word`): fixed
-    /// when the writer is made, with the page, never changed after, since
-    /// the page is never rewritten. 0 in a writer saved before it was kept.
+    /// when the writer is made, with the final transcript, never changed
+    /// after. 0 in a writer saved before it was kept.
     #[serde(default)]
     offset: f64,
 }
@@ -78,13 +76,6 @@ pub fn first_word(utterances: &[Utterance]) -> f64 {
 }
 
 impl Writer {
-    /// The meeting's page is written again from its start, on a new page
-    /// (the old one was deleted): its first turn shows its speaker. The
-    /// names and the clock stay the meeting's.
-    pub fn new_page(&mut self) {
-        self.previous = None;
-    }
-
     pub fn new(me: &str, offset: f64) -> Self {
         Self {
             me: me.to_string(),

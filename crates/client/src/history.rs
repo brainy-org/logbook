@@ -28,7 +28,7 @@ pub struct Kept {
     pub duration_s: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<Page>,
-    /// The speakers' labels, as on the page, and the displayed clock's
+    /// The speakers' labels, as the report names them, and the displayed clock's
     /// offset (`Writer::shown`).
     pub writer: Writer,
     /// The final transcript, without the words' times, on the meeting's
@@ -60,7 +60,7 @@ pub struct Summary {
 }
 
 impl Kept {
-    /// The transcript with its speakers' labels, as on the page.
+    /// The transcript with its speakers' labels, as the report names them.
     pub fn transcript(&self) -> String {
         self.writer.text(&self.utterances, &[], &Library::default())
     }

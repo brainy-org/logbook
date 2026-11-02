@@ -1,4 +1,4 @@
-//! The meeting as a page in brainy, through its REST API (`/api/v1`, a
+//! The meeting's report as a page in brainy, through its REST API (`/api/v1`, a
 //! personal token: brainy's apps/server/docs/mcp.md, "REST API"). The page
 //! is written by the person's own token, so it lands only where they can
 //! write; logbook-server never holds brainy credentials.
@@ -184,13 +184,6 @@ impl Brainy {
             .next()
             .context("the page has no blocks")?;
         Ok(first.block_id)
-    }
-
-    /// Rewrites the page's first block (one block of Markdown): the
-    /// header, written once the meeting is over.
-    pub async fn rewrite_first_block(&self, page: &str, markdown: &str) -> Result<()> {
-        let first = self.first_block(page).await?;
-        self.update_block(&first, markdown).await
     }
 
     async fn update_block(&self, block: &str, markdown: &str) -> Result<()> {

@@ -1,8 +1,9 @@
 //! A meeting from its first sample to its page: the audio to the backend
 //! (logbook-server or this process) and, with a final pass, to a pending
-//! folder (pending.rs); the final segments to the brainy page as they come;
-//! at the end the final transcript completed, the report written, the
-//! meeting kept in the history (history.rs) and the folder removed. On any
+//! folder (pending.rs), with the final segments as they come; at the end
+//! the final transcript completed, the report written and put on a brainy
+//! page (never the transcript), the meeting kept in the history
+//! (history.rs) and the folder removed. On any
 //! failure the folder stays, with whatever was reached, for `finish`.
 //! The CLI and the desktop app both run meetings through here, one
 //! recording as a series of them (series.rs).
@@ -29,7 +30,7 @@ use crate::{history, shots, transcript, voices};
 use logbook_engine::final_pass::Recorded;
 use logbook_engine::protocol::SAMPLE_RATE;
 
-/// "Up to the end" for `published_until`: JSON has no infinity.
+/// "Up to the end" for `final_until`: JSON has no infinity.
 const END: f64 = f64::MAX;
 
 /// What the person writes during the meeting; read when it ends.
@@ -121,7 +122,8 @@ pub struct Publish {
     pub report: bool,
     /// Keep the meeting in the history once published.
     pub keep: bool,
-    /// Write the final transcript as a page in brainy.
+    /// Write the meeting as a page in brainy: its report (or its notes
+    /// without one), never the transcript.
     pub brainy: bool,
     pub brainy_url: Option<String>,
     pub brainy_token: Option<String>,
@@ -206,7 +208,7 @@ pub struct Outcome {
     /// The pending folder's name: the id in the history and the voices.
     pub id: String,
     pub page: Option<Page>,
-    /// The final transcript as Markdown, when it went to no page.
+    /// The final transcript as Markdown: it goes to no page.
     pub transcript: Option<String>,
     pub report: Option<String>,
     /// Why the report could not be written; the meeting is published anyway.
@@ -235,7 +237,7 @@ pub enum Step {
     /// the progress.
     #[serde(rename_all = "camelCase")]
     Transcribing { done: Option<f64>, audio_s: f64 },
-    /// The transcript going to brainy.
+    /// The page made in brainy.
     Publishing,
     /// The report written.
     Report,
@@ -366,91 +368,42 @@ fn title(pending: &Pending, shown: &DateTime<FixedOffset>) -> String {
         .unwrap_or_else(|| format!("Meeting {}", minute(shown)))
 }
 
-/// Where `write_page` writes: brainy, or a test's.
+/// Where `new_page` creates the page: brainy, or a test's.
 pub(crate) trait Pages {
     async fn create_page(&self, title: &str, parent: Option<&str>, markdown: &str) -> Result<Page>;
-    async fn append(&self, page: &str, markdown: &str) -> Result<()>;
 }
 
 impl Pages for Brainy {
     async fn create_page(&self, title: &str, parent: Option<&str>, markdown: &str) -> Result<Page> {
         Brainy::create_page(self, title, parent, markdown).await
     }
-
-    async fn append(&self, page: &str, markdown: &str) -> Result<()> {
-        Brainy::append(self, page, markdown).await
-    }
 }
 
-/// Writes the segments that start between what the page already has and
-/// `limit` to the meeting's brainy page, creating the page first (with
-/// the first segments, or at the end: a meeting in which nothing is said
-/// makes no page until then). What is written is recorded in the pending
-/// folder, so nothing is written twice, whatever fails.
-async fn write_page(
-    b: &impl Pages,
-    pending: &mut Pending,
-    limit: f64,
-    segments: &[Utterance],
-) -> Result<()> {
-    let saved = pending.meeting.publish.clone();
-    let new: Vec<Utterance> = segments
-        .iter()
-        .filter(|u| u.start >= pending.meeting.published_until && u.start < limit)
-        .cloned()
-        .collect();
-    if pending.meeting.page.is_none() && new.is_empty() && limit != END {
-        pending.meeting.published_until = pending.meeting.published_until.max(limit);
-        return pending.save();
-    }
-    if pending.meeting.page.is_none() {
-        // The displayed clock is fixed here, with the page, and kept with
-        // it: its first segments are the meeting's earliest (they leave
-        // in order, and none before `published_until` is written), and
-        // nothing on the page is ever rewritten to another clock.
-        let writer = match pending.meeting.writer.clone() {
-            Some(writer) => writer,
-            None => transcript::Writer::new(&saved.me, transcript::first_word(&new)),
-        };
-        let shown = shown(pending, writer.offset())?;
-        let title = title(pending, &shown);
-        let header = format!(
-            "Meeting started {} · the transcript follows the meeting, \
-             a minute or so behind\n\n---\n",
-            minute(&shown)
-        );
-        let page = match b
-            .create_page(&title, saved.parent.as_deref(), &header)
-            .await
-        {
-            // The page it goes under was deleted: the meeting is not held
-            // for it, it goes among the person's own pages.
-            Err(error) if saved.parent.is_some() && page_gone(&error) => {
-                warn!("{error:#}: the meeting's page is made at the top instead");
-                b.create_page(&title, None, &header).await?
-            }
-            created => created?,
-        };
-        info!("brainy page: {}", page.url);
-        pending.meeting.page = Some(page);
-        pending.meeting.writer = Some(writer);
-        pending.save()?;
-    }
-    let page = pending.meeting.page.clone().expect("created above");
-    // None only for a page made before the writer was kept with it.
-    let mut writer = pending
-        .meeting
+/// The page of `kept` under `parent` (an id; the top without one), with
+/// its header only: the report, or the notes without one, go under it
+/// (`put_report`). The transcript never goes to brainy: it stays in the
+/// history. A parent brainy no longer has does not hold the meeting: the
+/// page goes among the person's own pages.
+async fn new_page(b: &impl Pages, kept: &history::Kept, parent: Option<&str>) -> Result<Page> {
+    let started = DateTime::parse_from_rfc3339(&kept.started)
+        .with_context(|| format!("the meeting's start {} is not a time", kept.started))?;
+    let mut header = kept
         .writer
-        .clone()
-        .unwrap_or_else(|| transcript::Writer::new(&saved.me, 0.0));
-    if !new.is_empty() {
-        let known = known(pending)?;
-        let body = writer.body(&new, &pending.meeting.voices, &known);
-        b.append(&page.id, &body).await?;
+        .header(&minute(&started), kept.duration_s, &[])
+        .trim()
+        .to_string();
+    if !kept.warnings.is_empty() {
+        header.push_str(&format!(" · Note: {}", kept.warnings.join("; ")));
     }
-    pending.meeting.writer = Some(writer);
-    pending.meeting.published_until = pending.meeting.published_until.max(limit);
-    pending.save()
+    let page = match b.create_page(&kept.title, parent, &header).await {
+        Err(error) if parent.is_some() && page_gone(&error) => {
+            warn!("{error:#}: the meeting's page is made at the top instead");
+            b.create_page(&kept.title, None, &header).await?
+        }
+        created => created?,
+    };
+    info!("written to brainy: {}", page.url);
+    Ok(page)
 }
 
 /// The voices a pending meeting's speakers are named from: its expected
@@ -467,88 +420,30 @@ fn page_gone(error: &anyhow::Error) -> bool {
     })
 }
 
-/// `write_page`; when brainy no longer has the page (deleted, or in its
-/// trash), the meeting is not held for it: a new page, with the whole
-/// transcript from its first segment (`all`: every one so far), on the
-/// same clock and with the same names. `published_until` goes back to the
-/// start for the new page only; the deleted one is left as it is.
-async fn write_or_anew(
-    b: &impl Pages,
-    pending: &mut Pending,
-    limit: f64,
-    segments: &[Utterance],
-    all: impl FnOnce(&Pending) -> Result<Vec<Utterance>>,
-) -> Result<()> {
-    let Err(error) = write_page(b, pending, limit, segments).await else {
-        return Ok(());
-    };
-    if !page_gone(&error) || pending.meeting.page.is_none() {
-        return Err(error);
-    }
-    warn!("{error:#}: the meeting's page was deleted, it is written again on a new one");
-    pending.meeting.page = None;
-    pending.meeting.published_until = 0.0;
-    if let Some(writer) = pending.meeting.writer.as_mut() {
-        writer.new_page();
-    }
-    pending.save()?;
-    let all = all(pending)?;
-    write_page(b, pending, limit, &all).await
-}
-
-/// The meeting's final segments as they come: kept in the pending folder,
-/// and written to brainy. A failed write is tried again with the next
-/// segments: the ones not written yet are read again from
-/// `segments.jsonl`, where they are, never held here (brainy may fail for
-/// hours). Gives the folder back when the meeting is over.
+/// The meeting's final segments as they come, kept in the pending folder.
+/// Gives the folder back when the meeting is over.
 async fn publisher(
     mut pending: Pending,
-    brainy: Option<Brainy>,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Progress>,
 ) -> Pending {
-    // Where in `segments.jsonl` the segments not on the page start, while
-    // a write has failed.
-    let mut unwritten: Option<u64> = None;
     while let Some(progress) = rx.recv().await {
-        let written = async {
-            match progress {
-                Progress::FinalId(id) => pending.set_final_id(Some(id)),
-                Progress::Segments {
-                    until,
-                    utterances,
-                    voices,
-                } => {
-                    let at = pending.add_segments(&utterances)?;
-                    if !voices.is_empty() {
-                        pending.meeting.voices = voices;
-                        pending.save()?;
-                    }
-                    pending.set_final_until(until)?;
-                    match &brainy {
-                        Some(b) => {
-                            // `write_page` takes those from `published_until` on.
-                            let segments = match unwritten {
-                                Some(from) => pending.segments_from(from)?,
-                                None => utterances,
-                            };
-                            let written = write_or_anew(b, &mut pending, until, &segments, |p| {
-                                p.segments_from(0)
-                            })
-                            .await;
-                            unwritten = match written {
-                                Ok(()) => None,
-                                Err(_) => Some(unwritten.unwrap_or(at)),
-                            };
-                            written
-                        }
-                        None => Ok(()),
-                    }
+        let kept = (|| match progress {
+            Progress::FinalId(id) => pending.set_final_id(Some(id)),
+            Progress::Segments {
+                until,
+                utterances,
+                voices,
+            } => {
+                pending.add_segments(&utterances)?;
+                if !voices.is_empty() {
+                    pending.meeting.voices = voices;
+                    pending.save()?;
                 }
+                pending.set_final_until(until)
             }
-        }
-        .await;
-        if let Err(error) = written {
-            warn!("{error:#} (tried again with the next segments)");
+        })();
+        if let Err(error) = kept {
+            warn!("{error:#}");
         }
     }
     pending
@@ -564,58 +459,35 @@ fn duration_s(finalized: &Finalized, offset: f64) -> f64 {
     (end - offset).max(0.0)
 }
 
-/// The final transcript, complete: the rest written to the brainy page and
-/// its header line rewritten, or, without brainy, returned as Markdown.
-async fn publish(
-    pending: &mut Pending,
-    brainy: &Credentials,
-    finalized: &Finalized,
-) -> Result<Option<String>> {
+/// The final transcript as Markdown; its writer (the speakers' names, the
+/// displayed clock) is kept with the meeting from here on.
+fn transcript_of(pending: &mut Pending, finalized: &Finalized) -> Result<String> {
     if !finalized.voices.is_empty() {
         pending.meeting.voices = finalized.voices.clone();
     }
-    let saved = pending.meeting.publish.clone();
-    let Some(b) = brainy.brainy(&saved)? else {
-        let known = known(pending)?;
-        let offset = offset(pending, &finalized.utterances);
-        let (markdown, writer) = transcript::markdown(&transcript::Meeting {
-            utterances: &finalized.utterances,
-            warnings: &finalized.warnings,
-            me: &saved.me,
-            started: &minute(&shown(pending, offset)?),
-            duration_s: duration_s(finalized, offset),
-            offset,
-            voices: &pending.meeting.voices,
-            known: &known,
-        });
-        pending.meeting.writer = Some(writer);
-        pending.save()?;
-        return Ok(Some(markdown));
-    };
-    let all = &finalized.utterances;
-    write_or_anew(&b, pending, END, all, |_| Ok(all.clone())).await?;
-    let writer = pending.meeting.writer.clone().unwrap_or_default();
-    let started_text = minute(&shown(pending, writer.offset())?);
-    let duration_s = duration_s(finalized, writer.offset());
-    let mut header = writer
-        .header(&started_text, duration_s, &[])
-        .trim()
-        .to_string();
-    if !finalized.warnings.is_empty() {
-        header.push_str(&format!(" · Note: {}", finalized.warnings.join("; ")));
-    }
-    let page = pending.meeting.page.clone().expect("written above");
-    b.rewrite_first_block(&page.id, &header).await?;
-    info!("written to brainy: {}", page.url);
-    Ok(None)
+    let known = known(pending)?;
+    let offset = offset(pending, &finalized.utterances);
+    let (markdown, writer) = transcript::markdown(&transcript::Meeting {
+        utterances: &finalized.utterances,
+        warnings: &finalized.warnings,
+        me: &pending.meeting.publish.me,
+        started: &minute(&shown(pending, offset)?),
+        duration_s: duration_s(finalized, offset),
+        offset,
+        voices: &pending.meeting.voices,
+        known: &known,
+    });
+    pending.meeting.writer = Some(writer);
+    pending.save()?;
+    Ok(markdown)
 }
 
 /// Brings a pending meeting to its end: its final pass (complete over the
 /// session, the one the server is running, or a new one over the audio
-/// kept here), then the transcript published, the report written, the
-/// meeting kept in the history and the folder removed. On any failure
-/// before the report the folder stays, with whatever was reached, for
-/// `finish`.
+/// kept here), then the report written, the page made in brainy (its
+/// header and the report, never the transcript), the meeting kept in the
+/// history and the folder removed. On any failure before the page the
+/// folder stays, with whatever was reached, for `finish`.
 pub async fn finish(
     backend: &Backend,
     pending: &mut Pending,
@@ -651,46 +523,11 @@ pub async fn finish(
             ..Outcome::default()
         });
     }
-    if pending.meeting.publish.brainy {
-        steps.tell(Step::Publishing);
-    }
-    let transcript = match publish(pending, brainy, &finalized).await {
-        Ok(transcript) => transcript,
-        Err(error) => {
-            let offset = offset(pending, &finalized.utterances);
-            let (markdown, _) = transcript::markdown(&transcript::Meeting {
-                utterances: &finalized.utterances,
-                warnings: &finalized.warnings,
-                me: &pending.meeting.publish.me,
-                started: &minute(&shown(pending, offset)?),
-                duration_s: duration_s(&finalized, offset),
-                offset,
-                voices: &pending.meeting.voices,
-                known: &known(pending).unwrap_or_default(),
-            });
-            let file = pending.save_transcript(&markdown)?;
-            return Err(kept(
-                error.context(format!(
-                    "not written to brainy; the transcript is {}",
-                    file.display()
-                )),
-                &pending.dir,
-            ));
-        }
-    };
-    // The writer is there by now (the page's, or the Markdown's): its
-    // offset is the meeting's displayed start from here on.
+    let transcript = transcript_of(pending, &finalized)?;
+    // The writer is there by now: its offset is the meeting's displayed
+    // start from here on.
     let offset = offset(pending, &finalized.utterances);
     let shown = shown(pending, offset)?;
-    if let Err(error) = remember_voices(pending, &shown) {
-        warn!("the meeting's voices were not kept to be named: {error:#}");
-    }
-    if let Some(writer) = &pending.meeting.writer {
-        let labels: Vec<String> = writer.speakers().into_iter().map(|s| s.2).collect();
-        if let Err(error) = voices::heard_in(pending.data(), &pending.id(), &labels) {
-            warn!("when the people were last heard was not kept: {error:#}");
-        }
-    }
     let mut kept_meeting = history::Kept {
         id: pending.id(),
         title: title(pending, &shown),
@@ -706,10 +543,6 @@ pub async fn finish(
         report_error: None,
     };
     let saved = pending.meeting.publish.clone();
-    let page_brainy = match (&kept_meeting.page, saved.brainy) {
-        (Some(_), true) => brainy.brainy(&saved)?,
-        _ => None,
-    };
     // Not asked again of a meeting finished again (`report.md`).
     let kept_report = pending.report();
     if saved.report {
@@ -726,6 +559,44 @@ pub async fn finish(
     {
         warn!("the report was not kept: {error:#}");
     }
+    let page_brainy = brainy.brainy(&saved)?;
+    if let Some(b) = &page_brainy
+        && pending.meeting.page.is_none()
+    {
+        steps.tell(Step::Publishing);
+        match new_page(b, &kept_meeting, saved.parent.as_deref()).await {
+            // Kept at once: a meeting finished again does not make a
+            // second page.
+            Ok(page) => {
+                pending.meeting.page = Some(page);
+                pending.save()?;
+            }
+            Err(error) => {
+                let file = pending.save_transcript(&transcript)?;
+                return Err(kept(
+                    error.context(format!(
+                        "not written to brainy; the transcript is {}",
+                        file.display()
+                    )),
+                    &pending.dir,
+                ));
+            }
+        }
+    }
+    kept_meeting.page = pending.meeting.page.clone();
+    if let Err(error) = remember_voices(pending, &shown) {
+        warn!("the meeting's voices were not kept to be named: {error:#}");
+    }
+    let labels: Vec<String> = kept_meeting
+        .writer
+        .speakers()
+        .into_iter()
+        .map(|s| s.2)
+        .collect();
+    if let Err(error) = voices::heard_in(pending.data(), &pending.id(), &labels) {
+        warn!("when the people were last heard was not kept: {error:#}");
+    }
+    let page_brainy = page_brainy.filter(|_| kept_meeting.page.is_some());
     match report {
         Some(Ok(markdown)) => {
             put_report(
@@ -765,7 +636,7 @@ pub async fn finish(
     Ok(Outcome {
         id: kept_meeting.id,
         page: kept_meeting.page,
-        transcript,
+        transcript: Some(transcript),
         report: kept_meeting.report,
         report_error: kept_meeting.report_error,
         silent: false,
@@ -850,9 +721,8 @@ async fn put_report(
 
 /// Writes kept meeting `id`, published without brainy, to a new page
 /// under `parent` (a reference `resolve_page` reads; the top without
-/// one): its header, its transcript with the names it has now, and under
-/// the header its report, or its notes without one, as `finish` puts
-/// them. The page is kept with the meeting once made: a report that fails
+/// one): its header and under it its report, or its notes without one,
+/// as `finish` puts them; the transcript stays in the history. The page is kept with the meeting once made: a report that fails
 /// to go on it leaves `report_error`, and "write the report" puts it
 /// there.
 pub async fn send_to_brainy(
@@ -869,21 +739,7 @@ pub async fn send_to_brainy(
         Some(parent) => Some(b.resolve_page(parent).await.context("the parent page")?),
         None => None,
     };
-    let started = DateTime::parse_from_rfc3339(&kept.started)
-        .with_context(|| format!("the meeting's start {} is not a time", kept.started))?;
-    let mut header = kept
-        .writer
-        .header(&minute(&started), kept.duration_s, &[])
-        .trim()
-        .to_string();
-    if !kept.warnings.is_empty() {
-        header.push_str(&format!(" · Note: {}", kept.warnings.join("; ")));
-    }
-    let markdown = format!("{header}\n\n---\n\n{}", kept.transcript());
-    let page = b
-        .create_page(&kept.title, parent.as_deref(), &markdown)
-        .await?;
-    info!("written to brainy: {}", page.url);
+    let page = new_page(b, &kept, parent.as_deref()).await?;
     kept.page = Some(page.clone());
     history::save(data, &kept)?;
     let images = history::images(data, id)?;
@@ -1102,7 +958,7 @@ fn merged(pending: &Pending, result: Finalized) -> Result<Option<Finalized>> {
 
 /// A meeting being recorded: the audio of `audio` goes to the backend,
 /// and, with a final pass, to a pending folder too, where the final
-/// segments are kept as they come (and written to brainy). `notes` are
+/// segments are kept as they come. `notes` are
 /// read once the final pass is done. Returns once the meeting is finished; None
 /// without a final pass. A recording that may last for hours or months
 /// goes through `meetings`, which cuts it into meetings.
@@ -1179,7 +1035,6 @@ pub(crate) async fn meeting_at(
             final_id: None,
             page: None,
             writer: None,
-            published_until: 0.0,
             final_until: 0.0,
             voices: Vec::new(),
         };
@@ -1189,7 +1044,7 @@ pub(crate) async fn meeting_at(
         recordings = Some(created.dir.clone());
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tee.progress = Some(tx);
-        publishing = Some(tokio::spawn(publisher(created, brainy, rx)));
+        publishing = Some(tokio::spawn(publisher(created, rx)));
         spool = Some(writer);
     }
     // Every frame is written here before it goes to the backend.
@@ -1334,93 +1189,20 @@ mod tests {
         }
     }
 
-    /// A page in memory: what was created and appended.
+    /// brainy in memory: the pages created, under which parent and with
+    /// what; a parent "gone" was deleted.
     #[derive(Default)]
     struct Fake {
-        created: Mutex<Vec<(String, String)>>,
-        appended: Mutex<String>,
+        created: Mutex<Vec<(String, Option<String>, String)>>,
     }
 
     impl Pages for Fake {
-        async fn create_page(&self, title: &str, _: Option<&str>, markdown: &str) -> Result<Page> {
-            self.created
-                .lock()
-                .unwrap()
-                .push((title.into(), markdown.into()));
-            Ok(Page {
-                id: "p".into(),
-                url: "https://b/p".into(),
-            })
-        }
-
-        async fn append(&self, _: &str, markdown: &str) -> Result<()> {
-            self.appended.lock().unwrap().push_str(markdown);
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn the_displayed_clock_starts_at_the_first_word_and_is_kept() {
-        // Cut at 09:00; the first word at 07:12.4.
-        let mut p = pending("first-word");
-        let dir = p.dir.clone();
-        let fake = Fake::default();
-        // Nothing said in the first minute: no page, no clock yet.
-        write_page(&fake, &mut p, 60.0, &[]).await.unwrap();
-        assert!(fake.created.lock().unwrap().is_empty());
-        assert!(p.meeting.writer.is_none());
-        let first = [said("system", Some(0), 432.4), said("mic", None, 440.0)];
-        write_page(&fake, &mut p, 480.0, &first).await.unwrap();
-        let (title, header) = fake.created.lock().unwrap()[0].clone();
-        assert_eq!(title, "Meeting 2026-10-29 09:07");
-        assert!(header.starts_with("Meeting started 2026-10-29 09:07 · "));
-        assert_eq!(
-            *fake.appended.lock().unwrap(),
-            "**Speaker 1** · 00:00\n\n432.4\n\n**Me** · 00:08\n\n440\n\n"
-        );
-        // Kept in meeting.json with the page.
-        let saved = Pending::open(&dir).unwrap();
-        assert_eq!(saved.meeting.writer.as_ref().unwrap().offset(), 432.0);
-        assert_eq!(saved.meeting.shown_started(), "2026-10-29T09:07:12+01:00");
-        drop(p);
-
-        // Finished by another process: the same clock, whatever comes.
-        let mut again = Pending::claim(&dir).unwrap().unwrap();
-        let rest = [
-            said("system", Some(1), 700.0),
-            said("system", Some(1), 4100.0),
-        ];
-        write_page(&fake, &mut again, END, &rest).await.unwrap();
-        assert_eq!(fake.created.lock().unwrap().len(), 1);
-        assert!(
-            fake.appended
-                .lock()
-                .unwrap()
-                .ends_with("**Speaker 2** · 04:28\n\n700\n\n4100\n\n")
-        );
-        let offset = offset(&again, &rest);
-        assert_eq!(offset, 432.0);
-        let finalized = Finalized {
-            utterances: first.iter().chain(&rest).cloned().collect(),
-            ..Finalized::default()
-        };
-        // From the first word (432 s) to the last's end (4102 s).
-        assert_eq!(duration_s(&finalized, offset), 3670.0);
-        let writer = again.meeting.writer.clone().unwrap();
-        let header = writer.header(&minute(&shown(&again, offset).unwrap()), 3670.0, &[]);
-        assert!(header.starts_with("Recorded 2026-10-29 09:07 · 1 h 1 min · Speaker 1, Me"));
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
-    }
-
-    /// A page brainy deleted after it was made: its appends answer 404.
-    #[derive(Default)]
-    struct Deleted {
-        pages: Mutex<Vec<String>>,
-        appended: Mutex<Vec<(String, String)>>,
-    }
-
-    impl Pages for Deleted {
-        async fn create_page(&self, _: &str, parent: Option<&str>, _: &str) -> Result<Page> {
+        async fn create_page(
+            &self,
+            title: &str,
+            parent: Option<&str>,
+            markdown: &str,
+        ) -> Result<Page> {
             if parent == Some("gone") {
                 return Err(finishing::HttpStatus {
                     status: 404,
@@ -1428,68 +1210,99 @@ mod tests {
                 }
                 .into());
             }
-            let mut pages = self.pages.lock().unwrap();
-            let id = format!("p{}", pages.len());
-            pages.push(id.clone());
+            self.created.lock().unwrap().push((
+                title.into(),
+                parent.map(Into::into),
+                markdown.into(),
+            ));
             Ok(Page {
-                url: format!("https://b/{id}"),
-                id,
+                id: "p".into(),
+                url: "https://b/p".into(),
             })
         }
+    }
 
-        async fn append(&self, page: &str, markdown: &str) -> Result<()> {
-            if page == "p0" {
-                return Err(finishing::HttpStatus {
-                    status: 404,
-                    message: "brainy answered 404: no page p0".into(),
-                }
-                .into());
-            }
-            self.appended
-                .lock()
-                .unwrap()
-                .push((page.into(), markdown.into()));
-            Ok(())
+    /// The meeting as `finish` keeps it, without its report.
+    fn kept_of(p: &Pending, finalized: &Finalized) -> history::Kept {
+        let offset = offset(p, &finalized.utterances);
+        let shown = shown(p, offset).unwrap();
+        history::Kept {
+            id: p.id(),
+            title: title(p, &shown),
+            started: shown.to_rfc3339(),
+            duration_s: duration_s(finalized, offset),
+            page: None,
+            writer: p.meeting.writer.clone().unwrap(),
+            utterances: finalized.utterances.clone(),
+            warnings: finalized.warnings.clone(),
+            notes: String::new(),
+            report: None,
+            report_blocks: Vec::new(),
+            report_error: None,
         }
     }
 
     #[tokio::test]
-    async fn a_deleted_page_is_written_again_whole_on_a_new_one() {
-        let mut p = pending("deleted-page");
-        p.meeting.publish.parent = Some("gone".into());
-        let b = Deleted::default();
-        let first = [said("mic", Some(0), 10.0)];
-        // Its parent deleted: made at the top; then the page deleted.
-        write_page(&b, &mut p, 60.0, &first).await.unwrap_err();
-        assert_eq!(p.meeting.page.as_ref().unwrap().id, "p0");
-        let all = [said("mic", Some(0), 10.0), said("mic", Some(1), 70.0)];
-        write_or_anew(&b, &mut p, END, &all[1..], |_| Ok(all.to_vec()))
+    async fn the_page_has_the_header_and_never_the_transcript() {
+        // Cut at 09:00; the first word at 07:12.4.
+        let mut p = pending("first-word");
+        let dir = p.dir.clone();
+        let finalized = Finalized {
+            utterances: vec![
+                said("system", Some(0), 432.4),
+                said("mic", None, 440.0),
+                said("system", Some(1), 4100.0),
+            ],
+            warnings: vec!["the call was silent for a while".into()],
+            ..Finalized::default()
+        };
+        let transcript = transcript_of(&mut p, &finalized).unwrap();
+        assert!(
+            transcript.contains("**Speaker 1** · 00:00\n\n432.4\n\n**Me** · 00:08"),
+            "{transcript}"
+        );
+        // The clock is kept in meeting.json with the writer.
+        let saved = Pending::open(&dir).unwrap();
+        assert_eq!(saved.meeting.writer.as_ref().unwrap().offset(), 432.0);
+        assert_eq!(saved.meeting.shown_started(), "2026-10-29T09:07:12+01:00");
+        let kept = kept_of(&p, &finalized);
+        // From the first word (432 s) to the last's end (4102 s).
+        assert_eq!(kept.duration_s, 3670.0);
+        let fake = Fake::default();
+        new_page(&fake, &kept, Some("parent")).await.unwrap();
+        let (title, parent, markdown) = fake.created.lock().unwrap()[0].clone();
+        assert_eq!(title, "Meeting 2026-10-29 09:07");
+        assert_eq!(parent.as_deref(), Some("parent"));
+        assert_eq!(
+            markdown,
+            "Recorded 2026-10-29 09:07 · 1 h 1 min · Speaker 1, Me, Speaker 2 · \
+             Note: the call was silent for a while"
+        );
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_deleted_parent_puts_the_page_at_the_top() {
+        let mut p = pending("deleted-parent");
+        let finalized = Finalized {
+            utterances: vec![said("mic", Some(0), 10.0)],
+            ..Finalized::default()
+        };
+        transcript_of(&mut p, &finalized).unwrap();
+        let fake = Fake::default();
+        new_page(&fake, &kept_of(&p, &finalized), Some("gone"))
             .await
             .unwrap();
-        assert_eq!(p.meeting.page.as_ref().unwrap().id, "p1");
-        let appended = b.appended.lock().unwrap();
-        assert_eq!(appended.len(), 1);
-        // From the meeting's first segment, its first turn with its speaker.
-        assert_eq!(appended[0].0, "p1");
-        assert!(
-            appended[0]
-                .1
-                .starts_with("**Room 1** · 00:00\n\n10\n\n**Room 2**"),
-            "{}",
-            appended[0].1
-        );
-        assert_eq!(p.meeting.published_until, END);
+        assert_eq!(fake.created.lock().unwrap()[0].1, None);
         let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
     }
 
-    #[tokio::test]
-    async fn a_meeting_of_notes_only_starts_at_its_first_sample() {
+    #[test]
+    fn a_meeting_of_notes_only_starts_at_its_first_sample() {
         let mut p = pending("notes-only");
-        let fake = Fake::default();
-        write_page(&fake, &mut p, END, &[]).await.unwrap();
-        let (title, header) = fake.created.lock().unwrap()[0].clone();
-        assert_eq!(title, "Meeting 2026-10-29 09:00");
-        assert!(header.starts_with("Meeting started 2026-10-29 09:00 · "));
+        transcript_of(&mut p, &Finalized::default()).unwrap();
+        let kept = kept_of(&p, &Finalized::default());
+        assert_eq!(kept.title, "Meeting 2026-10-29 09:00");
         assert_eq!(offset(&p, &[]), 0.0);
         let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
     }
@@ -1513,22 +1326,6 @@ mod tests {
         // A page with no writer kept: 0 as well, as its turns were written.
         p.meeting.writer = None;
         assert_eq!(offset(&p, &[seg(432.0)]), 0.0);
-        let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
-    }
-
-    #[test]
-    fn segments_not_on_the_page_are_read_again_from_the_folder() {
-        let p = pending("unwritten");
-        p.add_segments(&[seg(1.0), seg(2.0)]).unwrap();
-        let at = p.add_segments(&[seg(3.0)]).unwrap();
-        p.add_segments(&[seg(4.0), seg(5.0)]).unwrap();
-        let again: Vec<f64> = p
-            .segments_from(at)
-            .unwrap()
-            .iter()
-            .map(|u| u.start)
-            .collect();
-        assert_eq!(again, [3.0, 4.0, 5.0]);
         let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
     }
 }

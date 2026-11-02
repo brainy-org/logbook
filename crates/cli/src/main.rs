@@ -4,8 +4,8 @@
 //! speech, `live` the microphone and what the computer plays, `bench` many
 //! files at once to find how many meetings a machine keeps up with.
 //! With `--final` the meeting is read again as it goes and once it ends;
-//! with `--brainy` the result becomes a page in brainy, with `--report`
-//! a language model writes its report. A meeting with a final pass is
+//! with `--report` a language model writes its report, with `--brainy`
+//! the report becomes a page in brainy (never the transcript). A meeting with a final pass is
 //! also kept here until it is published (client pending.rs), and
 //! `finish` publishes the ones a lost server left behind. A recording is
 //! cut into meetings at a long pause or a meeting's length (client
@@ -79,7 +79,9 @@ struct Publish {
     /// (implies --final). It reads the meeting's text.
     #[arg(long)]
     report: bool,
-    /// Write the final transcript as a page in brainy (implies --final).
+    /// Write the meeting as a page in brainy once it ends: its report
+    /// (--report), or the notes without one; never the transcript, which
+    /// is printed (implies --final).
     #[arg(long)]
     brainy: bool,
     /// brainy's address, e.g. https://brainy.example.com.
@@ -504,7 +506,8 @@ fn list_speakers(data: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The final transcript and the report, when they went to no page.
+/// The final transcript (it goes to no page), and the report when it
+/// went to no page.
 /// `finish`'s progress, on stderr (the transcripts on stdout).
 struct Printed;
 

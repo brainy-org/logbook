@@ -285,7 +285,7 @@ export function SettingsPage({
               checked={s.brainy.enabled}
               onChange={(v) => update((n) => (n.brainy.enabled = v))}
               label="Write each meeting as a page in brainy"
-              help="The page is created when the meeting starts and the transcript is added a minute or so behind it; at the end the notes and the report go on top."
+              help="The page is created when the meeting ends, with the report (or the notes without one). The transcript stays on this computer."
             />
             {s.brainy.enabled && (
               <>

@@ -3,16 +3,17 @@
 //!
 //! One folder per meeting under `<data>/pending`: `meeting.json` (the
 //! channels, when it started, how to publish it, the server's pass id once
-//! known, how far the final segments have come, the brainy page and how
-//! far it is written, and the writer with the displayed clock's offset,
-//! fixed with the page: transcript.rs), each channel's audio as raw 16 kHz s16le on the
+//! known, how far the final segments have come, the brainy page once made,
+//! and the writer with the displayed clock's offset, fixed with the final
+//! transcript: transcript.rs), each channel's audio as raw 16 kHz s16le on the
 //! meeting's clock, written as it is captured, in files of 5 minutes
 //! (`<channel>-<n>.pcm`, engine recording.rs's layout), `segments.jsonl`
 //! (the final segments as they come during the meeting), `notes.md` (what
 //! the person wrote during it, for the report) with the screenshots it
 //! names (shots.rs), `final.json` once the
 //! final pass is complete, and `report.md` once the report is written,
-//! until it is on the page. The audio is kept only from where the final
+//! until it is on the page (the page holds the report, never the
+//! transcript). The audio is kept only from where the final
 //! segments have come (`trim`): a final pass taken up again starts there,
 //! and a meeting of days keeps minutes of it; all of it goes with
 //! `final.json`. The folder goes away once the transcript is published;
@@ -25,7 +26,7 @@
 //! meeting still being recorded, nor one being finished elsewhere.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -51,12 +52,10 @@ pub struct Meeting {
     /// The brainy page, once created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<Page>,
-    /// The page's names and last speaker, to write its next part.
+    /// The speakers' names and the displayed clock, fixed once the
+    /// final transcript is made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer: Option<Writer>,
-    /// Segments starting before this are on the page.
-    #[serde(default)]
-    pub published_until: f64,
     /// Final segments starting before this are in `segments.jsonl`: a
     /// final pass taken up again starts here, and the audio before it is
     /// gone. `f64::MAX` once they all are.
@@ -261,47 +260,21 @@ impl Pending {
         }
     }
 
-    /// Final segments that came during the meeting; returns where in
-    /// `segments.jsonl` they start, for `segments_from`.
-    pub fn add_segments(&self, utterances: &[Utterance]) -> Result<u64> {
+    /// Final segments that came during the meeting.
+    pub fn add_segments(&self, utterances: &[Utterance]) -> Result<()> {
         let path = self.dir.join("segments.jsonl");
         let mut file = File::options()
             .create(true)
             .append(true)
             .open(&path)
             .with_context(|| format!("could not write {}", path.display()))?;
-        let at = file
-            .metadata()
-            .with_context(|| format!("could not read {}", path.display()))?
-            .len();
         let mut text = String::new();
         for u in utterances {
             text.push_str(&serde_json::to_string(u)?);
             text.push('\n');
         }
         file.write_all(text.as_bytes())
-            .with_context(|| format!("could not write {}", path.display()))?;
-        Ok(at)
-    }
-
-    /// The final segments from byte `at` of `segments.jsonl` (as
-    /// `add_segments` returned it) to its end: the ones not on the page
-    /// yet, read again instead of held in memory while brainy fails.
-    pub fn segments_from(&self, at: u64) -> Result<Vec<Utterance>> {
-        let path = self.dir.join("segments.jsonl");
-        let mut file =
-            File::open(&path).with_context(|| format!("could not read {}", path.display()))?;
-        file.seek(SeekFrom::Start(at))
-            .with_context(|| format!("could not read {}", path.display()))?;
-        let mut out = Vec::new();
-        for line in BufReader::new(file).lines() {
-            let line = line.with_context(|| format!("could not read {}", path.display()))?;
-            // A line cut by a crash is dropped, as in `segments`.
-            if let Ok(u) = serde_json::from_str(&line) {
-                out.push(u);
-            }
-        }
-        Ok(out)
+            .with_context(|| format!("could not write {}", path.display()))
     }
 
     /// Every final segment that came during the meeting, by start.
@@ -570,7 +543,6 @@ mod tests {
             final_id: None,
             page: None,
             writer: None,
-            published_until: 0.0,
             final_until: 0.0,
             voices: Vec::new(),
         };

@@ -36,9 +36,9 @@ crates/client/   the client, a library the CLI and the app share: the audio (aud
                  session on a server with reconnection (remote.rs) or in this process
                  (local.rs), the meeting from its first sample to its page (meeting.rs):
                  kept until published (pending.rs) and finished later, waiting for
-                 the server if need be (finishing.rs), the final transcript as Markdown a
-                 part at a time (transcript.rs) into brainy as it comes (brainy.rs),
-                 the report, speakers named from voices known on this computer
+                 the server if need be (finishing.rs), the final transcript as Markdown
+                 (transcript.rs), the report as a page in brainy (brainy.rs: never
+                 the transcript), speakers named from voices known on this computer
                  (voices.rs), and for the app the meetings kept (history.rs) and the
                  screenshots in their notes (shots.rs); a
                  recording cut into meetings at a long pause or a meeting's length
@@ -119,13 +119,14 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   the meeting and holds it on disk until the end
   (`docs/decisions/2026-10-28-meetings-of-hours-and-days.md`).
 - **Final segments are sent once and never change**: up to the earliest
-  cut of all channels, by start (`Progressive::ready`). The CLI appends
-  them to the brainy page and records how far it got
-  (`published_until`); sending a segment again, or one that starts
-  before `until`, writes it twice or out of order on a page nobody
-  rewrites (`docs/pipeline.md`, "Final pass"). The one exception is a
-  page brainy no longer has (deleted, trashed): a new page from the
-  first segment (`write_or_anew`), never the meeting held for it.
+  cut of all channels, by start (`Progressive::ready`). The client
+  appends them to `segments.jsonl`; a segment sent again, or one that
+  starts before `until`, is in the transcript twice or out of order
+  (`docs/pipeline.md`, "Final pass").
+- **The brainy page holds the report, never the transcript**: made once
+  the meeting is finished, its header and the report (or the notes)
+  under it (`meeting.rs`, `new_page`); the transcript stays on the
+  client (`docs/decisions/2026-11-02-the-page-holds-the-report.md`).
 - **A final range's speaker slots are its own**: each range is diarized
   alone, so slot 0 of one range and of the next are unrelated; only
   voices (`speakers::Linker`) make them the meeting's speakers. Carrying a
@@ -147,14 +148,14 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   live transcript
   (`docs/decisions/2026-10-29-a-server-on-a-cpu-falls-behind.md`).
 - **Turn times are printed on the meeting's displayed clock: one offset,
-  fixed at the page's creation** (`Writer::offset`, client
+  fixed when the final transcript is made** (`Writer::offset`, client
   `transcript.rs`), and kept with the writer. Shift only where times
   become text; an offset changed later, or applied to segments, prints a
-  page with two clocks or moves `published_until`
+  transcript with two clocks or moves `final_until`
   (`docs/decisions/2026-10-29-the-meeting-starts-at-its-first-word.md`).
 - **Times that go out as JSON are never infinite**: serde_json writes
   infinity as `null`, which does not read back as a number. "To the end"
-  is `f64::MAX` (`until`, `published_until`).
+  is `f64::MAX` (`until`, `final_until`).
 - **Voiceprints stay on the client.** The server sends a meeting's
   speakers' voices (`SpeakerVoice`) and keeps them only as long as that
   meeting's result. The library of named voices lives only in the CLI's
@@ -177,7 +178,7 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   upload and publish a meeting still being recorded, or publish one
   twice (client `finishing.rs`).
 - **logbook-server holds no brainy credentials.** It returns the final
-  transcript and the report; the client writes the page with the
+  transcript and the report; the client writes the page (the report) with the
   person's own token (`docs/decisions/2026-10-24-final-pass-on-the-live-server.md`).
 - **The desktop app is built for macOS 11.0** (`minimumSystemVersion`):
   Tauri exports it as `MACOSX_DEPLOYMENT_TARGET`, and 14 or more makes

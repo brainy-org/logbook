@@ -15,7 +15,7 @@ export function stepLabel(step: Step, local: boolean): string {
     case 'transcribing':
       return local ? 'Transcribing on this computer' : 'Transcribing on the server';
     case 'publishing':
-      return 'Writing the transcript to brainy';
+      return 'Writing the page in brainy';
     case 'report':
       return 'Writing the report';
   }

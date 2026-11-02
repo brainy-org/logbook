@@ -8,9 +8,10 @@ parakeet-tdt-0.6b-v3, Nemotron-3-Diarization): on your computer, or, with
 
 A prototype: a desktop app (macOS; Windows built, not tried; Android
 built as a recorder for a server, not tried), a CLI and a server. Once the meeting
-ends it is read all again (better speakers and phrases), written as a
-page in brainy, and a language model can write its report from the
-transcript and the notes you took, as Granola does.
+ends it is read all again (better speakers and phrases), a language
+model can write its report from the transcript and the notes you took,
+as Granola does, and the report becomes a page in brainy (the transcript
+stays on your computer).
 
 ## Quick start
 
@@ -87,12 +88,12 @@ call: the app records the call and tells apart the voices around the
 computer accordingly, and remembers the choice), start it, write your notes while it goes (the live transcript is
 beside them; ⌘⇧1, or Ctrl+Shift+1, from any app, or the Screen button,
 puts a screenshot of the screen under the pointer in the notes, and on
-the brainy page; ⌘⇧2 or Area an area you select, on macOS), stop it: the final transcript, the report and the page in
+the brainy page; ⌘⇧2 or Area an area you select, on macOS), stop it: the final transcript, the report and its page in
 brainy follow, and the meeting stays in the list on the left (one
 ended with brainy off goes there later with Send to brainy). Click a
 speaker ("Speaker 2") to give them a name, or pick one of the names
-their voice is close to: the transcript, the brainy
-page and the voices known by name change with it, the report is written
+their voice is close to: the transcript
+and the voices known by name change with it, the report is written
 again with the new names a few seconds later, and the next meetings
 name them by themselves. With many voices known, choose who is expected
 before you start: the speakers are named from those voices only. Voices,
@@ -182,20 +183,20 @@ along it means the server does not keep up.
 export BRAINY_URL=https://brainy.example.com BRAINY_TOKEN=brainy_…   # a personal token with write access
 scripts/client.sh live --system --brainy --me Marco                  # Ctrl-C at the end of the meeting
 scripts/client.sh live --system --brainy --parent "Engineering/Meetings" --title "Weekly sync"
-scripts/client.sh live --system --brainy --report                    # and a report on the page
+scripts/client.sh live --system --brainy --report                    # the report on the page
 scripts/client.sh play meeting.m4a --final                           # the final transcript, printed
 ```
 
 With `--final` (implied by `--brainy`) the server reads the meeting again
 as it goes, a minute or so behind, in longer pieces and with speakers
-numbered once for the whole meeting: the final transcript. With
-`--brainy` the page is created with the meeting's first final words and
-the final transcript is added to it as it comes: who spoke (your name for the
-microphone, "Speaker 1", "Speaker 2"… for the call), when, and what. A
-meeting in which nothing was said makes no page.
-After Ctrl-C only the last minute or so is left (seconds), then the
-page's first line becomes "Recorded … · duration · speakers". Without
-`--parent` the page goes at the top of your default workspace.
+numbered once for the whole meeting: the final transcript, printed at
+the end: who spoke (your name for the microphone, "Speaker 1",
+"Speaker 2"… for the call), when, and what. With `--brainy` the page is
+created once the meeting is over: its first line "Recorded … · duration ·
+speakers" and under it the report (`--report`), or without one the notes;
+the transcript never goes to brainy. A meeting in which nothing was said
+makes no page. Without `--parent` the page goes at the top of your
+default workspace.
 
 ### Left running
 
@@ -233,12 +234,12 @@ The final transcript is as heard. With a language model (the server's
 and `LOGBOOK_LLM_KEY` given to the CLI without a server), `--report` has
 it write the meeting's report (summary, decisions, action items, in the
 meeting's language): on the brainy page under its first line, or printed
-after the transcript. Without it the meeting's text never reaches the
+after the transcript without brainy. Without it the meeting's text never reaches the
 model.
 
 ### Speakers by name
 
-On the page the call's voices are "Speaker 1", "Speaker 2"… until you name
+In the transcript the call's voices are "Speaker 1", "Speaker 2"… until you name
 them. After a meeting:
 
 ```bash

@@ -190,15 +190,14 @@ that stops leaves its running passes unknown within a minute
 ## The page's clock
 
 A meeting is shown from its first word (client `transcript.rs`,
-`Writer::offset`): the page's first line ("Meeting started …") and its
-header at the end ("Recorded … · duration · speakers"), the default
-title, the history's start and duration, and every turn's time, which reads 00:00 at the first word. The
-offset is the start of the first final segment, down to a whole second,
-fixed when the page is created (`write_page`) and saved with the writer
-in `meeting.json`, so `finish` and a resumed meeting print the same
-clock; without brainy it is fixed when the Markdown is written. A
-meeting of notes only has 0. Nothing else moves: segments, `until`,
-`published_until` and `final_until` stay on the meeting's samples. What
+`Writer::offset`): the page's header ("Recorded … · duration ·
+speakers"), the default title, the history's start and duration, and
+every turn's time, which reads 00:00 at the first word. The offset is
+the start of the first final segment, down to a whole second, fixed
+when the final transcript is made (`transcript_of`) and saved with the
+writer in `meeting.json`, so a `finish` that tries again prints the same
+clock. A meeting of notes only has 0. Nothing else moves: segments,
+`until` and `final_until` stay on the meeting's samples. What
 is printed and read back (the report's transcript, the app's turns) is
 all on the displayed
 clock
@@ -222,7 +221,7 @@ person's notes; at most about 1500 words), and the report is written
 from the notes as from the transcript. Notes still too long for one
 request (a meeting of weeks) are taken again the same way. Ten hours
 cost six requests instead of one. The transcript is the one
-on the page, with the names the client gave the speakers: the server
+the client printed, with the names it gave the speakers: the server
 never sees the client's voices, so the client sends the Markdown
 (`POST /reports`, docs/protocol.md), not the segments. The server answers
 it only with `--llm-url`; without a server the client asks the model
@@ -242,15 +241,17 @@ meeting's report in Italian; with no example, an Italian meeting's
 headings in English. A German meeting still gets English headings over
 German text.
 
-On the page the report goes right under the header line, above the
-transcript (`meeting.rs`, `insert_under_header`); asked again, it
-replaces the blocks of the last one (`history::Kept::report_blocks`). A
+The page is made once the meeting is finished, after the report
+(`meeting.rs`, `new_page`): its header line, and the report right under
+it (`insert_under_header`); asked again, it replaces the blocks of the
+last one (`history::Kept::report_blocks`). The transcript never goes on
+the page (`docs/decisions/2026-11-02-the-page-holds-the-report.md`). A
 report that fails leaves the meeting published without it. A report
 written is kept in the pending folder (`report.md`) until it is on the
 page: a meeting finished again does not ask the model again.
 
 A speaker renamed afterwards (the app's meeting page) is renamed on the
-page and in the history; the app then writes the report again with the
+page (where the report names them) and in the history; the app then writes the report again with the
 new names (docs/app.md).
 
 ## Measured
