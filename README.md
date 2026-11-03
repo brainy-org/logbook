@@ -232,10 +232,10 @@ matches no page, or more than one, stops there and lists what it found
 The final transcript is as heard. With a language model (the server's
 `--llm-url`, below, or the same `LOGBOOK_LLM_URL`, `LOGBOOK_LLM_MODEL`
 and `LOGBOOK_LLM_KEY` given to the CLI without a server), `--report` has
-it write the meeting's report (summary, decisions, action items, in the
-meeting's language): on the brainy page under its first line, or printed
-after the transcript without brainy. Without it the meeting's text never reaches the
-model.
+it write the meeting's report (summary, decisions, action items, details
+by subject, in the meeting's language): on the brainy page under its first
+line, or printed after the transcript without brainy. Without it the
+meeting's text never reaches the model.
 
 ### Speakers by name
 

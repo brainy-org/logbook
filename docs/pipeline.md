@@ -208,8 +208,15 @@ clock
 Once the meeting is published, a language model can write its report
 (`crates/engine/src/report.rs`), as Granola does: a summary, the notes
 the person took during the meeting completed from what was said (nested
-under each of their points, in their order), the decisions and the
-action items with their owners. One request to an
+under each of their points, in their order), the decisions, the action
+items with their owners, and the details: what else was said, by
+subject, with its facts (names, numbers, dates, technical details, doubts
+left open), at most about 1000 words. The details are there because the
+page holds the report and never the transcript: a report of decisions
+and actions alone left a 96-minute call's facts (the system being
+ported, the dates of the contract, the doubts of the customer) only in
+the transcript on the client. With notes, the details hold only the
+subjects the notes do not cover. One request to an
 OpenAI-compatible model (`crates/engine/src/llm.rs`), with the whole transcript, up to
 320 000 characters (six to nine hours). A longer meeting is reported in
 steps, never cut (a report of part of a meeting reads as one of all of

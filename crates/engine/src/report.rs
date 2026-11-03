@@ -1,7 +1,8 @@
 //! The meeting's report, written by a language model from the final
 //! transcript and the notes the person took during the meeting, as
 //! Granola does: a summary, the notes completed from what was said, the
-//! decisions and the action items (docs/pipeline.md, "Report").
+//! decisions, the action items and the details of what else was said
+//! (docs/pipeline.md, "Report").
 //!
 //! One request to an OpenAI-compatible endpoint (llm.rs), with the whole
 //! transcript, when it is up to
@@ -39,8 +40,9 @@ First decide which language most of the transcript is in. Write the whole report
 included, in that language, whatever the language of these instructions or of the notes. \
 Answer with Markdown only, in this order, leaving out a section with nothing to put in it. \
 Each heading is the word in angle brackets in the transcript's language: an English meeting \
-has \"## Summary\", \"## Notes\", \"## Decisions\", \"## Action items\"; an Italian one \
-\"## Riepilogo\", \"## Note\", \"## Decisioni\", \"## Azioni\"; another language its own words.
+has \"## Summary\", \"## Notes\", \"## Decisions\", \"## Action items\", \"## Details\"; an \
+Italian one \"## Riepilogo\", \"## Note\", \"## Decisioni\", \"## Azioni\", \"## Dettagli\"; another \
+language its own words.
 
 ## <Summary>
 Three to six sentences: what the meeting was about and how it ended.
@@ -62,6 +64,14 @@ A bulleted list of what was decided.
 ## <Action items>
 A task list (- [ ] ...), one per line, each starting with a verb, with who owns it \
 (\" — Name\") and when it is due when the meeting says so.
+
+## <Details>
+What was said beyond the sections above, for whoever reads this report instead of the \
+transcript: one \"### \" heading per subject, in the order it was discussed, each with a \
+bulleted list of its facts: who said what, names, numbers, amounts, dates, technical details, \
+the reasons given, the doubts and questions left open. When there are notes, only the subjects \
+the notes do not cover. Never repeat a decision or an action item, never copy the transcript \
+out, leave out greetings and small talk; at most about 1000 words.
 
 Rules:
 - Only what the transcript or the notes say: never invent names, numbers, dates or decisions.
