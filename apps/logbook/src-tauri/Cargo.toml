@@ -17,8 +17,8 @@ anyhow = "1.0.104"
 dirs = "7.0.0"
 # Without the models here: the desktop adds them below, Android never
 # (docs/decisions/2026-10-29-android-app.md).
-logbook-client = { version = "0.1.0", path = "../../../crates/client", default-features = false }
-logbook-engine = { version = "0.1.0", path = "../../../crates/engine", default-features = false }
+logbook-client = { version = "0.1.1", path = "../../../crates/client", default-features = false }
+logbook-engine = { version = "0.1.1", path = "../../../crates/engine", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tauri = { version = "2.12.5", features = [] }
@@ -34,8 +34,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 [target.'cfg(not(target_os = "android"))'.dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
-logbook-client = { version = "0.1.0", path = "../../../crates/client", features = ["local"] }
-logbook-engine = { version = "0.1.0", path = "../../../crates/engine", features = ["models"] }
+logbook-client = { version = "0.1.1", path = "../../../crates/client", features = ["local"] }
+logbook-engine = { version = "0.1.1", path = "../../../crates/engine", features = ["models"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2.5.4"
 xcap = "0.9.8"
@@ -43,4 +43,4 @@ xcap = "0.9.8"
 # Android: records and sends to a server; the foreground service that keeps
 # it recording with the screen off.
 [target.'cfg(target_os = "android")'.dependencies]
-tauri-plugin-recording = { version = "0.1.0", path = "../plugins/recording" }
+tauri-plugin-recording = { version = "0.1.1", path = "../plugins/recording" }
