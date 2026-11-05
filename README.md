@@ -90,7 +90,9 @@ beside them; ⌘⇧1, or Ctrl+Shift+1, from any app, or the Screen button,
 puts a screenshot of the screen under the pointer in the notes, and on
 the brainy page; ⌘⇧2 or Area an area you select, on macOS), stop it: the final transcript, the report and its page in
 brainy follow, and the meeting stays in the list on the left (one
-ended with brainy off goes there later with Send to brainy). Click a
+ended with brainy off goes there later with Send to brainy). While it
+records, its title can be changed in place. Afterwards, on the meeting's
+page, click a
 speaker ("Speaker 2") to give them a name, or pick one of the names
 their voice is close to: the transcript
 and the voices known by name change with it, the report is written

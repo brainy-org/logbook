@@ -1,7 +1,8 @@
 // The meeting being recorded, as Granola has it: a page for your notes,
 // the live transcript beside it, and a pill at the bottom with the levels,
 // the time and the stop button. The notes go to the app as they are typed
-// (`set_notes`), and to the report when the meeting ends. At phone width
+// (`set_notes`), and to the report when the meeting ends; so does the
+// title, edited in place (`set_title`). At phone width
 // the live transcript is a panel over the notes, closed at first. On the
 // desktop a screenshot (the buttons, or the shortcuts from any app: the
 // screen under the pointer, or on macOS an area to select) goes in
@@ -57,6 +58,10 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   // a cut between typing and sending leaves them with this meeting.
   const unsent = useRef<string | undefined>(undefined);
   const part = state.part;
+  // The title as typed: sent as the notes are, with this meeting's number.
+  const [title, setTitle] = useState(state.title);
+  const titleTimer = useRef<number | undefined>(undefined);
+  const unsentTitle = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 500);
@@ -68,9 +73,27 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
     unsent.current = undefined;
     return text === undefined ? Promise.resolve() : api.setNotes(part, text);
   };
+  const sendTitle = () => {
+    window.clearTimeout(titleTimer.current);
+    const text = unsentTitle.current;
+    unsentTitle.current = undefined;
+    return text === undefined ? Promise.resolve() : api.setTitle(part, text);
+  };
   // A new meeting of the recording draws this again with empty notes (its
   // `key`): what this one had not sent yet goes to its own meeting now.
-  useEffect(() => () => void send(), []);
+  useEffect(
+    () => () => {
+      void send();
+      void sendTitle();
+    },
+    [],
+  );
+  const editTitle = (text: string) => {
+    setTitle(text);
+    unsentTitle.current = text;
+    window.clearTimeout(titleTimer.current);
+    titleTimer.current = window.setTimeout(() => void sendTitle(), NOTES_DELAY_MS);
+  };
 
   const edit = (text: string) => {
     unsent.current = text;
@@ -107,7 +130,7 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
 
   // The last keystrokes are not lost when the meeting stops.
   const stop = async () => {
-    await send();
+    await Promise.all([send(), sendTitle()]);
     await api.stopMeeting();
   };
 
@@ -159,9 +182,19 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
           </button>
         </header>
         <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col overflow-y-auto px-10 pb-28 max-sm:px-4">
-          <h1 className="text-3xl font-semibold tracking-tight">
-            {state.title || 'Untitled meeting'}
-          </h1>
+          <input
+            value={title}
+            onChange={(e) => editTitle(e.target.value)}
+            onBlur={() => void sendTitle()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur();
+            }}
+            disabled={state.phase === 'finishing'}
+            placeholder="Untitled meeting"
+            aria-label="Title"
+            title="The meeting's title: the page in brainy takes it"
+            className="w-full bg-transparent text-3xl font-semibold tracking-tight outline-none placeholder:text-neutral-400 disabled:opacity-100"
+          />
           <p className={`mt-1 mb-6 text-sm ${mutedTextClass}`}>
             {state.started
               ? new Date(state.started).toLocaleString(undefined, {

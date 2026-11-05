@@ -223,19 +223,28 @@ impl remote::Events for Forward {
     }
 }
 
-/// The notes of a series' meetings, by number: each is written to the
-/// meeting it was typed in, never to the one current when it arrives. A
-/// meeting reads its notes once its final pass is done (meeting.rs), so
-/// the last keystrokes before a cut, sent just after it, still reach the
-/// meeting that closed. Kept while the meeting runs.
+/// What the person writes and changes in a series' meetings, by number:
+/// the notes and the title. Each is written to the meeting it was given
+/// in, never to the one current when it arrives. A meeting reads them
+/// once its final pass is done (meeting.rs), so the last keystrokes
+/// before a cut, sent just after it, still reach the meeting that closed.
+/// Kept while the meeting runs.
 #[derive(Clone, Default)]
-pub struct Notebook(Arc<Mutex<HashMap<usize, Notes>>>);
+pub struct Notebook(Arc<Mutex<Book>>);
+
+#[derive(Default)]
+struct Book {
+    parts: HashMap<usize, Notes>,
+    /// The title given during the recording: the meetings that start
+    /// after take it.
+    title: Option<String>,
+}
 
 impl Notebook {
     /// Meeting `n`'s notes are `text`; nothing if it has ended.
     pub fn set(&self, n: usize, text: String) {
-        if let Some(notes) = self.0.lock().unwrap().get(&n) {
-            *notes.lock().unwrap() = text;
+        if let Some(written) = self.0.lock().unwrap().parts.get(&n) {
+            written.lock().unwrap().notes = text;
         }
     }
 
@@ -244,18 +253,50 @@ impl Notebook {
         self.0
             .lock()
             .unwrap()
+            .parts
             .get(&n)
-            .map(|notes| notes.lock().unwrap().clone())
+            .map(|written| written.lock().unwrap().notes.clone())
             .unwrap_or_default()
     }
 
+    /// The recording's title is `title` from meeting `n` on: that one's
+    /// and every later one's, numbered as `meetings` numbers them; an
+    /// earlier one keeps its own. Empty: the default title.
+    pub fn set_title(&self, n: usize, title: &str) {
+        let mut book = self.0.lock().unwrap();
+        let title = title.trim().to_string();
+        for (&m, written) in &book.parts {
+            if m >= n {
+                written.lock().unwrap().title =
+                    Some(numbered(Some(title.clone()), m).unwrap_or_default());
+            }
+        }
+        book.title = Some(title);
+    }
+
+    /// The title given during the recording, if one was.
+    fn title(&self) -> Option<String> {
+        self.0.lock().unwrap().title.clone()
+    }
+
     fn open(&self, n: usize) -> Notes {
-        self.0.lock().unwrap().entry(n).or_default().clone()
+        self.0.lock().unwrap().parts.entry(n).or_default().clone()
     }
 
     fn close(&self, n: usize) {
-        self.0.lock().unwrap().remove(&n);
+        self.0.lock().unwrap().parts.remove(&n);
     }
+}
+
+/// Meeting `n`'s title: the recording's, numbered after the first ("Weekly
+/// (2)"); None without one.
+fn numbered(title: Option<String>, n: usize) -> Option<String> {
+    let title = title.filter(|t| !t.trim().is_empty())?;
+    Some(if n > 0 {
+        format!("{title} ({})", n + 1)
+    } else {
+        title
+    })
 }
 
 /// A meeting of the series being recorded.
@@ -290,12 +331,7 @@ pub async fn meetings(
         let (tx, rx) = unbounded_channel();
         let (backend, data, channels) = (backend.clone(), data.to_path_buf(), channels.clone());
         let mut p = p.clone();
-        if n > 0 {
-            p.title = p
-                .title
-                .filter(|t| !t.trim().is_empty())
-                .map(|t| format!("{t} ({})", n + 1));
-        }
+        p.title = numbered(notes.title().or(p.title), n);
         let at = started + chrono::Duration::milliseconds((base as f64 / rate * 1000.0) as i64);
         let notes = notes.open(n);
         let mut forward = Forward {
@@ -476,6 +512,21 @@ mod tests {
         assert_eq!(c.cut(), 160);
         assert!(!c.cutting());
         assert_eq!(c.route(1, vec![5]), (None, Some(vec![5])));
+    }
+
+    #[test]
+    fn a_title_given_during_a_recording_goes_to_its_meetings_from_then_on() {
+        let book = Notebook::default();
+        let (first, second) = (book.open(0), book.open(1));
+        book.set_title(1, " Weekly ");
+        assert_eq!(first.lock().unwrap().title, None);
+        assert_eq!(second.lock().unwrap().title.as_deref(), Some("Weekly (2)"));
+        // The meetings that start later take it too.
+        assert_eq!(numbered(book.title(), 2).as_deref(), Some("Weekly (3)"));
+        // Emptied: the default title, not the one the recording started with.
+        book.set_title(1, "");
+        assert_eq!(second.lock().unwrap().title.as_deref(), Some(""));
+        assert_eq!(numbered(book.title(), 2), None);
     }
 
     const LIMITS: Limits = Limits {

@@ -250,6 +250,11 @@ fn set_notes(app: State<App>, part: usize, notes: String) {
     app.recorder.set_notes(part, notes);
 }
 
+#[tauri::command]
+fn set_title(app: State<App>, handle: AppHandle, part: usize, title: String) {
+    app.recorder.set_title(&handle, part, title);
+}
+
 /// A screenshot for the notes of the meeting being recorded.
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
@@ -685,6 +690,7 @@ pub fn run() {
             start_meeting,
             stop_meeting,
             set_notes,
+            set_title,
             take_screenshot,
             meeting_state,
             get_logs,

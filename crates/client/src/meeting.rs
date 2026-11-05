@@ -33,8 +33,17 @@ use logbook_engine::protocol::SAMPLE_RATE;
 /// "Up to the end" for `final_until`: JSON has no infinity.
 const END: f64 = f64::MAX;
 
-/// What the person writes during the meeting; read when it ends.
-pub type Notes = Arc<Mutex<String>>;
+/// What the person writes and changes during the meeting; read when it
+/// ends.
+pub type Notes = Arc<Mutex<Written>>;
+
+#[derive(Clone, Debug, Default)]
+pub struct Written {
+    pub notes: String,
+    /// A title given during the meeting, in place of the one it started
+    /// with.
+    pub title: Option<String>,
+}
 
 /// Where meetings are transcribed: logbook-server, or this process.
 #[derive(Clone)]
@@ -1083,11 +1092,15 @@ pub(crate) async fn meeting_at(
     };
     let mut pending = publishing.await?;
     let written = notes.lock().unwrap().clone();
-    if !written.trim().is_empty() {
-        pending.save_notes(&written)?;
-        if let Err(error) = shots::keep(&shots::staging(data), &pending.dir, &written) {
+    if !written.notes.trim().is_empty() {
+        pending.save_notes(&written.notes)?;
+        if let Err(error) = shots::keep(&shots::staging(data), &pending.dir, &written.notes) {
             warn!("the notes' screenshots were not kept: {error:#}");
         }
+    }
+    if let Some(title) = written.title {
+        pending.meeting.publish.title = Some(title).filter(|t| !t.trim().is_empty());
+        pending.save()?;
     }
     if let Some(warnings) = live.finalized {
         let utterances = pending.segments()?;

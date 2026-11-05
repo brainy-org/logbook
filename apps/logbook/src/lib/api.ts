@@ -195,6 +195,8 @@ export const api = {
   stopMeeting: () => invoke<void>('stop_meeting'),
   /** The notes of meeting `part` of the recording (`RecorderState.part`). */
   setNotes: (part: number, notes: string) => invoke<void>('set_notes', { part, notes }),
+  /** The recording's title from meeting `part` on; empty, the default one. */
+  setTitle: (part: number, title: string) => invoke<void>('set_title', { part, title }),
   /** The screen under the pointer, or an area (macOS), for the notes; null if given up. */
   takeScreenshot: (kind: 'screen' | 'area') => invoke<Shot | null>('take_screenshot', { kind }),
   meetingState: () => invoke<RecorderState | null>('meeting_state'),

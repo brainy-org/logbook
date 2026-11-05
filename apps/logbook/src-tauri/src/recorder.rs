@@ -5,7 +5,9 @@
 //! at its end, `meeting-done` or `meeting-failed`. A recording left
 //! running is cut into meetings (a long pause, eight hours): each one
 //! that ends while the next records is `meetings-changed` (or
-//! `meeting-failed`), and the state's `part` counts them.
+//! `meeting-failed`), and the state's `part` counts them. The title given
+//! while it records goes to the meeting it was given in and the later
+//! ones (`series::Notebook`).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -83,6 +85,16 @@ impl Recorder {
     pub fn set_notes(&self, part: usize, text: String) {
         if let Some(r) = self.running.lock().unwrap().as_ref() {
             r.notes.set(part, text);
+        }
+    }
+
+    /// The recording's title from meeting `part` on (series.rs): the
+    /// pages are told.
+    pub fn set_title(&self, app: &AppHandle, part: usize, title: String) {
+        if let Some(r) = self.running.lock().unwrap().as_mut() {
+            r.notes.set_title(part, &title);
+            r.state.title = title.trim().to_string();
+            let _ = app.emit("meeting-state", Some(&r.state));
         }
     }
 
