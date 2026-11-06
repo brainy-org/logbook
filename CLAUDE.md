@@ -52,7 +52,10 @@ apps/logbook/    the app, macOS, Windows and Android: pages (React, brainy's loo
                  Android project in gen/android); plugins/recording: the Android
                  foreground service, wake lock and permissions (Kotlin)  → docs/app.md
 scripts/         server.sh (builds and runs the server), client.sh, app.sh (the app:
-                 dev, cert, build, windows, android)
+                 dev, cert, build, windows, android); der.py, room-der.sh (every
+                 diarization strategy scored on one recording) and reference.py
+                 (a reference made by hand in Audacity)
+                                                → docs/measuring-a-room-microphone.md
 Dockerfile       the server's image, CPU and GPU alike (compose.yaml, compose.gpu.yaml)
 docs/            pipeline.md, protocol.md, app.md, decisions/
 ```
