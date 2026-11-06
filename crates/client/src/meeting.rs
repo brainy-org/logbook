@@ -771,9 +771,11 @@ pub async fn send_to_brainy(
 #[derive(Clone, Debug, Serialize)]
 pub struct Renamed {
     /// Its voice saved under the name, to name it in the next meetings;
-    /// None when it could not be (`voice_error`).
+    /// None when it could not be (`voice_error`), or may not be theirs
+    /// (`voice_doubt`: saved only if the person says so, `save_voice`).
     pub enrolled: Option<voices::Enrolled>,
     pub voice_error: Option<String>,
+    pub voice_doubt: Option<String>,
     /// Blocks of the brainy page that changed.
     pub page_blocks: usize,
 }
@@ -799,10 +801,14 @@ pub async fn rename_speaker(
     if !kept.writer.rename(from, to) {
         bail!("no speaker of this meeting is {from}");
     }
-    let (enrolled, voice_error) = match voices::name(data, id, from, to) {
-        Ok(enrolled) => (Some(enrolled), None),
-        Err(error) => (None, Some(format!("{error:#}"))),
-    };
+    let (mut enrolled, mut voice_error, mut voice_doubt) = (None, None, None);
+    match voices::name(data, id, from, to, false) {
+        Ok(e) => enrolled = Some(e),
+        Err(error) => match error.downcast_ref::<voices::Doubted>() {
+            Some(doubt) => voice_doubt = Some(doubt.to_string()),
+            None => voice_error = Some(format!("{error:#}")),
+        },
+    }
     voices::relabel(data, id, from, to)?;
     let mut page_blocks = 0;
     if let (Some(b), Some(page)) = (brainy, &kept.page) {
@@ -812,6 +818,7 @@ pub async fn rename_speaker(
     Ok(Renamed {
         enrolled,
         voice_error,
+        voice_doubt,
         page_blocks,
     })
 }

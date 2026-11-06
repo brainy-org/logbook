@@ -140,6 +140,8 @@ export interface Outcome {
 export interface Renamed {
   enrolled: { name: string; seconds: number; prints: number } | null;
   voice_error: string | null;
+  /** Not saved because it may not be theirs; `saveVoice` saves it anyway. */
+  voice_doubt: string | null;
   page_blocks: number;
 }
 
@@ -205,6 +207,9 @@ export const api = {
   getMeeting: (id: string) => invoke<MeetingView>('get_meeting', { id }),
   renameSpeaker: (id: string, from: string, to: string) =>
     invoke<{ renamed: Renamed; meeting: MeetingView }>('rename_speaker', { id, from, to }),
+  /** The voice of speaker `name` saved under that name although it was doubted. */
+  saveVoice: (id: string, name: string) =>
+    invoke<{ name: string; seconds: number; prints: number }>('save_voice', { id, name }),
   /** The names a speaker could be, likeliest first, from the voices known by name. */
   speakerCandidates: (id: string, label: string) =>
     invoke<string[]>('speaker_candidates', { id, label }),

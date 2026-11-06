@@ -268,6 +268,32 @@ impl Library {
             .collect()
     }
 
+    /// Why `voice` may not be `name`'s, if it may not: it sounds like
+    /// someone else beyond doubt, or like none of the prints `name` has
+    /// (no closer than a stranger to a name offered as a question). A
+    /// person is matched by their best print, so one print of another
+    /// voice names that voice as them in every meeting after.
+    pub fn doubt(&self, name: &str, voice: &SpeakerVoice) -> Option<Doubted> {
+        let scores = self.scores(voice, &[]);
+        let own = scores.iter().find(|(_, n)| *n == name).map(|s| s.0);
+        let (best, other) = *scores.first()?;
+        if other != name && best >= SURE && best - own.unwrap_or(f32::MIN) >= MARGIN {
+            return Some(Doubted {
+                name: name.to_string(),
+                own,
+                like: Some((other.to_string(), best)),
+            });
+        }
+        match own {
+            Some(own) if own < MAYBE => Some(Doubted {
+                name: name.to_string(),
+                own: Some(own),
+                like: None,
+            }),
+            _ => None,
+        }
+    }
+
     /// Every person but `taken`, by their best print's similarity to
     /// `voice`, highest first.
     fn scores(&self, voice: &SpeakerVoice, taken: &[String]) -> Vec<(f32, &str)> {
@@ -417,10 +443,52 @@ impl Enrolled {
     }
 }
 
+/// A voice not saved under a name because it may not be theirs
+/// (`Library::doubt`): the error of `name` without `anyway`, which the
+/// caller tells from others by downcasting.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Doubted {
+    pub name: String,
+    /// Its similarity to their closest print; None for a new person.
+    pub own: Option<f32>,
+    /// The person it sounds like instead, and how much.
+    pub like: Option<(String, f32)>,
+}
+
+impl std::fmt::Display for Doubted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.like, self.own) {
+            (Some((other, score)), Some(own)) => write!(
+                f,
+                "this voice sounds like {other}'s ({score:.2}), not {}'s ({own:.2})",
+                self.name
+            ),
+            (Some((other, score)), None) => {
+                write!(f, "this voice sounds like {other}'s ({score:.2})")
+            }
+            (None, own) => write!(
+                f,
+                "this voice is unlike {}'s ({:.2} to their closest), as a stranger's would be",
+                self.name,
+                own.unwrap_or_default()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Doubted {}
+
 /// The voice of SPEAKER (its label, or its number for "Speaker N") in
 /// MEETING ("last" for the latest) saved under NAME (`logbook speakers
-/// name`, the app's rename).
-pub fn name(data: &Path, meeting: &str, speaker: &str, name: &str) -> Result<Enrolled> {
+/// name`, the app's rename). A voice that may not be NAME's is refused
+/// with `Doubted`, unless `anyway`: the person said it is.
+pub fn name(
+    data: &Path,
+    meeting: &str,
+    speaker: &str,
+    name: &str,
+    anyway: bool,
+) -> Result<Enrolled> {
     let name = name.trim();
     if name.is_empty() {
         bail!("the name is empty");
@@ -448,6 +516,9 @@ pub fn name(data: &Path, meeting: &str, speaker: &str, name: &str) -> Result<Enr
         );
     }
     let mut lib = Library::load(data)?;
+    if !anyway && let Some(doubt) = lib.doubt(name, &s.voice) {
+        return Err(doubt.into());
+    }
     lib.add(
         name,
         Print {
@@ -632,6 +703,26 @@ mod tests {
     }
 
     #[test]
+    fn a_voice_unlike_the_name_is_doubted() {
+        let mut lib = Library::new();
+        lib.add("Luca", print(&[1.0, 0.0, 0.0]));
+        lib.add("Anna", print(&[0.0, 1.0, 0.0]));
+        // Luca again, through another microphone: no doubt.
+        assert_eq!(lib.doubt("Luca", &voice(&[1.0, 0.3, 0.0], 20.0)), None);
+        // A new person whose voice is no one's: no doubt either.
+        assert_eq!(lib.doubt("Bo", &voice(&[0.0, 0.0, 1.0], 20.0)), None);
+        // Anna's voice, named Luca or a new person.
+        let anna = voice(&[0.1, 1.0, 0.0], 20.0);
+        let d = lib.doubt("Luca", &anna).unwrap();
+        assert_eq!(d.like.as_ref().unwrap().0, "Anna");
+        assert!(d.own.unwrap() < MAYBE);
+        assert_eq!(lib.doubt("Bo", &anna).unwrap().own, None);
+        // A voice like no one, named Luca: unlike his.
+        let d = lib.doubt("Luca", &voice(&[0.0, 0.0, 1.0], 20.0)).unwrap();
+        assert_eq!(d.like, None);
+    }
+
+    #[test]
     fn a_meeting_names_from_its_expected_people_only() {
         let mut lib = Library::new();
         lib.add("Luca", print(&[1.0, 0.0, 0.0]));
@@ -719,12 +810,18 @@ mod tests {
             &heard("2026-10-27T09:15:00+01:00", None, speakers),
         )
         .unwrap();
-        name(&data, "last", "2", "Luca").unwrap();
-        name(&data, "20261027-091500", "speaker 1", "Anna").unwrap();
+        name(&data, "last", "2", "Luca", false).unwrap();
+        name(&data, "20261027-091500", "speaker 1", "Anna", false).unwrap();
         let lib = Library::load(&data).unwrap();
         assert_eq!(lib.people.len(), 2);
         assert_eq!(lib.people[0].name, "Luca");
-        assert!(name(&data, "last", "3", "Bo").is_err());
+        assert!(name(&data, "last", "3", "Bo", false).is_err());
+        // Anna's voice under Luca's name: refused, unless the person says so.
+        let error = name(&data, "last", "1", "Luca", false).unwrap_err();
+        assert!(error.downcast_ref::<Doubted>().is_some());
+        assert_eq!(Library::load(&data).unwrap().people[0].prints.len(), 1);
+        name(&data, "last", "1", "Luca", true).unwrap();
+        assert_eq!(Library::load(&data).unwrap().people[0].prints.len(), 2);
         forget(&data, "Luca").unwrap();
         assert_eq!(Library::load(&data).unwrap().people.len(), 1);
         let _ = std::fs::remove_dir_all(&data);

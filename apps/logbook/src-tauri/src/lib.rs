@@ -417,6 +417,14 @@ async fn rename_speaker(
     Ok(RenameView { renamed, meeting })
 }
 
+/// Saves the voice of speaker `name` of kept meeting `id` under its name
+/// although it may not be theirs (a rename's `voice_doubt`): the person
+/// said it is.
+#[tauri::command]
+fn save_voice(app: State<App>, id: String, name: String) -> Answer<voices::Enrolled> {
+    voices::name(&app.data, &id, &name, &name, true).map_err(text)
+}
+
 /// The names offered for speaker `label` of kept meeting `id`, likeliest
 /// first: none once its voice is no longer kept (the last meetings').
 #[tauri::command]
@@ -697,6 +705,7 @@ pub fn run() {
             list_meetings,
             get_meeting,
             rename_speaker,
+            save_voice,
             speaker_candidates,
             write_report,
             send_to_brainy,

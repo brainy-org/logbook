@@ -258,6 +258,12 @@ Bianchi?)". A speaker needs about 10 s of voice heard alone to be named.
 again from another meeting (another microphone, a call) adds to their
 voice (the latest 5 prints of each person are kept).
 
+A voice that sounds like someone else's, or unlike the one Luca already
+has, is not saved: one wrong voice would name a stranger "Luca" in every
+meeting after. If it is Luca all the same (a new microphone, a cold),
+`speakers name … --anyway` saves it; the app offers the same after a
+rename.
+
 With many voices known, more strangers sound close to someone. Say who is
 expected, and the speakers are named from those voices only:
 

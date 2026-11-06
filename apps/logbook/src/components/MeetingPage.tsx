@@ -32,6 +32,9 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
   const [tab, setTab] = useState<Tab>('report');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The speaker just renamed whose voice was not saved, as it may not be
+  // theirs: the notice offers to save it anyway.
+  const [doubted, setDoubted] = useState<string | null>(null);
   const [writing, setWriting] = useState(false);
   const [sending, setSending] = useState(false);
   // Read by the rename's timer: no report written while the page is.
@@ -79,7 +82,10 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
       setTab('report');
       if (m.reportError) setError(m.reportError);
       // The rename's notice offered this: it is done.
-      else setNotice(null);
+      else {
+        setNotice(null);
+        setDoubted(null);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -186,9 +192,10 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
             meeting={meeting}
             busy={writing || sending}
             onNaming={(on) => (naming.current = on)}
-            onRenamed={(m, message) => {
+            onRenamed={(m, message, doubtedName) => {
               setMeeting(m);
               setNotice(message);
+              setDoubted(doubtedName);
               onChanged();
               if (m.report) rewriteSoon(m.id);
             }}
@@ -198,6 +205,26 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
           {notice && (
             <p className="mt-3 rounded-md bg-accent/10 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-200">
               {notice}{' '}
+              {doubted && (
+                <button
+                  type="button"
+                  className="underline underline-offset-2"
+                  onClick={() => {
+                    const name = doubted;
+                    api.saveVoice(meeting.id, name).then(
+                      () => {
+                        setDoubted(null);
+                        setNotice(
+                          `${name}'s voice is saved: the next meetings name them by themselves.`,
+                        );
+                      },
+                      (e) => setError(String(e)),
+                    );
+                  }}
+                >
+                  It is {doubted}: save the voice
+                </button>
+              )}{' '}
               {meeting.report &&
                 (writing
                   ? 'Writing the report again with the new names…'
@@ -283,7 +310,8 @@ function Speakers({
   /** The report is being written: a rename now would race it. */
   busy: boolean;
   onNaming: (on: boolean) => void;
-  onRenamed: (m: MeetingView, message: string) => void;
+  /** `doubted`: the new name, when its voice was not saved as it may not be theirs. */
+  onRenamed: (m: MeetingView, message: string, doubted: string | null) => void;
   onError: (e: string | null) => void;
 }) {
   const [editing, setEditingState] = useState<string | null>(null);
@@ -332,8 +360,14 @@ function Speakers({
           (renamed.enrolled.seconds < 30
             ? ' (from little speech: naming them again in another meeting helps).'
             : '.')
-        : `Their voice is not saved (${renamed.voice_error}).`;
-      onRenamed(m, `${editing} is now ${name.trim()}. ${voice}`);
+        : renamed.voice_doubt
+          ? `Their voice is not saved: ${renamed.voice_doubt}.`
+          : `Their voice is not saved (${renamed.voice_error}).`;
+      onRenamed(
+        m,
+        `${editing} is now ${name.trim()}. ${voice}`,
+        renamed.voice_doubt ? name.trim() : null,
+      );
       setEditing(null);
     } catch (err) {
       onError(String(err));

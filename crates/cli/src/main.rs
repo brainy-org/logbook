@@ -282,6 +282,10 @@ enum SpeakersAction {
         /// Its label on the page ("Speaker 2"), or just its number.
         speaker: String,
         name: String,
+        /// Save the voice even if it sounds like someone else, or unlike
+        /// the voice NAME already has.
+        #[arg(long)]
+        anyway: bool,
     },
     /// Give a person known by voice another name; the meetings already
     /// written keep the one they had.
@@ -414,8 +418,14 @@ async fn run(cli: Cli) -> Result<()> {
                 meeting,
                 speaker,
                 name,
+                anyway,
             }) => {
-                let e = voices::name(&data, &meeting, &speaker, &name)?;
+                let e = match voices::name(&data, &meeting, &speaker, &name, anyway) {
+                    Err(error) if error.downcast_ref::<voices::Doubted>().is_some() => {
+                        bail!("{error}: not saved (--anyway saves it)")
+                    }
+                    e => e?,
+                };
                 eprintln!(
                     "{} of meeting {} is now {} ({:.0} s of voice; {} print(s) of {})",
                     e.label, e.meeting, e.name, e.seconds, e.prints, e.name
