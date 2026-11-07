@@ -7,11 +7,18 @@
 //! with the top band cut, whose hiss raised with it makes the model worse.
 //! The words are transcribed from the audio as it came.
 //!
+//! Only where it is needed (`Settings::gate`): a range whose speech is
+//! within 10 dB of the target passes exactly as it came, since the
+//! band-pass raised a headset's confusion (0.3 → 2.2%) and helped nothing
+//! there. A channel is conditioned from its first range further than that
+//! and passes as it came again only after CALM_RANGES ranges in a row
+//! within `gate - CALM_MARGIN`, so that it does not flip every range.
+//!
 //! A channel's ranges are conditioned one after another, each starting
 //! from the state the previous one left (`Conditioner` travels with the
 //! range and comes back with its result): the filters have no click at a
-//! range's edge and the gain moves from one range's to the next's over
-//! RAMP. Cheap: seven biquads, a gain and a limiter per sample, about
+//! range's edge, the gain moves from one range's to the next's over RAMP,
+//! and a switch to or from the audio as it came cross-fades over RAMP. Cheap: seven biquads, a gain and a limiter per sample, about
 //! 20 ms for a minute of audio.
 
 use std::collections::VecDeque;
@@ -28,6 +35,17 @@ const RAMP: usize = 8_000;
 const LOOKAHEAD: usize = 80;
 /// The limiter's release time constant: 50 ms.
 const RELEASE: f64 = 0.05;
+/// The default gate, in dB.
+pub const GATE: f64 = 10.0;
+/// A channel being conditioned passes as it came again only once its
+/// speech is this much closer to the target than the gate…
+const CALM_MARGIN: f64 = 3.0;
+/// …for this many ranges in a row (silent ones not counted).
+const CALM_RANGES: u32 = 2;
+/// The least speech (gated blocks, 100 ms each) for a range to count in
+/// the gate's decision: a range with less is as silence, or a filter's
+/// tail or a cough in a silent range would read as speech 40 dB short.
+const MIN_SPEECH: usize = 30;
 
 /// How a channel is conditioned.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,6 +63,10 @@ pub struct Settings {
     pub follow: f64,
     /// The highest sample after the gain, in dBFS.
     pub ceiling: f64,
+    /// A range whose speech is within this many dB of the target passes
+    /// as it came (no filter, no gain) while the channel is not being
+    /// conditioned; 0 conditions every range.
+    pub gate: f64,
 }
 
 impl Default for Settings {
@@ -56,6 +78,7 @@ impl Default for Settings {
             max_gain: 30.0,
             follow: 0.5,
             ceiling: -1.0,
+            gate: GATE,
         }
     }
 }
@@ -159,8 +182,9 @@ fn power(loudness: f64) -> f64 {
 }
 
 /// BS.1770's gated loudness of hops' mean squares: 400 ms blocks every
-/// 100 ms, gated at -70 LUFS and 10 LU below their mean. None for silence.
-fn gated(hops: &[f64]) -> Option<f64> {
+/// 100 ms, gated at -70 LUFS and 10 LU below their mean, and how many
+/// blocks the gates kept. None for silence.
+fn gated(hops: &[f64]) -> Option<(f64, usize)> {
     let blocks: Vec<f64> = if hops.len() < BLOCK {
         vec![hops.iter().sum::<f64>() / hops.len().max(1) as f64]
     } else {
@@ -174,7 +198,10 @@ fn gated(hops: &[f64]) -> Option<f64> {
     }
     let relative = loudness(loud.iter().sum::<f64>() / loud.len() as f64) - 10.0;
     let kept: Vec<f64> = loud.into_iter().filter(|&p| p > power(relative)).collect();
-    Some(loudness(kept.iter().sum::<f64>() / kept.len() as f64))
+    Some((
+        loudness(kept.iter().sum::<f64>() / kept.len() as f64),
+        kept.len(),
+    ))
 }
 
 /// One channel's conditioning and where it stands.
@@ -188,6 +215,14 @@ pub struct Conditioner {
     gain: Option<f64>,
     /// The limiter's gain on the last sample.
     held: f64,
+    /// Whether the last range was conditioned (else it passed as it came).
+    on: bool,
+    /// Ranges in a row, while on, close enough to the target to stop.
+    calm: u32,
+    /// The gain the last range's speech needed, in dB; None for silence.
+    needed: Option<f64>,
+    /// How much speech the last range had, in gated blocks.
+    speech: usize,
 }
 
 impl Default for Conditioner {
@@ -201,14 +236,34 @@ impl Conditioner {
         Self {
             highpass: Biquad::highpass(RATE, settings.highpass, std::f64::consts::FRAC_1_SQRT_2),
             lowpass: lowpass(settings.lowpass),
-            settings,
             k: k_weighting(),
             gain: None,
             held: 1.0,
+            // Without a gate every range is conditioned, the first too.
+            on: settings.gate <= 0.0,
+            calm: 0,
+            needed: None,
+            speech: 0,
+            settings,
         }
     }
 
-    /// The next range of the channel (16 kHz), conditioned.
+    /// Whether the last range was conditioned.
+    pub fn conditioning(&self) -> bool {
+        self.on
+    }
+
+    /// The gain the last range's speech needed to reach the target, in dB
+    /// (not clamped); None for silence.
+    pub fn needed(&self) -> Option<f64> {
+        self.needed
+    }
+
+    /// The next range of the channel (16 kHz), conditioned, or as it came
+    /// when its speech is near the target already (`gate`). The filters
+    /// and the loudness run on every range, so that their state is the
+    /// channel's whichever way a range goes; a switch either way
+    /// cross-fades over RAMP, the gain ramping from or to 0 dB.
     pub fn run(&mut self, pcm: &[f32]) -> Vec<f32> {
         let mut out: Vec<f64> = pcm
             .iter()
@@ -223,28 +278,82 @@ impl Conditioner {
         if out.is_empty() {
             return Vec::new();
         }
-        let gain = self.gain(&out);
-        // From the last range's gain to this one's over RAMP, then steady.
-        let from = self.gain.unwrap_or(gain);
+        self.needed = self.measure(&out);
+        let was = self.on;
+        self.on = self.decide();
+        if !was && !self.on {
+            return pcm.to_vec();
+        }
+        let gain = self.gain();
+        // From the last range's gain to this one's over RAMP, then steady;
+        // from or to 0 dB at a switch.
+        let (from, to) = match (was, self.on) {
+            (true, true) => (self.gain.unwrap_or(gain), gain),
+            (false, true) => (0.0, gain),
+            _ => (self.gain.unwrap_or(0.0), 0.0),
+        };
         let n = RAMP.min(out.len());
         let linear = |db: f64| 10f64.powf(db / 20.0);
         for (i, x) in out.iter_mut().enumerate() {
             *x *= if i < n {
-                linear(from + (gain - from) * i as f64 / n as f64)
+                linear(from + (to - from) * i as f64 / n as f64)
             } else {
-                linear(gain)
+                linear(to)
             };
         }
-        self.gain = Some(gain);
         self.limit(&mut out);
+        if was != self.on {
+            // Cross-fade between the audio as it came and conditioned.
+            for (i, (x, &raw)) in out.iter_mut().zip(pcm).enumerate() {
+                let w = (i as f64 / n as f64).min(1.0);
+                let w = if self.on { w } else { 1.0 - w };
+                *x = w * *x + (1.0 - w) * raw as f64;
+            }
+        }
+        if self.on {
+            self.gain = Some(gain);
+        } else {
+            self.gain = None;
+            self.held = 1.0;
+        }
         out.into_iter().map(|x| x as f32).collect()
     }
 
-    /// This range's gain in dB: its speech brought to the target, within
-    /// `max_gain`, `follow` of the way from the last range's; the last
-    /// one's kept through silence.
-    fn gain(&mut self, x: &[f64]) -> f64 {
-        let s = self.settings;
+    /// Whether this range is conditioned: a channel starts as it came and
+    /// is conditioned once a range's speech is further than `gate` from
+    /// the target; then it stays so until CALM_RANGES ranges in a row are
+    /// within `gate - CALM_MARGIN`. Silence changes nothing.
+    fn decide(&mut self) -> bool {
+        let gate = self.settings.gate;
+        if gate <= 0.0 {
+            return true;
+        }
+        let Some(needed) = self.needed.map(f64::abs) else {
+            return self.on;
+        };
+        if self.speech < MIN_SPEECH {
+            return self.on;
+        }
+        if !self.on {
+            self.calm = 0;
+            return needed > gate;
+        }
+        if needed < gate - CALM_MARGIN {
+            self.calm += 1;
+        } else {
+            self.calm = 0;
+        }
+        if self.calm >= CALM_RANGES {
+            self.calm = 0;
+            return false;
+        }
+        true
+    }
+
+    /// The gain the range's speech needs to reach the target (its gated
+    /// K-weighted loudness, BS.1770), in dB; None for silence. Keeps how
+    /// much speech it had.
+    fn measure(&mut self, x: &[f64]) -> Option<f64> {
         // Mean square of the K-weighted signal, per hop.
         let mut hops = Vec::with_capacity(x.len() / HOP + 1);
         for chunk in x.chunks(HOP) {
@@ -256,7 +365,17 @@ impl Conditioner {
             }
             hops.push(sum / chunk.len() as f64);
         }
-        let wanted = gated(&hops).map(|l| (s.target - l).clamp(-s.max_gain, s.max_gain));
+        let gated = gated(&hops);
+        self.speech = gated.map_or(0, |(_, blocks)| blocks);
+        gated.map(|(l, _)| self.settings.target - l)
+    }
+
+    /// This range's gain in dB: what it needs within `max_gain`, `follow`
+    /// of the way from the last range's; the last one's kept through
+    /// silence.
+    fn gain(&self) -> f64 {
+        let s = self.settings;
+        let wanted = self.needed.map(|g| g.clamp(-s.max_gain, s.max_gain));
         match (wanted, self.gain) {
             (Some(g), Some(last)) => last + s.follow * (g - last),
             (Some(g), None) => g,
@@ -349,6 +468,7 @@ mod tests {
         let through = |f: f64| {
             let mut c = Conditioner::new(Settings {
                 max_gain: 0.0,
+                gate: 0.0,
                 ..Settings::default()
             });
             let x = sine(f, 0.1, 3.0);
@@ -370,6 +490,7 @@ mod tests {
         let x = sine(220.0, 0.05, 6.0);
         let settings = Settings {
             follow: 1.0,
+            gate: 0.0,
             ..Settings::default()
         };
         let mut whole = Conditioner::new(settings);
@@ -430,6 +551,7 @@ mod tests {
         let mut c = Conditioner::new(Settings {
             max_gain: 20.0,
             target: 0.0,
+            gate: 0.0,
             ..Settings::default()
         });
         let y = c.run(&loud);
@@ -440,7 +562,10 @@ mod tests {
 
     #[test]
     fn the_gain_follows_a_change_of_level_halfway_a_range() {
-        let mut c = Conditioner::default();
+        let mut c = Conditioner::new(Settings {
+            gate: 0.0,
+            ..Settings::default()
+        });
         let at = |c: &mut Conditioner, amp: f64| {
             let x = sine(1_000.0, amp, 60.0);
             let y = c.run(&x);
@@ -461,5 +586,112 @@ mod tests {
         let y = c.run(&x);
         let early = db(rms(&y[..800]), rms(&x[..800]));
         assert!((early - last).abs() < 1.0, "{early:.1} vs {last:.1}");
+    }
+
+    /// A 1 kHz tone this many dB from the target, about.
+    fn tone(needed: f64, seconds: f64) -> Vec<f32> {
+        // A sine's K-weighted loudness at 1 kHz is about 0.7 LU over its
+        // power's.
+        let amp = (2.0 * power(-23.0 - needed - 0.7)).sqrt();
+        sine(1_000.0, amp, seconds)
+    }
+
+    #[test]
+    fn speech_near_the_target_passes_as_it_came() {
+        let mut c = Conditioner::default();
+        for needed in [2.0, -6.0, 9.0] {
+            let x = tone(needed, 60.0);
+            assert_eq!(c.run(&x), x, "{needed} dB");
+            assert!(!c.conditioning());
+            let got = c.needed().unwrap();
+            assert!((got - needed).abs() < 0.5, "{got:.2} vs {needed}");
+        }
+        // Silence changes nothing either, nor a sound too short to tell.
+        let x = vec![0.0f32; 16_000];
+        assert_eq!(c.run(&x), x);
+        let mut x = vec![0.0f32; 160_000];
+        x[80_000..96_000].copy_from_slice(&tone(30.0, 1.0));
+        assert_eq!(c.run(&x), x);
+        assert!(!c.conditioning());
+    }
+
+    #[test]
+    fn quiet_speech_is_conditioned() {
+        let mut c = Conditioner::default();
+        let x = tone(20.0, 60.0);
+        let y = c.run(&x);
+        assert!(c.conditioning());
+        // The gain ramps up from 0 dB over RAMP, then holds.
+        let gain = db(rms(&y[16_000..]), rms(&x[16_000..]));
+        assert!((gain - 20.0).abs() < 0.5, "{gain:.2}");
+        // As loud the other way: brought down.
+        let mut c = Conditioner::default();
+        let x = tone(-15.0, 10.0);
+        let y = c.run(&x);
+        assert!(c.conditioning());
+        assert!(rms(&y[16_000..]) < rms(&x[16_000..]) / 4.0);
+    }
+
+    #[test]
+    fn a_channel_conditioned_stays_so_until_it_is_calm() {
+        let mut c = Conditioner::default();
+        // Under the gate, not over it: still as it came.
+        c.run(&tone(9.0, 10.0));
+        assert!(!c.conditioning());
+        c.run(&tone(12.0, 10.0));
+        assert!(c.conditioning());
+        // Under the gate but not the margin: kept, and the count of calm
+        // ranges starts again.
+        c.run(&tone(2.0, 10.0));
+        assert!(c.conditioning());
+        c.run(&tone(8.0, 10.0));
+        assert!(c.conditioning());
+        c.run(&tone(2.0, 10.0));
+        assert!(c.conditioning());
+        // Silence between calm ranges neither counts nor breaks the count.
+        c.run(&vec![0.0; 16_000]);
+        assert!(c.conditioning());
+        c.run(&tone(2.0, 10.0));
+        assert!(!c.conditioning());
+        // And the next range near the target is the audio as it came.
+        let x = tone(2.0, 10.0);
+        assert_eq!(c.run(&x), x);
+    }
+
+    #[test]
+    fn a_switch_either_way_has_no_click() {
+        // A tone at one frequency throughout, its level changing at range
+        // edges: the steps at the edges are no larger than the tone's own
+        // around them.
+        let biggest = |y: &[f32], at: usize| {
+            (at - 200..at + 200)
+                .filter(|&i| i != at)
+                .map(|i| (y[i] - y[i - 1]).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let level = |needed: f64| (2.0 * power(-23.0 - needed - 0.7)).sqrt();
+        let n = 160_000;
+        let mut x = Vec::new();
+        for needed in [2.0, 20.0, 2.0, 2.0, 2.0] {
+            let amp = level(needed);
+            let start = x.len();
+            x.extend((start..start + n).map(|i| {
+                (amp * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / RATE).sin()) as f32
+            }));
+        }
+        let mut c = Conditioner::default();
+        let mut y = Vec::new();
+        let mut on = Vec::new();
+        for part in x.chunks(n) {
+            y.extend(c.run(part));
+            on.push(c.conditioning());
+        }
+        assert_eq!(on, [false, true, true, false, false]);
+        for edge in [n, 2 * n, 3 * n] {
+            let step = (y[edge] - y[edge - 1]).abs();
+            assert!(step <= biggest(&y, edge) * 1.01, "{edge}: {step}");
+        }
+        // Back to the audio as it came after the cross-fade.
+        assert_eq!(y[3 * n + RAMP..], x[3 * n + RAMP..]);
     }
 }

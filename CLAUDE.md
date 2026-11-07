@@ -15,7 +15,7 @@ workspace. A prototype: why it exists and how it is built is in
 crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet.rs),
                  one channel's pipeline (channel.rs), echo (echo.rs), the final pass
                  as the meeting goes (progressive.rs) or over an upload (final_pass.rs),
-                 what its diarization hears: band-passed, levelled (conditioning.rs),
+                 what its diarization hears: band-passed, levelled when quiet (conditioning.rs),
                  the wire protocol (protocol.rs), Opus for the live socket and
                  the upload (codec.rs),
                  the meeting's report written by a language model (report.rs,

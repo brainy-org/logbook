@@ -119,7 +119,7 @@ On the table microphone the miss falls 2.6–16.7 points, more than offline
 confusion moves within ±1.5 points (IS1009a up, EN2002a down), and the false
 alarm rises where the gain is large (IS1009a 2.0 → 7.4%). Speakers found: 4, 6,
 4, 6 (raw 4, 6, 4, 4). The headset mix is unchanged within noise, but for
-IS1009a's confusion (0.3 → 2.2%). Single runs move by 1–2 points with any
+IS1009a's confusion (0.3 → 2.2%), which the gate below removes. Single runs move by 1–2 points with any
 small change of the audio, so read the larger moves. Settings tried, on the
 table microphone: a 7 kHz low-pass did as well on IS1009a and TS3003a and worse
 on ES2004a (confusion 5.9–6.1%); at most ±20 dB was better on TS3003a (19.5%)
@@ -129,3 +129,41 @@ the range's raised the headset's confusion (IS1009a 4.4%); voices embedded from
 the audio as it came instead of conditioned, the same. Conditioning costs about
 18 ms a minute of audio (one core of the dev Mac), nothing beside the
 diarization's seconds.
+
+**Only where it is needed: a gate (2026-11-07).** A range whose speech is
+within 10 dB of -23 LUFS passes as it came (no filter, no gain: what `--raw`
+gives); a channel is conditioned from its first range that needs more than
+10 dB either way, and passes as it came again only after two ranges in a row
+within 7 dB (silent ones, or ones with under 3 s of speech, not counted). The
+filters and the loudness run on every range so that their state is the
+channel's; a switch cross-fades over 0.5 s, the gain ramping from or to 0 dB.
+DER / miss / false alarm / confusion, as above (`examples/diarize --gate 10`,
+the default; `--gate 0` conditions every range):
+
+| Meeting | Mic | Raw | Conditioned | Gated (10 dB) | Ranges conditioned |
+|---|---|---|---|---|---|
+| IS1009a | Array1-01 | 20.8 / 17.9 / 2.0 / 0.9 | 17.0 / 7.2 / 7.4 / 2.4 | 17.0 / 7.2 / 7.4 / 2.4 | 14 of 14 |
+| IS1009a | Headset | 20.0 / 18.1 / 1.7 / 0.3 | 19.3 / 13.4 / 3.7 / 2.2 | 19.6 / 17.4 / 2.0 / 0.1 | 2 of 14 |
+| ES2004a | Array1-01 | 29.1 / 26.8 / 1.5 / 0.8 | 27.3 / 23.6 / 2.5 / 1.2 | 27.2 / 23.6 / 2.5 / 1.2 | 18 of 18 |
+| ES2004a | Headset | 26.4 / 26.1 / 0.2 / 0.1 | 26.4 / 25.8 / 0.3 / 0.3 | 26.3 / 25.8 / 0.3 / 0.3 | 18 of 18 |
+| TS3003a | Array1-01 | 35.7 / 35.2 / 0.2 / 0.4 | 20.9 / 18.5 / 2.2 / 0.2 | 20.9 / 18.5 / 2.2 / 0.2 | 26 of 26 |
+| TS3003a | Headset | 34.9 / 34.7 / 0.0 / 0.1 | 34.6 / 33.4 / 1.0 / 0.1 | 34.6 / 33.4 / 1.0 / 0.1 | 26 of 26 |
+| EN2002a | Array1-01 | 32.6 / 29.9 / 0.6 / 2.0 | 29.2 / 27.3 / 0.7 / 1.2 | 29.2 / 27.3 / 0.7 / 1.2 | 36 of 36 |
+| EN2002a | Headset | 30.2 / 28.1 / 0.4 / 1.7 | 30.9 / 28.9 / 0.3 / 1.7 | 31.0 / 28.9 / 0.3 / 1.8 | 34 of 36 |
+
+The table microphone keeps the whole gain (it needs 7–41 dB, every range
+conditioned); IS1009a's headset mix, the only one at speech level (it needs
+-7 to +11 dB), is back to its raw confusion. The other three headset mixes are
+quiet recordings (ES2004a needs 6–26 dB, TS3003a 17–43, EN2002a 5–25): they
+are conditioned, gated or not, and did not suffer from it (within a point of
+raw). So the gate keeps loud audio as it came, not close-talk audio as such: a
+quiet close-talk recording is conditioned, and that is harmless here. The
+noise floor, from a near-identity run (a 1 Hz high-pass, no gain): the four
+headset mixes move by up to 0.4 points of DER and 0.9 of confusion. What did
+IS1009a's headset harm, conditioned throughout: the band-pass alone gives
+18.8 / 13.3 / 3.4 / 2.0, the gain alone (no band-pass) 20.8 / 18.1 / 1.8 / 1.0,
+so the filters, not the gain; on the other headset mixes neither alone moves
+DER by more than 1.3 points. Other gates: 6 dB conditions every range of
+IS1009a's headset (it hovers 3–6 dB short), as harmful as no gate; 15 dB
+passes it through whole but lets IS1009a's table microphone, at 7–14 dB
+short past its first minutes, go back to as it came (19.3% DER, against 17.0).

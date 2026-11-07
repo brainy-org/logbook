@@ -125,11 +125,16 @@ model's eight
    on the final passes' context): at most eight voices in a minute, which
    the model's eight slots hold. The diarization and the voices hear the
    range conditioned (`crates/engine/src/conditioning.rs`: 100 Hz–7.5 kHz,
-   one gain per range to -23 LUFS, ±30 dB, a limiter), its state carried
-   from the channel's last range in the `Range` and back in its result, so
-   ranges join without a click; the words are read from the audio as it
-   came. A table microphone, 15–30 dB under a headset, misses less speech
-   so (`docs/decisions/2026-11-06-a-meeting-through-the-satellite.md`). Each slot's voice, from up to 30 s where
+   one gain per range to -23 LUFS, ±30 dB, a limiter) when its speech is
+   more than 10 dB from -23 LUFS, and as it came otherwise: a channel is
+   conditioned from its first such range until two ranges in a row are
+   within 7 dB, a switch cross-faded over 0.5 s. Its state (filters,
+   gain, whether it is conditioned) is carried from the channel's last
+   range in the `Range` and back in its result, so ranges join without a
+   click; the words are read from the audio as it came. A table
+   microphone, 15–30 dB under a headset, misses less speech so; audio
+   at speech level, which the band-pass made worse, is left alone
+   (`docs/decisions/2026-11-06-a-meeting-through-the-satellite.md`). Each slot's voice, from up to 30 s where
    it speaks alone, is a WeSpeaker embedding, matched to the meeting's
    speakers by cosine: above 0.45 the same speaker; two slots of one range
    never one speaker; only a voice of 4 s or more founds a new speaker (a

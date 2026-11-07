@@ -112,9 +112,12 @@ logbook or arvel), runs every strategy (`offline`, `stream-low`,
 `chunked-linker`, the voice ones with the kept 60 s window and 0.45
 threshold), scores each with `der.py` (0.25 s collar, overlap scored) and
 prints a table. `chunked-linker` is what logbook's final pass does. The
-example conditions the audio as the final pass does (band-pass and gain,
-`crates/engine/src/conditioning.rs`); numbers measured before 2026-11-07
-were made without it, which `--raw` gives back. A
+example conditions the audio as the final pass does (band-pass and gain
+where the speech is more than 10 dB from -23 LUFS,
+`crates/engine/src/conditioning.rs`; stderr shows which windows were and
+the gain each needed; `--gate 0` conditions every window); numbers
+measured before 2026-11-07 were made without it, which `--raw` gives
+back. A
 15-minute recording takes a few minutes on the dev Mac (the streaming
 strategies run at about 10 times real time, the rest far faster).
 

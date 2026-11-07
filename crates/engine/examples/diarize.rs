@@ -6,11 +6,12 @@
 //!     --lib ~/.cache/brainy-org/libparakeet-macos-metal-arm64-184711860035/libparakeet.dylib --diar MODEL.gguf [--voice BUNDLE.gguf] \
 //!     --strategy offline|stream-low|stream-model|chunked|stream-embed|stream-model-embed \
 //!     [--window 120] [--threshold 0.5] [--recluster 0.5] \
-//!     [--raw | --target -23 --max-gain 30 --follow 0.5 --highpass 100 --lowpass 7500] FILE > out.rttm
+//!     [--raw | --gate 10 --target -23 --max-gain 30 --follow 0.5 --highpass 100 --lowpass 7500] FILE > out.rttm
 //!
 //! What is diarized and embedded is conditioned as the final pass does
 //! (logbook_engine::conditioning), `--window` seconds at a time; `--raw`
-//! leaves it as it came, as before 2026-11-07. Timing goes to stderr.
+//! leaves it as it came, as before 2026-11-07; `--gate 0` conditions every
+//! window. Timing, and which windows were conditioned, go to stderr.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -74,6 +75,7 @@ fn args() -> Result<Args> {
             "--follow" => settings.follow = value()?.parse()?,
             "--highpass" => settings.highpass = value()?.parse()?,
             "--lowpass" => settings.lowpass = value()?.parse()?,
+            "--gate" => settings.gate = value()?.parse()?,
             _ => file = Some(arg.into()),
         }
     }
@@ -127,8 +129,25 @@ fn main() -> Result<()> {
         let took = Instant::now();
         let mut conditioner = Conditioner::new(settings);
         let n = (args.window * SAMPLE_RATE as f64) as usize;
-        pcm = pcm.chunks(n).flat_map(|c| conditioner.run(c)).collect();
-        eprintln!("conditioned in {:.2} s", took.elapsed().as_secs_f64());
+        let mut out = Vec::with_capacity(pcm.len());
+        // Per window: conditioned (C) or as it came (.), and the gain its
+        // speech needed.
+        let mut marks = String::new();
+        let mut needed = Vec::new();
+        for chunk in pcm.chunks(n) {
+            out.extend(conditioner.run(chunk));
+            marks.push(if conditioner.conditioning() { 'C' } else { '.' });
+            needed.push(match conditioner.needed() {
+                Some(db) => format!("{db:.0}"),
+                None => "-".into(),
+            });
+        }
+        pcm = out;
+        eprintln!(
+            "conditioned in {:.2} s: {marks} (needed dB: {})",
+            took.elapsed().as_secs_f64(),
+            needed.join(" ")
+        );
     }
     let duration = pcm.len() as f64 / SAMPLE_RATE as f64;
     let started = Instant::now();
