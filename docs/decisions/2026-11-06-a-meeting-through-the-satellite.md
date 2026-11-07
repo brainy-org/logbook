@@ -10,6 +10,13 @@ acoustic. The test cannot tell the room and the distance from the replay itself 
 recording through small speakers), so it does not yet say what a satellite hears of people at
 a table. Meeting diarization in arvel waits for that measurement.
 
+**Update 2026-11-07: the replay was the cause.** AMI's own table microphone (Array1-01, a real
+room, the people 1–2 m away, no replay) diarizes almost as well as the headset mix on four
+meetings: with `chunked-linker` 60 s 0.45, confusion 0.4–2.0% (headset 0.1–1.7%), DER within
+0.7–2.7 points of the headset's, the right number of speakers (two small extras on ES2004a), and
+13 of 14 speakers named right by voice with 30 s of enrollment, no sure name wrong on 235
+segments. See "One microphone on the table" below.
+
 ## How it was measured
 
 The method is `docs/measuring-a-room-microphone.md`. The audio: IS1009a's Mix-Headset, a beep
@@ -48,3 +55,35 @@ far-field table microphones (a real room, no replay), and a real meeting of peop
 recorded by the satellite. Then decide between a better microphone (a USB conference
 microphone on the satellite), a heavier diarization run after the meeting, or a meeting feature
 that does not promise who said what.
+
+## One microphone on the table (2026-11-07)
+
+Four AMI meetings (IS1009a, ES2004a, TS3003a, EN2002a), each scored on the headset mix, on one
+table microphone (Array1-01), on two adjacent array microphones 7.7 cm apart (a phone's two
+mics, delay-and-sum), and on all eight (delay-and-sum). DER / confusion with `chunked-linker`
+60 s 0.45:
+
+| Meeting | Headset | Array1-01 | 2 mics | 8 mics |
+|---|---|---|---|---|
+| IS1009a | 20.0 / 0.3 | 20.8 / 0.9 | 20.6 / 1.0 | 22.4 / 2.0 |
+| ES2004a | 26.4 / 0.1 | 29.1 / 0.8 | 28.8 / 1.0 | 30.2 / 1.5 |
+| TS3003a | 34.9 / 0.1 | 35.7 / 0.4 | 35.6 / 1.0 | 22.8 / 1.5 |
+| EN2002a | 30.2 / 1.7 | 32.6 / 2.0 | 32.6 / 2.8 | 32.0 / 2.0 |
+
+Almost all the DER is "miss" against the word-based reference, on the headset too: read the
+confusion first. Two microphones change nothing; eight do not lower the confusion and help only
+where the level was the problem (TS3003a's miss 35 → 18%). A direction-of-arrival cue from two
+adjacent microphones (GCC-PHAT) puts a speaker's pieces in their own angle 28–91% of the time:
+a weak tie-break, not a separator.
+
+Cheap pre-processing (a 100 Hz high-pass and EBU R128 loudness normalization) cuts the miss by
+3–7 points on IS1009a and TS3003a, confusion unchanged; DeepFilterNet3 makes it worse
+(confusion up to 7.5%, quiet speech suppressed: ES2004a's miss 56–60%). On ES2004a's table
+microphone a threshold above 0.45 over-splits (8–11 speakers): keep 0.45 or lower. A heavier
+model after the meeting, DiariZen large (WavLM, CPU, 2.4–2.9× real time), reaches 9.4% and 11.5%
+DER on IS1009a and ES2004a, almost all of it by catching more speech (it learned AMI's
+reference style); its confusion (2–4%) is no better, and its models are CC-BY-NC-4.0, not
+shippable. pyannote's gated models were not reachable.
+
+Still to measure: a phone on a real table, at 3–4 m, with the people present (AMI's array sits
+in the middle of the table).
