@@ -167,3 +167,31 @@ DER by more than 1.3 points. Other gates: 6 dB conditions every range of
 IS1009a's headset (it hovers 3–6 dB short), as harmful as no gate; 15 dB
 passes it through whole but lets IS1009a's table microphone, at 7–14 dB
 short past its first minutes, go back to as it came (19.3% DER, against 17.0).
+
+## A real conversation on an Android satellite (2026-11-07)
+
+Three people (two women, one man) talking for 15 min 20 s in a kitchen, none of them still and
+never at the same distance from the phone: one washing the dishes with the tap running and
+tidying up while she talked. The satellite was an Android phone in Chrome, «Predefinito» input,
+«Audio non elaborato» on (no echo cancellation, noise suppression or AGC), arvel's 100 Hz
+high-pass, recorded with `arvel chat --record-room`. The reference was the `chunked-linker`
+draft corrected by ear over the whole recording (14 of 376 labels changed or added, 9 removed;
+names given afterwards). Scored with `scripts/room-der.sh`, conditioning on:
+
+| Strategy | DER | miss | FA | confusion | speakers ref / hyp |
+|---|---|---|---|---|---|
+| offline | 1.6% | 1.4% | 0.2% | 0.0% | 3 / 3 |
+| stream-low | 1.8% | 1.3% | 0.5% | 0.0% | 3 / 3 |
+| stream-model | 1.6% | 1.4% | 0.2% | 0.0% | 3 / 3 |
+| chunked | 1.3% | 0.5% | 0.5% | 0.3% | 3 / 4 |
+| stream-embed | 2.1% | 1.3% | 0.5% | 0.3% | 3 / 4 |
+| stream-model-embed | 1.7% | 1.4% | 0.2% | 0.1% | 3 / 3 |
+| linker | 2.9% | 2.7% | 0.2% | 0.0% | 3 / 3 |
+| chunked-linker | 2.2% | 1.7% | 0.5% | 0.0% | 3 / 3 |
+
+Confusion is the number to trust: every label was heard, and none had to change speaker beyond
+those corrected. Miss and false alarm are understated: a reference drafted by the system and
+corrected by ear keeps its edges wherever they were not moved (on AMI, against an independent
+reference, they are 20–35%). So one phone on a table, as a web page, told three people apart
+in a noisy room with everyone moving. Still to try: four or five people, two similar voices,
+and a reference made without the draft.
