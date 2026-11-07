@@ -195,3 +195,16 @@ corrected by ear keeps its edges wherever they were not moved (on AMI, against a
 reference, they are 20–35%). So one phone on a table, as a web page, told three people apart
 in a noisy room with everyone moving. Still to try: four or five people, two similar voices,
 and a reference made without the draft.
+
+## The same on an iPhone (2026-11-07)
+
+The same three people, 5 min 25 s, an iPhone in Safari as the satellite: iOS keeps its voice
+processing (echo cancellation on, noise suppression and gain not settable, not even reported),
+but gates nothing (0.0% of 10 ms frames zero, against 27% on Android with echo cancellation on)
+and raises the level about 9 dB above the Android raw recording (median -23 dBFS). Reference
+drafted and corrected by ear the same way (8 of 130 labels changed or added). `chunked-linker`:
+DER 1.9%, miss 1.9%, false alarm 0.0%, confusion 0.0%, 3 / 3 speakers; `linker` 0.0% confusion
+too; the window-only strategies over-split (`chunked` 5 speakers, 2.5% confusion). The same
+caveat on miss and false alarm applies. So on iOS too one phone on the table tells three people
+apart; what iOS cannot do as a web page is stay on (`arvel`'s
+`docs/decisions/2026-11-07-the-satellites-microphone.md`).
