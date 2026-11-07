@@ -15,6 +15,7 @@ pub mod batcher;
 #[cfg(feature = "models")]
 pub mod channel;
 pub mod codec;
+pub mod conditioning;
 pub mod echo;
 #[cfg(feature = "models")]
 pub mod final_pass;

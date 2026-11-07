@@ -26,7 +26,9 @@ slots: a ninth voice is given one of them.
 ## What was measured
 
 A tool of the engine (`crates/engine/examples/diarize.rs`) diarizes a
-recording with each strategy and writes RTTM; `scripts/der.py` scores it
+recording with each strategy and writes RTTM (on the audio as it came:
+since 2026-11-07 it conditions it as the final pass does, and `--raw`
+reproduces these numbers); `scripts/der.py` scores it
 (DER, 10 ms frames, 0.25 s collar, overlap scored, one-to-one speaker
 map). Data, both CC-BY 4.0: four AMI meetings (Mix-Headset, 13–35 min,
 4 speakers; references from BUTSpeechFIT's AMI-diarization-setup,

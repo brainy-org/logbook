@@ -5,9 +5,12 @@
 //! cargo run --release -p logbook-engine --example diarize -- \
 //!     --lib ~/.cache/brainy-org/libparakeet-macos-metal-arm64-184711860035/libparakeet.dylib --diar MODEL.gguf [--voice BUNDLE.gguf] \
 //!     --strategy offline|stream-low|stream-model|chunked|stream-embed|stream-model-embed \
-//!     [--window 120] [--threshold 0.5] [--recluster 0.5] FILE > out.rttm
+//!     [--window 120] [--threshold 0.5] [--recluster 0.5] \
+//!     [--raw | --target -23 --max-gain 30 --follow 0.5 --highpass 100 --lowpass 7500] FILE > out.rttm
 //!
-//! Timing goes to stderr.
+//! What is diarized and embedded is conditioned as the final pass does
+//! (logbook_engine::conditioning), `--window` seconds at a time; `--raw`
+//! leaves it as it came, as before 2026-11-07. Timing goes to stderr.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,6 +18,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use logbook_engine::conditioning::{Conditioner, Settings};
 use logbook_engine::parakeet::{Kind, Latency, Model, Parakeet, SAMPLE_RATE, Turn};
 
 struct Args {
@@ -31,6 +35,8 @@ struct Args {
     /// Seconds of audio per voice embedding.
     embed: f64,
     share: Option<f32>,
+    /// None: the audio as it came (`--raw`).
+    condition: Option<Settings>,
     file: PathBuf,
 }
 
@@ -46,6 +52,8 @@ fn args() -> Result<Args> {
     let mut prior = None;
     let mut embed = 10.0;
     let mut share = None;
+    let mut raw = false;
+    let mut settings = Settings::default();
     let mut file = None;
     while let Some(arg) = a.next() {
         let mut value = || a.next().context("a value is missing");
@@ -60,6 +68,12 @@ fn args() -> Result<Args> {
             "--prior" => prior = Some(value()?.parse()?),
             "--embed" => embed = value()?.parse()?,
             "--share" => share = Some(value()?.parse()?),
+            "--raw" => raw = true,
+            "--target" => settings.target = value()?.parse()?,
+            "--max-gain" => settings.max_gain = value()?.parse()?,
+            "--follow" => settings.follow = value()?.parse()?,
+            "--highpass" => settings.highpass = value()?.parse()?,
+            "--lowpass" => settings.lowpass = value()?.parse()?,
             _ => file = Some(arg.into()),
         }
     }
@@ -74,6 +88,7 @@ fn args() -> Result<Args> {
         prior,
         embed,
         share,
+        condition: (!raw).then_some(settings),
         file: file.context("FILE")?,
     })
 }
@@ -106,7 +121,15 @@ fn main() -> Result<()> {
         ),
         None => None,
     };
-    let pcm = decode(&args.file)?;
+    let mut pcm = decode(&args.file)?;
+    if let Some(settings) = args.condition {
+        // A window at a time, as the final pass conditions its ranges.
+        let took = Instant::now();
+        let mut conditioner = Conditioner::new(settings);
+        let n = (args.window * SAMPLE_RATE as f64) as usize;
+        pcm = pcm.chunks(n).flat_map(|c| conditioner.run(c)).collect();
+        eprintln!("conditioned in {:.2} s", took.elapsed().as_secs_f64());
+    }
     let duration = pcm.len() as f64 / SAMPLE_RATE as f64;
     let started = Instant::now();
     let turns = match args.strategy.as_str() {

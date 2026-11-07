@@ -20,6 +20,7 @@ use std::collections::VecDeque;
 use anyhow::Result;
 
 use crate::channel::speaker_of;
+use crate::conditioning::Conditioner;
 use crate::echo::EchoFilter;
 use crate::parakeet::{Model, SAMPLE_RATE, Turn, Word};
 use crate::protocol::{ChannelConfig, SpeakerVoice, Utterance};
@@ -58,6 +59,10 @@ pub struct Range {
     pub to: f64,
     /// Tell its speakers apart.
     pub diarize: bool,
+    /// What the diarization and the voices hear of it starts where the
+    /// channel's last range left it (conditioning.rs).
+    /// Boxed: a few hundred bytes, in every message that carries a range.
+    pub condition: Box<Conditioner>,
 }
 
 /// What the finalizer makes of a range.
@@ -70,6 +75,8 @@ pub struct Transcribed {
     pub turns: Vec<Turn>,
     /// The voices of those slots.
     pub voices: Vec<Voice>,
+    /// The channel's conditioning at the range's end, when it was diarized.
+    pub condition: Option<Box<Conditioner>>,
 }
 
 pub struct Progressive {
@@ -88,6 +95,8 @@ struct Track {
     /// The turns of the ranges transcribed, by meeting speaker.
     speakers: Vec<Turn>,
     linker: Linker,
+    /// Where the conditioning of the next range starts.
+    condition: Conditioner,
     fed: u64,
     /// Points where the channel is quiet, increasing: where ranges may end.
     quiet: VecDeque<f64>,
@@ -133,6 +142,7 @@ impl Progressive {
                     config,
                     speakers: Vec::new(),
                     linker: Linker::new(threshold).seeded(&known),
+                    condition: Conditioner::default(),
                     fed: 0,
                     quiet: VecDeque::new(),
                     cut: 0.0,
@@ -222,6 +232,7 @@ impl Progressive {
                 from: track.cut,
                 to,
                 diarize: track.config.diarize,
+                condition: Box::new(track.condition.clone()),
             });
         }
         self.out = ranges.len();
@@ -236,6 +247,9 @@ impl Progressive {
         };
         let words = result.words;
         track.cut = track.cut.max(range.to);
+        if let Some(condition) = result.condition {
+            track.condition = *condition;
+        }
         // The range's slots are its own: only voices make them the
         // meeting's speakers.
         let map = track.linker.link(&result.voices, range.to);
@@ -375,6 +389,8 @@ pub struct RangeModels<'a> {
 
 /// A range read again: its words, its speakers (diarized alone) and their
 /// voices. `pcm` is the range's audio. Long: run it off the session's thread.
+/// The words are read from `pcm` as it came; the speakers and the voices
+/// from it conditioned (conditioning.rs).
 pub fn transcribe_range(models: &RangeModels, pcm: &[f32], range: &Range) -> Result<Transcribed> {
     let words = transcribe(models.asr, models.vad, pcm, range.from)?;
     if !range.diarize || words.is_empty() {
@@ -383,9 +399,11 @@ pub fn transcribe_range(models: &RangeModels, pcm: &[f32], range: &Range) -> Res
             ..Default::default()
         });
     }
+    let mut condition = (*range.condition).clone();
+    let heard = condition.run(pcm);
     let turns: Vec<Turn> = models
         .diarization
-        .diarize(pcm)?
+        .diarize(&heard)?
         .into_iter()
         .map(|t| Turn {
             start: t.start + range.from,
@@ -393,11 +411,12 @@ pub fn transcribe_range(models: &RangeModels, pcm: &[f32], range: &Range) -> Res
             ..t
         })
         .collect();
-    let voices = speakers::voices(models.voice, pcm, range.from, &turns)?;
+    let voices = speakers::voices(models.voice, &heard, range.from, &turns)?;
     Ok(Transcribed {
         words,
         turns,
         voices,
+        condition: Some(Box::new(condition)),
     })
 }
 
@@ -619,6 +638,38 @@ mod tests {
         let texts: Vec<&str> = ready.iter().map(|u| u.text.as_str()).collect();
         assert_eq!(texts, ["ciao", "io parlo sopra"]);
         assert_eq!(ready[0].channel, "system");
+    }
+
+    #[test]
+    fn a_range_s_conditioning_starts_where_the_last_one_left_it() {
+        let mut p = Progressive::new(vec![config("a", None)], 0.5, &[]).unwrap();
+        let second = vec![0.0f32; SAMPLE_RATE as usize];
+        for _ in 0..200 {
+            p.feed(0, &second);
+        }
+        p.quiet(0, 60.0);
+        let first = p.next_ranges();
+        assert_eq!(*first[0].condition, Conditioner::default());
+        let mut after = (*first[0].condition).clone();
+        let tone: Vec<f32> = (0..SAMPLE_RATE as usize)
+            .map(|i| (i as f32 * 0.3).sin() * 0.01)
+            .collect();
+        after.run(&tone);
+        p.transcribed(
+            &first[0],
+            Transcribed {
+                condition: Some(Box::new(after.clone())),
+                ..Default::default()
+            },
+        );
+        p.quiet(0, 120.0);
+        let second = p.next_ranges();
+        assert_eq!(second[0].from, 60.0);
+        assert_eq!(*second[0].condition, after);
+        // A range not diarized brings none back: the state stays.
+        p.transcribed(&second[0], Transcribed::default());
+        p.quiet(0, 180.0);
+        assert_eq!(*p.next_ranges()[0].condition, after);
     }
 
     #[test]

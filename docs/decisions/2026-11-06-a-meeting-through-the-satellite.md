@@ -87,3 +87,45 @@ shippable. pyannote's gated models were not reachable.
 
 Still to measure: a phone on a real table, at 3–4 m, with the people present (AMI's array sits
 in the middle of the table).
+
+### In the final pass (2026-11-07)
+
+The final pass now conditions what its diarization and voice prints hear
+(`crates/engine/src/conditioning.rs`): a 100 Hz high-pass, a 7.5 kHz low-pass
+(4th order), and one gain per range bringing its gated loudness (BS.1770) to
+-23 LUFS, at most ±30 dB, half of the change from the last range's taken each
+range, a 5 ms look-ahead limiter at -1 dBFS; the state carried from range to
+range. The words are transcribed from the audio as it came: the ASR was not
+measured on it. The gain above was not the loudness: `loudnorm` works at
+192 kHz, and the round trip's resampler cuts the band above 7.5 kHz (-7 dB).
+Raised 15–30 dB, the table microphone's hiss there makes Nemotron-3 worse: the
+gain without the low-pass (static, or a 3 s short-term gain like `loudnorm`'s,
+or `loudnorm`'s own gain curve applied at 16 kHz) changes nothing (IS1009a
+20.9–21.5%, TS3003a 33.8–34.2%), and the band added back to `loudnorm`'s output
+takes its gain away (21.7%, 34.7%); the low-pass without the gain changes
+nothing either. DER / miss / false alarm / confusion, `chunked-linker` 60 s
+0.45, `examples/diarize` without and with the conditioning (`--raw` is the
+first):
+
+| Meeting | Array1-01 raw | Array1-01 conditioned | Headset raw | Headset conditioned |
+|---|---|---|---|---|
+| IS1009a | 20.8 / 17.9 / 2.0 / 0.9 | 17.0 / 7.2 / 7.4 / 2.4 | 20.0 / 18.1 / 1.7 / 0.3 | 19.3 / 13.4 / 3.7 / 2.2 |
+| ES2004a | 29.1 / 26.8 / 1.5 / 0.8 | 27.3 / 23.6 / 2.5 / 1.2 | 26.4 / 26.1 / 0.2 / 0.1 | 26.4 / 25.8 / 0.3 / 0.3 |
+| TS3003a | 35.7 / 35.2 / 0.2 / 0.4 | 20.9 / 18.5 / 2.2 / 0.2 | 34.9 / 34.7 / 0.0 / 0.1 | 34.6 / 33.4 / 1.0 / 0.1 |
+| EN2002a | 32.6 / 29.9 / 0.6 / 2.0 | 29.2 / 27.3 / 0.7 / 1.2 | 30.2 / 28.1 / 0.4 / 1.7 | 30.9 / 28.9 / 0.3 / 1.7 |
+
+On the table microphone the miss falls 2.6–16.7 points, more than offline
+(`highpass,loudnorm` over the whole file: 16.6, 29.6, 28.4, 32.1% DER), the
+confusion moves within ±1.5 points (IS1009a up, EN2002a down), and the false
+alarm rises where the gain is large (IS1009a 2.0 → 7.4%). Speakers found: 4, 6,
+4, 6 (raw 4, 6, 4, 4). The headset mix is unchanged within noise, but for
+IS1009a's confusion (0.3 → 2.2%). Single runs move by 1–2 points with any
+small change of the audio, so read the larger moves. Settings tried, on the
+table microphone: a 7 kHz low-pass did as well on IS1009a and TS3003a and worse
+on ES2004a (confusion 5.9–6.1%); at most ±20 dB was better on TS3003a (19.5%)
+and worse on ES2004a (31.8%); a target of -24 or -26 LUFS the same or worse
+(ES2004a 47.9% at -26, confusion 19%); a 3 s short-term gain within ±10 dB of
+the range's raised the headset's confusion (IS1009a 4.4%); voices embedded from
+the audio as it came instead of conditioned, the same. Conditioning costs about
+18 ms a minute of audio (one core of the dev Mac), nothing beside the
+diarization's seconds.
