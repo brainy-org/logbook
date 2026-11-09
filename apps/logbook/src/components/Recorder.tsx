@@ -62,6 +62,17 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
   const [title, setTitle] = useState(state.title);
   const titleTimer = useRef<number | undefined>(undefined);
   const unsentTitle = useRef<string | undefined>(undefined);
+  // The notes as the app has them: the state's events do not carry them
+  // (they change with every key), so a page drawn again, back from
+  // another meeting's, would start empty, and the first key would send
+  // the empty page over them. Null until the app has answered.
+  const [notes, setNotes] = useState<string | null>(null);
+  useEffect(() => {
+    api.meetingState().then(
+      (s) => setNotes(s?.part === part ? s.notes : ''),
+      () => setNotes(''),
+    );
+  }, []);
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 500);
@@ -205,16 +216,18 @@ export function Recorder({ state, utterances, levels, logs, models }: Props) {
               : 'Getting ready…'}
           </p>
           {shotError && <p className="mb-3 text-sm text-red-600">{shotError}</p>}
-          <NotesEditor
-            ref={editor}
-            initial={state.notes}
-            folder="screenshots"
-            onChange={edit}
-            autoFocus={!android}
-            editable={state.phase !== 'finishing'}
-            placeholder="Write what matters, one line per point. The report fills in each one from what was said."
-            hints={!android}
-          />
+          {notes !== null && (
+            <NotesEditor
+              ref={editor}
+              initial={notes}
+              folder="screenshots"
+              onChange={edit}
+              autoFocus={!android}
+              editable={state.phase !== 'finishing'}
+              placeholder="Write what matters, one line per point. The report fills in each one from what was said."
+              hints={!android}
+            />
+          )}
         </div>
 
         <Pill

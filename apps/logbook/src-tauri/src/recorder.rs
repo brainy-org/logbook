@@ -52,6 +52,9 @@ pub struct State {
     pub channels: Vec<String>,
     /// The person behind the microphone.
     pub me: String,
+    /// The notes of meeting `part`, as `meeting_state` tells them; the
+    /// `meeting-state` events leave them empty (they are in `Notebook`,
+    /// and change with every key): a page drawn again asks for them.
     pub notes: String,
     /// Which meeting of the recording this is, from 0: the notes start
     /// empty in each.
