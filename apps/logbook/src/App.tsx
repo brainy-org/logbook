@@ -3,11 +3,12 @@
 // and the live transcript live here, so that they survive moving between
 // views while a meeting is recorded.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Menu } from 'lucide-react';
+import { Menu, X } from 'lucide-react';
 import {
   api,
   events,
   subscribe,
+  type Call,
   type LiveUtterance,
   type LogLine,
   type MeetingSummary,
@@ -47,6 +48,10 @@ export function App() {
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [pending, setPending] = useState<PendingMeeting[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
+  // A call noticed as it started (macOS, when the settings ask), and
+  // whether its notice was closed.
+  const [call, setCall] = useState<Call | null>(null);
+  const [callClosed, setCallClosed] = useState(false);
   // At phone width the sidebar is a drawer, open over the page.
   const [drawer, setDrawer] = useState(false);
   const show = (next: View) => {
@@ -64,6 +69,7 @@ export function App() {
     api.meetingState().then(setRecorder);
     api.getLogs().then(setLogs);
     api.modelsState().then(setModels);
+    api.callState().then(setCall);
     return subscribe(
       events.models(setModels),
       events.state((s) => {
@@ -85,6 +91,12 @@ export function App() {
         refresh();
       }),
       events.meetingsChanged(refresh),
+      events.call((c) => {
+        setCall(c);
+        setCallClosed(false);
+        // Recorded at once: the recorder is shown.
+        if (c?.recording) setView({ kind: 'home' });
+      }),
       events.finishing((state) =>
         setPending((all) => all.map((p) => (p.id === state.id ? { ...p, finishing: state } : p))),
       ),
@@ -148,6 +160,16 @@ export function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   });
+
+  const recordCall = async () => {
+    setCallClosed(true);
+    try {
+      setRecorder(await api.startCallMeeting());
+      show({ kind: 'home' });
+    } catch (e) {
+      setFailure(String(e));
+    }
+  };
 
   const recording = recorder !== null;
   let main;
@@ -242,6 +264,32 @@ export function App() {
             className="rounded-md px-2 py-1 font-medium text-accent hover:bg-neutral-100 dark:hover:bg-neutral-800"
           >
             Undo
+          </button>
+        </div>
+      )}
+      {call && !call.recording && !recording && !callClosed && (
+        <div
+          role="status"
+          className="fixed right-3 bottom-3 z-50 flex w-72 items-start gap-2 rounded-lg border border-neutral-200 bg-white p-3 text-sm shadow-lg max-sm:inset-x-3 max-sm:w-auto dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          <div className="min-w-0 flex-1">
+            <p>{call.app} call started.</p>
+            <p className="text-xs text-neutral-500">Recorded, it stops when the call ends.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void recordCall()}
+            className="rounded-md px-2 py-1 font-medium text-accent hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          >
+            Record
+          </button>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => setCallClosed(true)}
+            className="rounded-md px-1.5 py-1 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          >
+            <X className="size-4" />
           </button>
         </div>
       )}

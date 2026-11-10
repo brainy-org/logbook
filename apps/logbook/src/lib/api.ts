@@ -18,6 +18,8 @@ export interface Settings {
     headphones: boolean;
     micGainAuto: boolean;
   };
+  /** Calls noticed as they start (macOS): told, and recorded at once with `record`. */
+  calls: { notice: boolean; record: boolean };
   brainy: { enabled: boolean; url: string; parent: string };
   model: { report: boolean; url: string; name: string };
 }
@@ -31,6 +33,14 @@ export interface SettingsView {
 export interface Devices {
   inputs: string[];
   outputs: string[];
+}
+
+/** A call app holding the microphone (src-tauri calls.rs). */
+export interface Call {
+  /** "Teams". */
+  app: string;
+  /** Recorded since it started (`calls.record`). */
+  recording: boolean;
 }
 
 export type Phase = 'preparing' | 'recording' | 'finishing';
@@ -195,6 +205,10 @@ export const api = {
   startMeeting: (title: string, mode: Mode, expected: string[]) =>
     invoke<RecorderState>('start_meeting', { title, mode, expected }),
   stopMeeting: () => invoke<void>('stop_meeting'),
+  /** The call going on, if one was noticed (macOS). */
+  callState: () => invoke<Call | null>('call_state'),
+  /** Records the call going on; it stops when the call ends. */
+  startCallMeeting: () => invoke<RecorderState>('start_call_meeting'),
   /** The notes of meeting `part` of the recording (`RecorderState.part`). */
   setNotes: (part: number, notes: string) => invoke<void>('set_notes', { part, notes }),
   /** The recording's title from meeting `part` on; empty, the default one. */
@@ -247,6 +261,8 @@ export const events = {
     listen<Outcome | null>('meeting-done', (e) => f(e.payload)),
   failed: (f: (m: string) => void) => listen<string>('meeting-failed', (e) => f(e.payload)),
   meetingsChanged: (f: () => void) => listen('meetings-changed', () => f()),
+  /** A call noticed as it starts, or null at its end (only when the settings ask). */
+  call: (f: (c: Call | null) => void) => listen<Call | null>('call', (e) => f(e.payload)),
   /** A pending meeting's state as it is finished. */
   finishing: (f: (m: Finishing) => void) => listen<Finishing>('finishing', (e) => f(e.payload)),
   /** A screenshot taken by the shortcut while a meeting is recorded. */

@@ -103,7 +103,11 @@ in the sidebar, lists the people known by voice: find one as you type,
 sort them by name or by when they were last heard (recognized in a
 meeting or named), either way round, see who needs more
 voice (less than 30 s from any one meeting), rename or forget them. In the settings: on this computer or on a
-server (a logbook-server, with your token on it), the microphone and the output to record, brainy on or off (its token is
+server (a logbook-server, with your token on it), the microphone and the output to record, on macOS
+whether a call that starts is noticed (Teams, Zoom, Webex, Slack, Discord
+or WhatsApp opening the microphone: a notification offers to record it,
+or it is recorded at once, and the recording stops when the call ends;
+not calls in a browser; macOS 14.4 or later), brainy on or off (its token is
 kept on this computer, readable by you only), and the language model for the
 report (a provider, Groq, OpenAI, Mistral or any OpenAI-compatible API,
 and one of the models it lists; with a server, the server's). The app and the CLI share the data folder: the

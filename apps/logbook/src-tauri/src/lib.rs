@@ -13,6 +13,7 @@
 
 #[cfg(target_os = "android")]
 mod android;
+mod calls;
 mod finisher;
 mod logs;
 mod recorder;
@@ -36,6 +37,7 @@ use serde::Serialize;
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 
+use crate::calls::{Call, Calls};
 use crate::finisher::{Finisher, Finishing};
 use crate::logs::Logs;
 use crate::recorder::Recorder;
@@ -52,6 +54,8 @@ struct App {
     models: Arc<Mutex<Option<local::Status>>>,
     /// Pending meetings finished again until the server and brainy answer.
     finisher: Finisher,
+    /// The call going on, noticed on macOS (calls.rs).
+    calls: Calls,
     handle: AppHandle,
     logs: Logs,
 }
@@ -223,10 +227,20 @@ fn start_meeting(
         settings.audio.mode = mode;
         settings.save(&app.config).map_err(text)?;
     }
-    let backend = app.backend(&settings)?;
     let title = title
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
+    start(&app, handle, &settings, title, expected)
+}
+
+fn start(
+    app: &App,
+    handle: AppHandle,
+    settings: &Settings,
+    title: Option<String>,
+    expected: Vec<String>,
+) -> Answer<recorder::State> {
+    let backend = app.backend(settings)?;
     app.recorder
         .start(
             handle,
@@ -238,6 +252,33 @@ fn start_meeting(
             settings.gain(),
         )
         .map_err(text)
+}
+
+/// Records the call going on until it ends (calls.rs): in the mode last
+/// chosen if it takes the call, else Call; every voice known by name.
+fn record_call(app: &App, handle: AppHandle) -> Answer<recorder::State> {
+    let mut settings = app.settings();
+    if !settings.audio.mode.call() {
+        settings.audio.mode = Mode::Call;
+    }
+    let state = start(app, handle, &settings, None, Vec::new())?;
+    app.calls.tie();
+    Ok(state)
+}
+
+/// The call going on, if one was noticed and the settings ask to be told.
+#[tauri::command]
+fn call_state(app: State<App>) -> Option<Call> {
+    app.calls.current().filter(|_| app.settings().calls.notice)
+}
+
+/// The call's notice's Record.
+#[tauri::command]
+fn start_call_meeting(app: State<App>, handle: AppHandle) -> Answer<recorder::State> {
+    if app.calls.current().is_none() {
+        return Err("the call has ended".into());
+    }
+    record_call(&app, handle)
 }
 
 #[tauri::command]
@@ -641,6 +682,8 @@ pub fn run() {
         });
     #[cfg(target_os = "android")]
     let builder = builder.plugin(tauri_plugin_recording::init());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_notification::init());
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -676,6 +719,7 @@ pub fn run() {
                 #[cfg(not(target_os = "android"))]
                 models,
                 finisher: Finisher::default(),
+                calls: Calls::default(),
                 handle,
                 logs: logs.clone(),
             });
@@ -684,6 +728,8 @@ pub fn run() {
             // What a meeting left pending at the last run needs: the
             // server, or the models here, and brainy.
             app.finisher.start(&app.handle);
+            #[cfg(target_os = "macos")]
+            calls::watch(app.handle.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -697,6 +743,8 @@ pub fn run() {
             list_models,
             start_meeting,
             stop_meeting,
+            call_state,
+            start_call_meeting,
             set_notes,
             set_title,
             take_screenshot,

@@ -49,7 +49,7 @@ crates/cli/      logbook: play (a file at the pace of speech), live (microphone 
                  devices, bench: options and printing only
 apps/logbook/    the app, macOS, Windows and Android: pages (React, brainy's look) and src-tauri/
                  (recorder, pending meetings finished and their progress, settings and
-                 their secrets, logs, screenshots for the notes; android.rs and the
+                 their secrets, logs, screenshots for the notes, calls noticed on macOS; android.rs and the
                  Android project in gen/android); plugins/recording: the Android
                  foreground service, wake lock and permissions (Kotlin)  → docs/app.md
 scripts/         server.sh (builds and runs the server), client.sh, app.sh (the app:

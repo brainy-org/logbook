@@ -8,7 +8,7 @@
 // microphone only, and whether the recording may go on in the background.
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, ChevronRight, Laptop, Server } from 'lucide-react';
-import { android } from '../lib/platform.js';
+import { android, macos } from '../lib/platform.js';
 import { api, type Devices, type Settings, type SettingsView, type Voice } from '../lib/api.js';
 import {
   fieldClass,
@@ -257,6 +257,25 @@ export function SettingsPage({
               }
             />
           </Section>
+
+          {macos && (
+            <Section title="Calls">
+              <Toggle
+                checked={s.calls.notice}
+                onChange={(v) => update((n) => (n.calls.notice = v))}
+                label="Notice when a call starts"
+                help="When Teams, Zoom, Webex, Slack, Discord or WhatsApp opens the microphone, a notification offers to record the call, until it ends. Calls in a browser are not noticed. Needs macOS 14.4."
+              />
+              {s.calls.notice && (
+                <Toggle
+                  checked={s.calls.record}
+                  onChange={(v) => update((n) => (n.calls.record = v))}
+                  label="Record it at once"
+                  help="Without asking: the notification says it is being recorded. Stop it as any meeting."
+                />
+              )}
+            </Section>
+          )}
 
           {android && (
             <Section title="Background recording">

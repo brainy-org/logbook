@@ -32,6 +32,8 @@ pub struct Settings {
     /// The person behind the microphone.
     pub me: String,
     pub audio: AudioSettings,
+    /// Calls noticed as they start (calls.rs, macOS only).
+    pub calls: CallSettings,
     pub brainy: BrainySettings,
     pub model: ModelSettings,
 }
@@ -88,6 +90,15 @@ impl Mode {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct CallSettings {
+    /// Tell the person when a call app opens the microphone.
+    pub notice: bool,
+    /// And record it at once, until the call ends.
+    pub record: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct BrainySettings {
     /// Write each meeting as a page in brainy.
     pub enabled: bool,
@@ -119,6 +130,7 @@ impl Default for Settings {
             server_url: "http://127.0.0.1:3300".into(),
             me: "Me".into(),
             audio: AudioSettings::default(),
+            calls: CallSettings::default(),
             brainy: BrainySettings::default(),
             model: ModelSettings::default(),
         }
