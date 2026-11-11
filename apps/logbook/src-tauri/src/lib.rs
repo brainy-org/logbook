@@ -272,6 +272,26 @@ fn call_state(app: State<App>) -> Option<Call> {
     app.calls.current().filter(|_| app.settings().calls.notice)
 }
 
+/// The system's Notifications settings at Logbook's page: the call's
+/// notice offers it when macOS refused its notification (calls.rs).
+#[tauri::command]
+fn open_notification_settings(handle: AppHandle) -> Answer<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let url = format!(
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id={}",
+            handle.config().identifier
+        );
+        std::process::Command::new("open")
+            .arg(url)
+            .status()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = handle;
+    Ok(())
+}
+
 /// The call's notice's Record.
 #[tauri::command]
 fn start_call_meeting(app: State<App>, handle: AppHandle) -> Answer<recorder::State> {
@@ -743,6 +763,7 @@ pub fn run() {
             stop_meeting,
             call_state,
             start_call_meeting,
+            open_notification_settings,
             set_notes,
             set_title,
             take_screenshot,

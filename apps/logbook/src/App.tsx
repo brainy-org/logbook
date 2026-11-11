@@ -277,6 +277,18 @@ export function App() {
             <p className="text-xs text-neutral-500">
               Record it to transcribe it; it stops on its own when the call ends.
             </p>
+            {call.notificationsOff && (
+              <p className="mt-1 text-xs text-neutral-500">
+                Notifications are off for Logbook, so it can tell you of a call only here.{' '}
+                <button
+                  type="button"
+                  onClick={() => void api.openNotificationSettings()}
+                  className="font-medium text-accent hover:underline"
+                >
+                  Turn them on
+                </button>
+              </p>
+            )}
           </div>
           <button
             type="button"

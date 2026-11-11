@@ -49,6 +49,9 @@ pub struct Call {
     pub app: &'static str,
     /// Being recorded since it started (`calls.record`).
     pub recording: bool,
+    /// macOS refused its notification: they are off for Logbook in the
+    /// system's settings, which only the person can turn on.
+    pub notifications_off: bool,
 }
 
 #[derive(Default)]
@@ -119,6 +122,7 @@ pub fn watch(handle: tauri::AppHandle) {
         let mut call = Call {
             app: name,
             recording: false,
+            notifications_off: false,
         };
         // Noticed even when off: turned on during the call, it is not news.
         let busy = app.recorder.state().is_some();
@@ -147,8 +151,8 @@ pub fn watch(handle: tauri::AppHandle) {
                     .to_string(),
             )
         };
-        notify(&title, &body);
         let _ = handle.emit("call", Some(call));
+        notify(handle, &title, &body);
     }
 
     /// A notification from UserNotifications, after asking for it: macOS
@@ -156,7 +160,8 @@ pub fn watch(handle: tauri::AppHandle) {
     /// settings' Notifications. NSUserNotificationCenter (Tauri's
     /// notification plugin) delivered nothing and never asked: Logbook was
     /// not even in that list.
-    fn notify(title: &str, body: &str) {
+    /// Refused, the call going on says so to the pages (`notifications_off`).
+    fn notify(handle: &tauri::AppHandle, title: &str, body: &str) {
         use block2::RcBlock;
         use objc2::runtime::Bool;
         use objc2_foundation::{NSError, NSString, NSUUID};
@@ -174,6 +179,7 @@ pub fn watch(handle: tauri::AppHandle) {
             UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let options = UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound;
+        let handle = handle.clone();
         let asked = RcBlock::new(move |granted: Bool, error: *mut NSError| {
             if !granted.as_bool() {
                 // SAFETY: the error UserNotifications passes, or null.
@@ -181,6 +187,14 @@ pub fn watch(handle: tauri::AppHandle) {
                     .map(|e| e.localizedDescription().to_string())
                     .unwrap_or_else(|| "turned off in the settings".into());
                 tracing::warn!("no notification for the call: {error}");
+                let app = handle.state::<crate::App>();
+                let call = app.calls.current.lock().unwrap().as_mut().map(|call| {
+                    call.notifications_off = true;
+                    call.clone()
+                });
+                if let Some(call) = call {
+                    let _ = handle.emit("call", Some(call));
+                }
                 return;
             }
             let added = RcBlock::new(|error: *mut NSError| {

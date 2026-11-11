@@ -41,6 +41,8 @@ export interface Call {
   app: string;
   /** Recorded since it started (`calls.record`). */
   recording: boolean;
+  /** macOS refused its notification: off for Logbook in the system's settings. */
+  notificationsOff: boolean;
 }
 
 export type Phase = 'preparing' | 'recording' | 'finishing';
@@ -207,6 +209,8 @@ export const api = {
   stopMeeting: () => invoke<void>('stop_meeting'),
   /** The call going on, if one was noticed (macOS). */
   callState: () => invoke<Call | null>('call_state'),
+  /** The system's Notifications settings at Logbook's page (macOS). */
+  openNotificationSettings: () => invoke<void>('open_notification_settings'),
   /** Records the call going on; it stops when the call ends. */
   startCallMeeting: () => invoke<RecorderState>('start_call_meeting'),
   /** The notes of meeting `part` of the recording (`RecorderState.part`). */
