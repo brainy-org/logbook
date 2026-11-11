@@ -167,18 +167,18 @@ pub fn watch(handle: tauri::AppHandle) {
         use objc2_foundation::{NSError, NSString, NSUUID};
         use objc2_user_notifications::{
             UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
-            UNNotificationSound, UNUserNotificationCenter,
+            UNUserNotificationCenter,
         };
 
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(title));
         content.setBody(&NSString::from_str(body));
-        content.setSound(Some(&UNNotificationSound::defaultSound()));
         let id = NSUUID::new().UUIDString();
         let request =
             UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
         let center = UNUserNotificationCenter::currentNotificationCenter();
-        let options = UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound;
+        // Silent: a call has sounds enough of its own.
+        let options = UNAuthorizationOptions::Alert;
         let handle = handle.clone();
         let asked = RcBlock::new(move |granted: Bool, error: *mut NSError| {
             if !granted.as_bool() {

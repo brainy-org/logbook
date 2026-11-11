@@ -50,4 +50,4 @@ tauri-plugin-recording = { version = "0.1.1", path = "../plugins/recording" }
 block2 = "0.6.2"
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", features = ["NSError", "NSString", "NSUUID"] }
-objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
