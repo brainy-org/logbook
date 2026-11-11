@@ -6,7 +6,8 @@ Tauri's `RunEvent::Exit` in `lib.rs`), not with `std::process::exit`.
 Closed after a meeting, the app crashed with 0xc0000409 inside Intel's
 Vulkan driver while libparakeet's static destructors ran. Nothing is lost
 by skipping them: the meeting is written before the window can close,
-and one closed while recording stays in `pending/` by design.
+and one closed while recording stays in `pending/` by design. Since
+2026-11-11 macOS and Linux end with `_exit` for the same reason (below).
 
 ## What was seen
 
@@ -58,3 +59,14 @@ Only the desktop app calls `parakeet::exit`. The CLI ended cleanly
 (`logbook finish`, exit code 0) after a final pass on the same machine,
 and the server's image is Linux. Either one that crashes the same way at
 exit calls it at the end of `main`.
+
+## macOS, 2026-11-11
+
+The same teardown crashed on macOS: the window closed with its red button
+while a meeting ran locally ended the app, and `exit` ran libparakeet's
+static destructors (`pk::Backend::~Backend`, `ggml_metal_free` on the
+main thread) while a session thread was in `SileroVad::run_chunk`: SIGSEGV
+at address 0 in `pk::Backend::compute`. `parakeet::exit` now ends every
+Unix process with `_exit`, which runs no atexit handler nor destructor.
+The red button on macOS no longer quits at all: it hides the window, as a
+Mac app does, so a recording and the calls' watch go on.

@@ -114,8 +114,6 @@ pub fn watch(handle: tauri::AppHandle) {
     });
 
     fn started(handle: &tauri::AppHandle, app: &crate::App, name: &'static str) {
-        use tauri_plugin_notification::NotificationExt;
-
         tracing::info!("a {name} call has started");
         let settings = app.settings();
         let mut call = Call {
@@ -149,16 +147,55 @@ pub fn watch(handle: tauri::AppHandle) {
                     .to_string(),
             )
         };
-        if let Err(error) = handle
-            .notification()
-            .builder()
-            .title(title)
-            .body(body)
-            .show()
-        {
-            tracing::warn!("could not show the call's notification: {error}");
-        }
+        notify(&title, &body);
         let _ = handle.emit("call", Some(call));
+    }
+
+    /// A notification from UserNotifications, after asking for it: macOS
+    /// asks the person once, the first time, and lists Logbook in the
+    /// settings' Notifications. NSUserNotificationCenter (Tauri's
+    /// notification plugin) delivered nothing and never asked: Logbook was
+    /// not even in that list.
+    fn notify(title: &str, body: &str) {
+        use block2::RcBlock;
+        use objc2::runtime::Bool;
+        use objc2_foundation::{NSError, NSString, NSUUID};
+        use objc2_user_notifications::{
+            UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
+            UNNotificationSound, UNUserNotificationCenter,
+        };
+
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str(title));
+        content.setBody(&NSString::from_str(body));
+        content.setSound(Some(&UNNotificationSound::defaultSound()));
+        let id = NSUUID::new().UUIDString();
+        let request =
+            UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        let options = UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound;
+        let asked = RcBlock::new(move |granted: Bool, error: *mut NSError| {
+            if !granted.as_bool() {
+                // SAFETY: the error UserNotifications passes, or null.
+                let error = unsafe { error.as_ref() }
+                    .map(|e| e.localizedDescription().to_string())
+                    .unwrap_or_else(|| "turned off in the settings".into());
+                tracing::warn!("no notification for the call: {error}");
+                return;
+            }
+            let added = RcBlock::new(|error: *mut NSError| {
+                // SAFETY: as above.
+                if let Some(error) = unsafe { error.as_ref() } {
+                    tracing::warn!(
+                        "could not show the call's notification: {}",
+                        error.localizedDescription()
+                    );
+                }
+            });
+            UNUserNotificationCenter::currentNotificationCenter()
+                .addNotificationRequest_withCompletionHandler(&request, Some(&added));
+        });
+        center.requestAuthorizationWithOptions_completionHandler(options, &asked);
     }
 }
 

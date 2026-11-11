@@ -682,8 +682,6 @@ pub fn run() {
         });
     #[cfg(target_os = "android")]
     let builder = builder.plugin(tauri_plugin_recording::init());
-    #[cfg(target_os = "macos")]
-    let builder = builder.plugin(tauri_plugin_notification::init());
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -769,14 +767,30 @@ pub fn run() {
             background_state,
             ask_background,
         ])
+        // On macOS the red button hides the window, as a Mac app does: the
+        // app goes on recording and noticing calls; ⌘Q quits it, the Dock
+        // shows it again.
+        .on_window_event(|_window, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = _event {
+                api.prevent_close();
+                let _ = _window.hide();
+            }
+        })
         .build(tauri::generate_context!())
         .expect("the app could not start")
-        .run(|_, _event| {
-            // Tauri would call `process::exit`, which on Windows runs
-            // libparakeet's teardown in the GPU driver (`parakeet::exit`).
+        .run(|_app, _event| match _event {
+            // Tauri would call `process::exit`, which runs libparakeet's
+            // teardown under a session still running (`parakeet::exit`).
             #[cfg(not(target_os = "android"))]
-            if let tauri::RunEvent::Exit = _event {
-                logbook_engine::parakeet::exit(0);
+            tauri::RunEvent::Exit => logbook_engine::parakeet::exit(0),
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                if let Some(window) = _app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
+            _ => {}
         });
 }

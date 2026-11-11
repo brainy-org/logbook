@@ -198,12 +198,15 @@ impl Parakeet {
     }
 }
 
-/// Ends the process without running libparakeet's static destructors on
-/// Windows. There `ExitProcess` stops the other threads, then unloads each
-/// DLL: ggml's global Vulkan backend tears down in the GPU driver, and
-/// Intel's (igvk64.dll) throws after a meeting has run, which ends as a
-/// fast fail (0xc0000409) when the desktop app is closed. The OS frees
-/// what the backend held anyway. Elsewhere, `std::process::exit`
+/// Ends the process without running libparakeet's static destructors,
+/// which free ggml's global backend under any thread still on it. On
+/// Windows `ExitProcess` stops the other threads, then unloads each DLL:
+/// ggml's Vulkan backend tears down in the GPU driver, and Intel's
+/// (igvk64.dll) throws after a meeting has run, which ends as a fast fail
+/// (0xc0000409) when the desktop app is closed. On macOS `exit` frees the
+/// Metal backend while a session thread still runs the VAD on it
+/// (SIGSEGV in `pk::Backend::compute`): the app quit while recording.
+/// The OS frees what the backend held anyway
 /// (docs/decisions/2026-10-27-windows-exit-without-teardown.md).
 pub fn exit(code: i32) -> ! {
     use std::io::Write;
@@ -220,6 +223,16 @@ pub fn exit(code: i32) -> ! {
         // does not return.
         unsafe { TerminateProcess(GetCurrentProcess(), code as u32) };
     }
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn _exit(status: std::ffi::c_int) -> !;
+        }
+        // SAFETY: ends the process at once, without atexit handlers or
+        // static destructors; the streams were flushed above.
+        unsafe { _exit(code) }
+    }
+    #[cfg(not(unix))]
     std::process::exit(code)
 }
 
