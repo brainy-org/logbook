@@ -363,9 +363,11 @@ function LiveTranscript({
   models: ModelsStatus | null;
 }) {
   const end = useRef<HTMLDivElement>(null);
+  // On every phrase, not on the count: the list keeps the last
+  // LIVE_PHRASES (App.tsx), so once full its length no longer changes.
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'end' });
-  }, [utterances.length]);
+  }, [utterances]);
 
   return (
     <aside className="flex w-80 shrink-0 flex-col border-l border-neutral-200 bg-sidebar max-sm:absolute max-sm:inset-x-0 max-sm:top-11 max-sm:bottom-0 max-sm:z-10 max-sm:w-auto max-sm:border-l-0 max-sm:border-t dark:border-neutral-800">
