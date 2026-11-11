@@ -274,7 +274,9 @@ export function App() {
         >
           <div className="min-w-0 flex-1">
             <p>{call.app} call started.</p>
-            <p className="text-xs text-neutral-500">Recorded, it stops when the call ends.</p>
+            <p className="text-xs text-neutral-500">
+              Record it to transcribe it; it stops on its own when the call ends.
+            </p>
           </div>
           <button
             type="button"

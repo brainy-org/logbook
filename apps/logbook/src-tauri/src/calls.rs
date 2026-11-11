@@ -136,13 +136,17 @@ pub fn watch(handle: tauri::AppHandle) {
         }
         let (title, body) = if call.recording {
             (
-                format!("Recording the {name} call"),
-                "It stops when the call ends.".to_string(),
+                format!("Logbook is recording the {name} call"),
+                "Its transcript, with speakers, is in Logbook's window. \
+                 It stops on its own when the call ends."
+                    .to_string(),
             )
         } else {
             (
                 format!("{name} call started"),
-                "Open Logbook to record it.".to_string(),
+                "Logbook can transcribe it: press Record in its window. \
+                 It stops on its own when the call ends."
+                    .to_string(),
             )
         };
         if let Err(error) = handle
