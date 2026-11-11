@@ -177,6 +177,7 @@ pub fn watch(handle: tauri::AppHandle) {
         let request =
             UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
         let center = UNUserNotificationCenter::currentNotificationCenter();
+        presenter::install(&center);
         // Silent: a call has sounds enough of its own.
         let options = UNAuthorizationOptions::Alert;
         let handle = handle.clone();
@@ -210,6 +211,59 @@ pub fn watch(handle: tauri::AppHandle) {
                 .addNotificationRequest_withCompletionHandler(&request, Some(&added));
         });
         center.requestAuthorizationWithOptions_completionHandler(options, &asked);
+    }
+}
+
+/// UserNotifications' delegate: a notification is shown as a banner even
+/// while Logbook is in front. Without it macOS asks the app, gets no
+/// answer, and puts the notification only in the Notification Center: the
+/// app just opened during a call showed nothing.
+#[cfg(target_os = "macos")]
+mod presenter {
+    use std::sync::Once;
+
+    use block2::DynBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::ProtocolObject;
+    use objc2::{AllocAnyThread, define_class, msg_send};
+    use objc2_foundation::{NSObject, NSObjectProtocol};
+    use objc2_user_notifications::{
+        UNNotification, UNNotificationPresentationOptions, UNUserNotificationCenter,
+        UNUserNotificationCenterDelegate,
+    };
+
+    define_class!(
+        #[unsafe(super = NSObject)]
+        #[name = "LogbookNotificationPresenter"]
+        struct Presenter;
+
+        unsafe impl NSObjectProtocol for Presenter {}
+
+        unsafe impl UNUserNotificationCenterDelegate for Presenter {
+            #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+            fn will_present(
+                &self,
+                _center: &UNUserNotificationCenter,
+                _notification: &UNNotification,
+                handler: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
+            ) {
+                handler.call((UNNotificationPresentationOptions::Banner
+                    | UNNotificationPresentationOptions::List,));
+            }
+        }
+    );
+
+    /// Once for the app's life: the center holds its delegate weakly, so
+    /// it is never released.
+    pub fn install(center: &UNUserNotificationCenter) {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let this = Presenter::alloc().set_ivars(());
+            // SAFETY: NSObject's init on a freshly allocated object.
+            let presenter: Retained<Presenter> = unsafe { msg_send![super(this), init] };
+            center.setDelegate(Some(ProtocolObject::from_ref(&*presenter)));
+            std::mem::forget(presenter);
+        });
     }
 }
 
