@@ -20,6 +20,7 @@ mod recorder;
 #[cfg(not(target_os = "android"))]
 mod screenshot;
 mod settings;
+mod updater;
 
 use std::path::PathBuf;
 #[cfg(not(target_os = "android"))]
@@ -205,6 +206,43 @@ async fn list_models(
         .await
         .map_err(|e| e.to_string())?
         .map_err(text)
+}
+
+/// The newer version found, if any (updater.rs); none on Android.
+#[tauri::command]
+fn update_state(handle: AppHandle) -> Option<updater::Available> {
+    #[cfg(not(target_os = "android"))]
+    return handle.state::<updater::Updates>().found();
+    #[cfg(target_os = "android")]
+    {
+        let _ = handle;
+        None
+    }
+}
+
+/// Looks for a newer version now.
+#[tauri::command]
+async fn check_update(handle: AppHandle) -> Answer<Option<updater::Available>> {
+    #[cfg(not(target_os = "android"))]
+    return updater::check(&handle).await.map_err(text);
+    #[cfg(target_os = "android")]
+    {
+        let _ = handle;
+        Ok(None)
+    }
+}
+
+/// Installs the newer version and restarts with it: refused while a
+/// meeting is recorded.
+#[tauri::command]
+async fn install_update(handle: AppHandle) -> Answer<()> {
+    #[cfg(not(target_os = "android"))]
+    return updater::install(&handle).await.map_err(text);
+    #[cfg(target_os = "android")]
+    {
+        let _ = handle;
+        Err("the Android app is updated by installing its APK".into())
+    }
 }
 
 /// Whether brainy answers with the token, and the parent page exists.
@@ -702,6 +740,7 @@ pub fn run() {
     }));
     #[cfg(not(target_os = "android"))]
     let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(screenshot::plugin(|app| app.state::<App>().data.clone()))
         .register_uri_scheme_protocol("shot", |ctx, request| {
             screenshot::serve(&ctx.app_handle().state::<App>().data, &request)
@@ -754,6 +793,11 @@ pub fn run() {
             app.finisher.start(&app.handle);
             #[cfg(target_os = "macos")]
             calls::watch(app.handle.clone());
+            #[cfg(not(target_os = "android"))]
+            {
+                tauri_app.manage(updater::Updates::default());
+                updater::watch(app.handle.clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -765,6 +809,9 @@ pub fn run() {
             check_server,
             check_brainy,
             list_models,
+            update_state,
+            check_update,
+            install_update,
             start_meeting,
             stop_meeting,
             call_state,

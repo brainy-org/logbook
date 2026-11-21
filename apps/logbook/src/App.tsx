@@ -15,7 +15,10 @@ import {
   type ModelsStatus,
   type PendingMeeting,
   type RecorderState,
+  type UpdateInfo,
 } from './lib/api.js';
+import { android } from './lib/platform.js';
+import { UpdateNotice } from './components/UpdateNotice.js';
 import { Sidebar } from './components/Sidebar.js';
 import { Recorder } from './components/Recorder.js';
 import { MeetingPage } from './components/MeetingPage.js';
@@ -52,6 +55,10 @@ export function App() {
   // whether its notice was closed.
   const [call, setCall] = useState<Call | null>(null);
   const [callClosed, setCallClosed] = useState(false);
+  // A newer version found on GitHub (desktop only), and whether its notice
+  // was closed until the next look.
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateClosed, setUpdateClosed] = useState(false);
   // At phone width the sidebar is a drawer, open over the page.
   const [drawer, setDrawer] = useState(false);
   const show = (next: View) => {
@@ -70,7 +77,12 @@ export function App() {
     api.getLogs().then(setLogs);
     api.modelsState().then(setModels);
     api.callState().then(setCall);
+    if (!android) api.updateState().then(setUpdate, () => undefined);
     return subscribe(
+      events.update((u) => {
+        setUpdate(u);
+        setUpdateClosed(false);
+      }),
       events.models(setModels),
       events.state((s) => {
         setRecorder(s);
@@ -306,6 +318,9 @@ export function App() {
             <X className="size-4" />
           </button>
         </div>
+      )}
+      {update && !updateClosed && !(call && !call.recording && !recording && !callClosed) && (
+        <UpdateNotice update={update} recording={recording} onClose={() => setUpdateClosed(true)} />
       )}
       <main className="min-h-0 min-w-0 flex-1 overflow-hidden">{main}</main>
     </div>

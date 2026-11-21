@@ -7,8 +7,12 @@
 # Cargo.lock), builds the macOS .dmg (Apple Silicon, signed with the
 # certificate of `scripts/app.sh cert`) and the Windows installer (x64,
 # cross-built, not signed), then commits "Logbook 0.2.0", tags v0.2.0,
-# pushes both and makes a draft release with the two installers attached.
-# The draft is published by hand once looked at:
+# pushes both and makes a draft release with the two installers attached,
+# and what the installed apps update from: `latest.json`, the macOS bundle
+# as a .tar.gz and the Windows installer, signed with the updater's key
+# (~/.config/logbook/updater.key, LOGBOOK_UPDATER_KEY; lost, the apps out
+# there can never be updated again: keep a copy). The draft is published by
+# hand once looked at, and only then do the apps offer it:
 #   gh release edit v0.2.0 --draft=false
 #
 # The macOS build must be signed with the same certificate every time:
@@ -48,8 +52,13 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
   exit 1
 fi
 gh auth status >/dev/null
+updater_key="${LOGBOOK_UPDATER_KEY:-$HOME/.config/logbook/updater.key}"
+if [[ ! -s "$updater_key" ]]; then
+  echo "no updater key at $updater_key: the apps could not update to this release" >&2
+  exit 1
+fi
 
-# The version, in the three places that hold it.
+# The version, in the two places that hold it, and Cargo.lock.
 current=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' apps/logbook/src-tauri/tauri.conf.json)
 echo "Logbook $current → $version"
 sed -i.bak "s/^  \"version\": \"$current\",\$/  \"version\": \"$version\",/" \
@@ -67,7 +76,22 @@ scripts/app.sh build
 scripts/app.sh windows
 dmg="target/release/bundle/dmg/Logbook_${version}_aarch64.dmg"
 exe="target/x86_64-pc-windows-msvc/release/bundle/nsis/Logbook_${version}_x64-setup.exe"
-ls "$dmg" "$exe" >/dev/null
+ls "$dmg" "$exe" "$exe.sig" target/release/bundle/macos/Logbook.app.tar.gz{,.sig} >/dev/null
+
+# What the apps update from: the macOS bundle under a name of its own, and
+# latest.json naming each platform's file with its signature.
+assets=$(mktemp -d)
+app_tar="Logbook_${version}_aarch64.app.tar.gz"
+cp target/release/bundle/macos/Logbook.app.tar.gz "$assets/$app_tar"
+download="https://github.com/brainy-org/logbook/releases/download/$tag"
+jq -n --arg version "$version" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg notes "See https://github.com/brainy-org/logbook/releases/tag/$tag" \
+  --arg mac_url "$download/$app_tar" \
+  --arg mac_sig "$(<target/release/bundle/macos/Logbook.app.tar.gz.sig)" \
+  --arg win_url "$download/$(basename "$exe")" --arg win_sig "$(<"$exe.sig")" \
+  '{version: $version, notes: $notes, pub_date: $date, platforms: {
+     "darwin-aarch64": {url: $mac_url, signature: $mac_sig},
+     "windows-x86_64": {url: $win_url, signature: $win_sig}}}' >"$assets/latest.json"
 
 git commit -q -m "Logbook $version" -- apps/logbook/src-tauri/tauri.conf.json Cargo.toml Cargo.lock
 trap - ERR
@@ -82,9 +106,11 @@ notes=$(
 
 **Windows** (x64): run the `-setup.exe`. It is not signed, so SmartScreen warns: More info → Run anyway. Transcribing on the computer itself needs the [Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe); with a logbook-server it does not.
 
-The speech models (about 1 GB) download at the first meeting transcribed on the computer.
+The speech models (about 1 GB) download at the first meeting transcribed on the computer. Once installed, Logbook offers each new version itself.
 EOF
 )
-gh release create "$tag" "$dmg" "$exe" --draft --title "Logbook $version" \
+gh release create "$tag" "$dmg" "$exe" "$assets/$app_tar" "$assets/latest.json" \
+  --draft --title "Logbook $version" \
   --notes "$notes" --generate-notes
+rm -rf "$assets"
 echo "draft release $tag made; publish it with: gh release edit $tag --draft=false"

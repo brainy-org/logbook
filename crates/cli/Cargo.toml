@@ -9,7 +9,7 @@ publish.workspace = true
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dirs = "7.0.0"
-logbook-client = { version = "0.1.1", path = "../client" }
-logbook-engine = { version = "0.1.1", path = "../engine" }
+logbook-client = { path = "../client" }
+logbook-engine = { path = "../engine" }
 tokio = { version = "1.54.1", features = ["full"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

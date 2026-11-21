@@ -28,6 +28,17 @@ app="$root/apps/logbook"
 # The certificate's name: LOGBOOK_SIGNING_IDENTITY picks another one (a
 # Developer ID, once there is one).
 identity="${LOGBOOK_SIGNING_IDENTITY:-Logbook Self-Signed}"
+# The key that signs the app's updates (src-tauri updater.rs): its public
+# half is in tauri.conf.json. Without it, a build has no updater files
+# (a build to try, not one to release).
+updater_key="${LOGBOOK_UPDATER_KEY:-$HOME/.config/logbook/updater.key}"
+no_updater=()
+if [[ -s "$updater_key" ]]; then
+  TAURI_SIGNING_PRIVATE_KEY="$(<"$updater_key")"
+  export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+else
+  no_updater=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
+fi
 
 install() {
   if [[ ! -d "$app/node_modules" ]]; then
@@ -101,7 +112,7 @@ build)
   cd "$app"
   # CI=true: the bundler skips the AppleScript that opens the .dmg in
   # Finder to lay out its window. The .dmg keeps Finder's default layout.
-  CI=true APPLE_SIGNING_IDENTITY="$identity" pnpm tauri build
+  CI=true APPLE_SIGNING_IDENTITY="$identity" pnpm tauri build ${no_updater[@]+"${no_updater[@]}"}
   bundle="$root/target/release/bundle/macos/Logbook.app"
   codesign --verify --deep --strict "$bundle"
   codesign -d --entitlements - --xml "$bundle" 2>/dev/null | grep -q disable-library-validation
@@ -122,7 +133,8 @@ windows)
   install
   cd "$app"
   PATH="$(brew --prefix llvm)/bin:$PATH" pnpm tauri build \
-    --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+    --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis \
+    ${no_updater[@]+"${no_updater[@]}"}
   ls "$root/target/x86_64-pc-windows-msvc/release/bundle/nsis/"*.exe
   ;;
 android)

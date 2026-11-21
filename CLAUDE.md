@@ -49,11 +49,12 @@ crates/cli/      logbook: play (a file at the pace of speech), live (microphone 
                  devices, bench: options and printing only
 apps/logbook/    the app, macOS, Windows and Android: pages (React, brainy's look) and src-tauri/
                  (recorder, pending meetings finished and their progress, settings and
-                 their secrets, logs, screenshots for the notes, calls noticed on macOS; android.rs and the
+                 their secrets, logs, screenshots for the notes, calls noticed on macOS,
+                 new versions from the GitHub releases: updater.rs; android.rs and the
                  Android project in gen/android); plugins/recording: the Android
                  foreground service, wake lock and permissions (Kotlin)  → docs/app.md
 scripts/         server.sh (builds and runs the server), client.sh, app.sh (the app:
-                 dev, cert, build, windows, android); der.py, room-der.sh (every
+                 dev, cert, build, windows, android), release.sh (a GitHub release); der.py, room-der.sh (every
                  diarization strategy scored on one recording) and reference.py
                  (a reference made by hand in Audacity)
                                                 → docs/measuring-a-room-microphone.md
@@ -194,6 +195,12 @@ scripts/app.sh dev                    # the app; `build` signs it (`cert` once p
   targets only. A dependency or a `use` that pulls them into the Android
   build puts libparakeet's loader and the mirror on a phone that cannot
   run them, silently (`docs/decisions/2026-10-29-android-app.md`).
+- **The updater's public key in `tauri.conf.json` never changes, and its
+  private half (`~/.config/logbook/updater.key`) is never lost**: every
+  installed app checks updates against that key; a new one, or a release
+  signed without it, leaves them all unable to update, and nothing says so
+  until a person installs by hand
+  (`docs/decisions/2026-11-21-the-app-updates-itself.md`).
 - **Same models as brainy-worker, from the same mirror**: the `parakeet`
   bundle of github.com/brainy-org/models (its files' sha256 in
   `crates/engine/src/pins.rs`, the same as brainy-worker's

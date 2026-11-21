@@ -7,6 +7,7 @@
 // only knows whether they are set. On Android: a server always, the
 // microphone only, and whether the recording may go on in the background.
 import { useEffect, useState, type ReactNode } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
 import { Check, ChevronRight, Laptop, Server } from 'lucide-react';
 import { android, macos } from '../lib/platform.js';
 import {
@@ -122,6 +123,10 @@ export function SettingsPage({
   const [brainyCheck, setBrainyCheck] = useState<Check>({ state: 'idle' });
   const [listed, setListed] = useState<Listed>({ state: 'idle' });
   const [unrestricted, setUnrestricted] = useState(true);
+  const [version, setVersion] = useState<string | null>(null);
+  // The look for a newer version asked here: what it found, if anything.
+  const [updateCheck, setUpdateCheck] = useState<Check>({ state: 'idle' });
+  const [newer, setNewer] = useState<string | null>(null);
 
   // For a CLI, also whether it is installed and signed in.
   const listModels = async (provider: LlmProvider, url: string, typedKey?: string) => {
@@ -146,6 +151,7 @@ export function SettingsPage({
     });
     if (!android) api.listDevices().then(setDevices, () => undefined);
     api.listVoices().then(setVoices, () => undefined);
+    getVersion().then(setVersion, () => undefined);
   }, []);
 
   useEffect(() => {
@@ -570,6 +576,35 @@ export function SettingsPage({
               {android ? 'Data folder' : 'Data folder, shared with the logbook CLI'}: {view.data}
             </p>
           </Section>
+
+          {!android && (
+            <Section title="Version">
+              <div className="flex items-center justify-between gap-3">
+                <p className={`text-sm ${mutedTextClass}`}>
+                  Logbook {version ?? '…'}. New versions are looked for every few hours and offered
+                  at the bottom right.
+                </p>
+                <CheckButton
+                  check={updateCheck}
+                  label="Check for updates"
+                  onClick={() =>
+                    void run(setUpdateCheck, async () => {
+                      const found = await api.checkUpdate();
+                      setNewer(found?.version ?? null);
+                    })
+                  }
+                />
+              </div>
+              <CheckResult
+                check={updateCheck}
+                ok={
+                  newer
+                    ? `Logbook ${newer} is available: install it from the notice at the bottom right.`
+                    : 'This is the latest version.'
+                }
+              />
+            </Section>
+          )}
         </div>
       </div>
       <footer className="flex items-center justify-end gap-3 border-t border-neutral-200 px-10 py-3 max-sm:px-4 dark:border-neutral-800">

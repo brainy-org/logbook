@@ -94,6 +94,12 @@ export interface Finishing {
   retryAt: number | null;
 }
 
+/** A newer version of the app, found on GitHub (desktop only). */
+export type UpdateInfo = { version: string; current: string; notes: string | null };
+
+/** The download of a new version being installed; `total` null when unknown. */
+export type UpdateProgress = { done: number; total: number | null };
+
 /** What writes the report: an OpenAI-compatible API, or a CLI on this computer. */
 export type LlmProvider = 'api' | 'claude' | 'codex';
 
@@ -227,6 +233,12 @@ export const api = {
   /** The screen under the pointer, or an area (macOS), for the notes; null if given up. */
   takeScreenshot: (kind: 'screen' | 'area') => invoke<Shot | null>('take_screenshot', { kind }),
   meetingState: () => invoke<RecorderState | null>('meeting_state'),
+  /** The newer version found by the last look, if any. */
+  updateState: () => invoke<UpdateInfo | null>('update_state'),
+  /** Looks for a newer version now. */
+  checkUpdate: () => invoke<UpdateInfo | null>('check_update'),
+  /** Installs the newer version and restarts the app; refused while recording. */
+  installUpdate: () => invoke<void>('install_update'),
   getLogs: () => invoke<LogLine[]>('get_logs'),
   listMeetings: () => invoke<MeetingSummary[]>('list_meetings'),
   getMeeting: (id: string) => invoke<MeetingView>('get_meeting', { id }),
@@ -272,6 +284,11 @@ export const events = {
     listen<Outcome | null>('meeting-done', (e) => f(e.payload)),
   failed: (f: (m: string) => void) => listen<string>('meeting-failed', (e) => f(e.payload)),
   meetingsChanged: (f: () => void) => listen('meetings-changed', () => f()),
+  /** Each look for a newer version: the one found, or null. */
+  update: (f: (u: UpdateInfo | null) => void) =>
+    listen<UpdateInfo | null>('update', (e) => f(e.payload)),
+  updateProgress: (f: (p: UpdateProgress) => void) =>
+    listen<UpdateProgress>('update-progress', (e) => f(e.payload)),
   /** A call noticed as it starts, or null at its end (only when the settings ask). */
   call: (f: (c: Call | null) => void) => listen<Call | null>('call', (e) => f(e.payload)),
   /** A pending meeting's state as it is finished. */
