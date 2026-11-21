@@ -110,7 +110,10 @@ or it is recorded at once, and the recording stops when the call ends;
 not calls in a browser; macOS 14.4 or later), brainy on or off (its token is
 kept on this computer, readable by you only), and the language model for the
 report (a provider, Groq, OpenAI, Mistral or any OpenAI-compatible API,
-and one of the models it lists; with a server, the server's). The app and the CLI share the data folder: the
+and one of the models it lists; or Claude Code or Codex installed on this
+computer, with the account they are signed in with: the settings check the
+sign-in, and a meeting with a report does not start while they are signed
+out; with a server, the server's). The app and the CLI share the data folder: the
 pending meetings and the voices.
 
 The app is signed with a self-signed certificate, not notarized (that
@@ -237,7 +240,10 @@ matches no page, or more than one, stops there and lists what it found
 
 The final transcript is as heard. With a language model (the server's
 `--llm-url`, below, or the same `LOGBOOK_LLM_URL`, `LOGBOOK_LLM_MODEL`
-and `LOGBOOK_LLM_KEY` given to the CLI without a server), `--report` has
+and `LOGBOOK_LLM_KEY` given to the CLI without a server; or
+`LOGBOOK_LLM_PROVIDER=claude` or `codex`, the `claude` or `codex` CLI on
+this computer with the account it is signed in with, checked before
+recording: `claude auth login`, `codex login`), `--report` has
 it write the meeting's report (summary, decisions, action items, details
 by subject, in the meeting's language): on the brainy page under its first
 line, or printed after the transcript without brainy. Without it the
@@ -363,11 +369,12 @@ models.
 | `--recordings` / `LOGBOOK_RECORDINGS` | `logbook-recordings` in the system's temporary folder | audio of final passes, until they have run; emptied when the server starts, held by one server at a time |
 | `--voice` / `LOGBOOK_VOICE` | `wespeaker-resnet34-lm.gguf` in the models folder | speaker encoder of the final pass (required): links each minute's speakers to the meeting's, with no limit of eight |
 | `--voice-threshold` | 0.45 | voice similarity above which two minutes' voices are one speaker |
+| `--llm-provider` / `LOGBOOK_LLM_PROVIDER` | `api` | what writes reports: `api`, the model of `--llm-url`; `claude` or `codex`, that CLI on the server's machine, signed in with its account (`claude setup-token` and `CLAUDE_CODE_OAUTH_TOKEN`, or `codex login`), checked at start: a server that is not signed in does not start. Its default model, or `--llm-model`. The CLIs are not in the Docker image. `LOGBOOK_CLAUDE_BIN`, `LOGBOOK_CODEX_BIN`: a CLI that is neither on PATH nor in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` |
 | `--llm-url` / `LOGBOOK_LLM_URL` | none | an OpenAI-compatible API up to `/v1` (`http://localhost:11434/v1` for Ollama) whose model writes reports (`POST /reports`). The meeting's text goes there: a hosted provider reads every meeting whose client asks for a report (`--report`) |
 | `--llm-model` / `LOGBOOK_LLM_MODEL` | none | its model; required with `--llm-url` |
 | `--llm-key` / `LOGBOOK_LLM_KEY` | none | its API key, if it asks for one |
 | `--report-parallel` | 4 | reports written at once |
-| `--llm-timeout` | 120 | seconds a request to the model may take |
+| `--llm-timeout` | 120 (600 for a CLI) | seconds a request to the model may take |
 
 `PARAKEET_DEVICE` picks the device (`cpu`, `CUDA0`, ...); unset, ggml takes
 the first GPU.

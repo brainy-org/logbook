@@ -9,7 +9,14 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, ChevronRight, Laptop, Server } from 'lucide-react';
 import { android, macos } from '../lib/platform.js';
-import { api, type Devices, type Settings, type SettingsView, type Voice } from '../lib/api.js';
+import {
+  api,
+  type Devices,
+  type LlmProvider,
+  type Settings,
+  type SettingsView,
+  type Voice,
+} from '../lib/api.js';
 import {
   fieldClass,
   mutedTextClass,
@@ -18,19 +25,69 @@ import {
 } from './form-styles.js';
 
 /**
- * Hosted providers with an OpenAI-compatible API, and any other at an
- * address given. The one chosen is read back from the address kept.
+ * Hosted providers with an OpenAI-compatible API, any other at an address
+ * given, and the coding agents' CLIs on this computer, signed in with the
+ * person's subscription. The one chosen is read back from the provider and
+ * the address kept; `reader` is who reads the meetings' text.
  */
-const OTHER = { id: 'other', label: 'Other (OpenAI-compatible)', url: '', key: '' };
-const PROVIDERS = [
-  { id: 'groq', label: 'Groq', url: 'https://api.groq.com/openai/v1', key: 'gsk_…' },
-  { id: 'openai', label: 'OpenAI', url: 'https://api.openai.com/v1', key: 'sk-…' },
-  { id: 'mistral', label: 'Mistral', url: 'https://api.mistral.ai/v1', key: '' },
+type Provider = {
+  id: string;
+  label: string;
+  kind: LlmProvider;
+  url: string;
+  key: string;
+  reader?: string;
+};
+const OTHER: Provider = {
+  id: 'other',
+  label: 'Other (OpenAI-compatible)',
+  kind: 'api',
+  url: '',
+  key: '',
+};
+const PROVIDERS: Provider[] = [
+  {
+    id: 'groq',
+    label: 'Groq',
+    kind: 'api',
+    url: 'https://api.groq.com/openai/v1',
+    key: 'gsk_…',
+    reader: 'Groq',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    kind: 'api',
+    url: 'https://api.openai.com/v1',
+    key: 'sk-…',
+    reader: 'OpenAI',
+  },
+  {
+    id: 'mistral',
+    label: 'Mistral',
+    kind: 'api',
+    url: 'https://api.mistral.ai/v1',
+    key: '',
+    reader: 'Mistral',
+  },
+  {
+    id: 'claude',
+    label: 'Claude Code (claude CLI)',
+    kind: 'claude',
+    url: '',
+    key: '',
+    reader: 'Anthropic',
+  },
+  { id: 'codex', label: 'Codex (codex CLI)', kind: 'codex', url: '', key: '', reader: 'OpenAI' },
   OTHER,
 ];
 
-const providerOf = (url: string) =>
-  PROVIDERS.find((p) => p.url && p.url === url.trim().replace(/\/+$/, '')) ?? OTHER;
+const providerOf = (model: Settings['model']) =>
+  (model.provider !== 'api'
+    ? PROVIDERS.find((p) => p.kind === model.provider)
+    : PROVIDERS.find(
+        (p) => p.kind === 'api' && p.url && p.url === model.url.trim().replace(/\/+$/, ''),
+      )) ?? OTHER;
 
 type Check =
   | { state: 'idle' }
@@ -66,11 +123,15 @@ export function SettingsPage({
   const [listed, setListed] = useState<Listed>({ state: 'idle' });
   const [unrestricted, setUnrestricted] = useState(true);
 
-  const listModels = async (url: string, typedKey?: string) => {
-    if (!url.trim()) return;
+  // For a CLI, also whether it is installed and signed in.
+  const listModels = async (provider: LlmProvider, url: string, typedKey?: string) => {
+    if (provider === 'api' && !url.trim()) return;
     setListed({ state: 'listing' });
     try {
-      setListed({ state: 'listed', names: await api.listModels(url, typedKey || undefined) });
+      setListed({
+        state: 'listed',
+        names: await api.listModels(provider, url, typedKey || undefined),
+      });
     } catch (e) {
       setListed({ state: 'failed', message: String(e) });
     }
@@ -80,7 +141,8 @@ export function SettingsPage({
     api.getSettings().then((v) => {
       setView(v);
       setS(v.settings);
-      if (v.settings.transcription === 'local') void listModels(v.settings.model.url);
+      if (v.settings.transcription === 'local')
+        void listModels(v.settings.model.provider, v.settings.model.url);
     });
     if (!android) api.listDevices().then(setDevices, () => undefined);
     api.listVoices().then(setVoices, () => undefined);
@@ -133,7 +195,8 @@ export function SettingsPage({
 
   const local = !android && s.transcription === 'local';
   const here = android ? 'this phone' : 'this computer';
-  const provider = providerOf(s.model.url);
+  const provider = providerOf(s.model);
+  const cli = provider.kind !== 'api';
 
   return (
     <div className="flex h-full flex-col">
@@ -365,7 +428,7 @@ export function SettingsPage({
               decisions, action items).{' '}
               {local
                 ? 'Without a server, the model below is used.'
-                : "On a server, the server's model is used (its --llm-url): nothing below."}
+                : "On a server, the server's model is used (its --llm-provider, --llm-url): nothing below."}
             </p>
             <Toggle
               checked={s.model.report}
@@ -380,11 +443,12 @@ export function SettingsPage({
                     onChange={(e) => {
                       const p = PROVIDERS.find((p) => p.id === e.target.value) ?? provider;
                       update((n) => {
+                        n.model.provider = p.kind;
                         n.model.url = p.url;
                         n.model.name = '';
                       });
                       setListed({ state: 'idle' });
-                      if (p.url) void listModels(p.url, key);
+                      if (p.kind !== 'api' || p.url) void listModels(p.kind, p.url, key);
                     }}
                     className={`${fieldClass} w-full`}
                   >
@@ -411,60 +475,75 @@ export function SettingsPage({
                 <Field
                   label="Model"
                   help={
-                    listed.state === 'listed'
-                      ? undefined
-                      : "Its name, or the list of those the provider offers (with the provider's key)."
+                    cli
+                      ? `Run on this computer with the account ${provider.label.split(' (')[0]} is signed in with. Empty: its default model.`
+                      : listed.state === 'listed'
+                        ? undefined
+                        : "Its name, or the list of those the provider offers (with the provider's key)."
                   }
                 >
                   <div className="flex gap-2">
-                    {listed.state === 'listed' ? (
+                    {listed.state === 'listed' && listed.names.length > 0 ? (
                       <ModelSelect
                         value={s.model.name}
                         names={listed.names}
+                        empty={cli ? 'Its default model' : undefined}
                         onChange={(v) => update((n) => (n.model.name = v))}
                       />
                     ) : (
                       <input
                         value={s.model.name}
                         onChange={(e) => update((n) => (n.model.name = e.target.value))}
+                        placeholder={cli ? 'Its default model' : undefined}
                         className={`${fieldClass} flex-1`}
                       />
                     )}
                     <button
                       type="button"
-                      disabled={listed.state === 'listing' || !s.model.url.trim()}
-                      onClick={() => void listModels(s.model.url, key)}
+                      disabled={listed.state === 'listing' || (!cli && !s.model.url.trim())}
+                      onClick={() => void listModels(provider.kind, s.model.url, key)}
                       className={`${secondaryButtonSmClass} !h-8`}
                     >
                       {listed.state === 'listing'
-                        ? 'Listing…'
-                        : listed.state === 'listed'
-                          ? 'List again'
-                          : 'List models'}
+                        ? cli
+                          ? 'Checking…'
+                          : 'Listing…'
+                        : cli
+                          ? 'Check sign-in'
+                          : listed.state === 'listed'
+                            ? 'List again'
+                            : 'List models'}
                     </button>
                   </div>
                   {listed.state === 'failed' && (
                     <span className="block text-xs text-red-600">{listed.message}</span>
                   )}
+                  {cli && listed.state === 'listed' && (
+                    <span className="block text-xs text-accent">
+                      {provider.label.split(' (')[0]} is signed in on this computer.
+                    </span>
+                  )}
                 </Field>
-                <Field
-                  label="API key"
-                  help={`The provider's, kept on this computer, readable by you only.${view.secrets.modelKey ? ' One is set: type a new one to replace it.' : ''}`}
-                >
-                  <input
-                    type="password"
-                    value={key ?? ''}
-                    onChange={(e) => {
-                      setKey(e.target.value);
-                      setSaved(false);
-                    }}
-                    placeholder={view.secrets.modelKey ? '••••••••' : provider.key}
-                    className={`${fieldClass} w-full`}
-                  />
-                </Field>
-                {provider.id !== 'other' && (
+                {!cli && (
+                  <Field
+                    label="API key"
+                    help={`The provider's, kept on this computer, readable by you only.${view.secrets.modelKey ? ' One is set: type a new one to replace it.' : ''}`}
+                  >
+                    <input
+                      type="password"
+                      value={key ?? ''}
+                      onChange={(e) => {
+                        setKey(e.target.value);
+                        setSaved(false);
+                      }}
+                      placeholder={view.secrets.modelKey ? '••••••••' : provider.key}
+                      className={`${fieldClass} w-full`}
+                    />
+                  </Field>
+                )}
+                {provider.reader && (
                   <p className="rounded-md bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/30">
-                    {provider.label} reads the text of every meeting it reports on: fine for
+                    {provider.reader} reads the text of every meeting it reports on: fine for
                     testing, not for meetings that must stay in the company.
                   </p>
                 )}
@@ -622,10 +701,13 @@ function DeviceSelect({
 function ModelSelect({
   value,
   names,
+  empty,
   onChange,
 }: {
   value: string;
   names: string[];
+  /** The label of no name, when none is a choice (a CLI's default). */
+  empty?: string;
   onChange: (v: string) => void;
 }) {
   return (
@@ -634,7 +716,11 @@ function ModelSelect({
       onChange={(e) => onChange(e.target.value)}
       className={`${fieldClass} flex-1`}
     >
-      {!value && <option value="">Choose a model</option>}
+      {empty !== undefined ? (
+        <option value="">{empty}</option>
+      ) : (
+        !value && <option value="">Choose a model</option>
+      )}
       {value && !names.includes(value) && <option value={value}>{value} (not offered)</option>}
       {names.map((n) => (
         <option key={n} value={n}>

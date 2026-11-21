@@ -227,8 +227,9 @@ page holds the report and never the transcript: a report of decisions
 and actions alone left a 96-minute call's facts (the system being
 ported, the dates of the contract, the doubts of the customer) only in
 the transcript on the client. With notes, the details hold only the
-subjects the notes do not cover. One request to an
-OpenAI-compatible model (`crates/engine/src/llm.rs`), with the whole transcript, up to
+subjects the notes do not cover. One request to the
+model (`crates/engine/src/llm.rs`: an OpenAI-compatible API, or the
+`claude` or `codex` CLI run as a subprocess, `llm_cli.rs`), with the whole transcript, up to
 320 000 characters (six to nine hours). A longer meeting is reported in
 steps, never cut (a report of part of a meeting reads as one of all of
 it): the transcript is split between paragraphs into parts of 80 000
@@ -242,8 +243,26 @@ cost six requests instead of one. The transcript is the one
 the client printed, with the names it gave the speakers: the server
 never sees the client's voices, so the client sends the Markdown
 (`POST /reports`, docs/protocol.md), not the segments. The server answers
-it only with `--llm-url`; without a server the client asks the model
-itself (`LOGBOOK_LLM_URL`, the app's settings).
+it only with `--llm-url` or `--llm-provider claude|codex`; without a server the client asks the model
+itself (`LOGBOOK_LLM_URL` or `LOGBOOK_LLM_PROVIDER`, the app's settings).
+
+A CLI answers with the account it is signed in with on that machine
+(the person's subscription, no API key): one process per request, in an
+empty folder of its own, with no tools, MCP servers, settings or hooks
+(Claude: `--tools "" --setting-sources ""`; Codex: a read-only sandbox,
+the instructions at the head of the prompt, since `codex exec` has no
+system prompt), the prompt on stdin and the instructions in a file, so
+nothing long goes on a command line. Whether it is signed in is asked of
+the CLI itself (`claude auth status`, `codex login status`, about 0.2 s,
+exit 1 when signed out) before a meeting with a report is recorded, at
+the server's start and from the app's settings; a request that fails is
+asked again, so a sign-in that expired during the meeting says how to sign
+in rather than the CLI's own message. A request may take 600 s by default
+(an API's, 120): a reasoning model on a meeting takes minutes. Each
+request costs a process start (about a second) on top of the model's
+time; on a server, `--report-parallel` bounds the processes as it
+bounds requests
+(`docs/decisions/2026-11-21-reports-by-a-cli.md`).
 
 The report goes on the page under its header line, and holds the notes.
 Without one (not asked for, or the model failed: a wrong key, a model

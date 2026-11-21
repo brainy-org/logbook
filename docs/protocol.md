@@ -181,7 +181,7 @@ the client moves its times by where it started
   server's model (docs/pipeline.md, "Report"). `transcript` is the final
   transcript as the client writes it, Markdown with the speakers' names.
   Answers `200 {"markdown":"…"}`; `501` on a server without a model
-  (`--llm-url`); `502` with the reason when the model fails. At most
+  (`--llm-url`, `--llm-provider`); `502` with the reason when the model fails. At most
   64 MB (a long meeting is reported in steps, one request to the model
   each, and holds its place for all of them); as many at once as
   `--report-parallel`, the others wait.

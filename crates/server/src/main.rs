@@ -109,10 +109,16 @@ struct Args {
     /// server only this computer reaches (tests, `logbook bench`).
     #[arg(long, env = "LOGBOOK_NO_AUTH")]
     no_auth: bool,
+    /// What writes the meetings' reports: `api`, the model of
+    /// --llm-url; `claude` or `codex`, that CLI run on this machine,
+    /// signed in with its account (checked at start), its default model
+    /// or --llm-model. The text of a meeting whose report is asked goes
+    /// there: a hosted model reads it.
+    #[arg(long, env = "LOGBOOK_LLM_PROVIDER", default_value = "api")]
+    llm_provider: llm::Provider,
     /// An OpenAI-compatible API, up to `/v1`, whose model writes the
-    /// meetings' reports: `http://localhost:11434/v1` for Ollama. The text
-    /// of a meeting whose report is asked goes there: a hosted one reads
-    /// it. None: no reports.
+    /// meetings' reports: `http://localhost:11434/v1` for Ollama. None,
+    /// with --llm-provider api: no reports.
     #[arg(long, env = "LOGBOOK_LLM_URL", requires = "llm_model")]
     llm_url: Option<String>,
     #[arg(long, env = "LOGBOOK_LLM_MODEL")]
@@ -123,9 +129,10 @@ struct Args {
     /// Reports written at once.
     #[arg(long, default_value_t = 4)]
     report_parallel: usize,
-    /// Seconds a request to the model may take.
-    #[arg(long, default_value_t = llm::TIMEOUT)]
-    llm_timeout: u64,
+    /// Seconds a request to the model may take: by default 120 for an
+    /// API, 600 for a CLI.
+    #[arg(long)]
+    llm_timeout: Option<u64>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -215,17 +222,40 @@ async fn main() -> Result<()> {
     // In the data folder: with replicas sharing it, any of them answers
     // for a pass another one runs.
     let finals = Arc::new(Finals::on_disk(&data)?);
-    let model = match (args.llm_url, args.llm_model) {
-        (Some(url), Some(model)) => {
+    let provider = args.llm_provider;
+    let timeout = args
+        .llm_timeout
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| provider.timeout());
+    let model = match (provider, args.llm_url, args.llm_model) {
+        (llm::Provider::Api, Some(url), Some(model)) => {
             info!(url, model, "meetings are reported on");
             Some(llm::Options {
+                provider,
                 url,
                 model,
                 key: args.llm_key,
-                timeout: Duration::from_secs(args.llm_timeout),
+                timeout,
             })
         }
-        _ => None,
+        (llm::Provider::Api, ..) => None,
+        (_, _, model) => {
+            let options = llm::Options {
+                provider,
+                url: String::new(),
+                model: model.unwrap_or_default(),
+                key: None,
+                timeout,
+            };
+            // Not signed in: said now, not at the first meeting's end.
+            llm::check(&options).context("--llm-provider")?;
+            info!(
+                provider = ?provider,
+                model = options.model,
+                "meetings are reported on by a CLI"
+            );
+            Some(options)
+        }
     };
     let reporter = model.map(|options| Reporter {
         agent: llm::agent(&options),
@@ -418,7 +448,7 @@ async fn write_report(
     let Some(reporter) = &state.reporter else {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "this server has no language model (--llm-url)",
+            "this server has no language model (--llm-provider, --llm-url)",
         )
             .into_response();
     };

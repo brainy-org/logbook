@@ -21,7 +21,7 @@ export interface Settings {
   /** Calls noticed as they start (macOS): told, and recorded at once with `record`. */
   calls: { notice: boolean; record: boolean };
   brainy: { enabled: boolean; url: string; parent: string };
-  model: { report: boolean; url: string; name: string };
+  model: { report: boolean; provider: LlmProvider; url: string; name: string };
 }
 
 export interface SettingsView {
@@ -93,6 +93,9 @@ export interface Finishing {
   /** When it is tried again, ms since the epoch. */
   retryAt: number | null;
 }
+
+/** What writes the report: an OpenAI-compatible API, or a CLI on this computer. */
+export type LlmProvider = 'api' | 'claude' | 'codex';
 
 /** How the models of a local backend get ready; null with a server. */
 export type ModelsStatus =
@@ -200,8 +203,12 @@ export const api = {
   listDevices: () => invoke<Devices>('list_devices'),
   checkServer: (url: string, token?: string) => invoke<void>('check_server', { url, token }),
   checkBrainy: () => invoke<void>('check_brainy'),
-  /** The text models of an OpenAI-compatible API; `key` undefined: the one kept. */
-  listModels: (url: string, key?: string) => invoke<string[]>('list_models', { url, key }),
+  /**
+   * The text models of an OpenAI-compatible API; `key` undefined: the one kept.
+   * For a CLI, the names it takes, or an error if it is missing or not signed in.
+   */
+  listModels: (provider: LlmProvider, url: string, key?: string) =>
+    invoke<string[]>('list_models', { provider, url, key }),
   /** `mode` is kept in the settings for the next meeting. */
   /** `expected`: the voices known by name the speakers are named from; none, every one. */
   startMeeting: (title: string, mode: Mode, expected: string[]) =>

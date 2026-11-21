@@ -170,8 +170,19 @@ struct LocalArgs {
     /// ones in ~/.cache/brainy-org, fetched from the mirror when missing.
     #[arg(long, global = true, env = "LOGBOOK_MODELS")]
     models: Option<PathBuf>,
+    /// What writes the --report: `api`, the model of --llm-url; `claude`
+    /// or `codex`, that CLI on this computer signed in with its account
+    /// (checked before recording), its default model or --llm-model. The
+    /// meeting's text goes there.
+    #[arg(
+        long,
+        global = true,
+        env = "LOGBOOK_LLM_PROVIDER",
+        default_value = "api"
+    )]
+    llm_provider: logbook_engine::llm::Provider,
     /// An OpenAI-compatible API, up to `/v1`, whose model writes the
-    /// --report. The meeting's text goes there.
+    /// --report.
     #[arg(long, global = true, env = "LOGBOOK_LLM_URL")]
     llm_url: Option<String>,
     #[arg(long, global = true, env = "LOGBOOK_LLM_MODEL")]
@@ -329,6 +340,7 @@ async fn run(cli: Cli) -> Result<()> {
         ),
         None => Backend::Local(Arc::new(local::Local::new(local::Config {
             models: cli.local.models,
+            llm_provider: cli.local.llm_provider,
             llm_url: cli.local.llm_url,
             llm_model: cli.local.llm_model,
             llm_key: cli.local.llm_key,

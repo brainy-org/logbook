@@ -186,10 +186,16 @@ async fn check_server(url: String, token: Option<String>) -> Answer<()> {
 }
 
 /// The text models the API at `url` offers: `key` as typed and not saved
-/// yet, else the one kept.
+/// yet, else the one kept. For a CLI, the names it takes once it is found
+/// signed in, or the error saying how to sign it in.
 #[tauri::command]
-async fn list_models(url: String, key: Option<String>) -> Answer<Vec<String>> {
+async fn list_models(
+    provider: Option<llm::Provider>,
+    url: String,
+    key: Option<String>,
+) -> Answer<Vec<String>> {
     let options = llm::Options {
+        provider: provider.unwrap_or_default(),
         url: url.trim().to_string(),
         model: String::new(),
         key: key.or_else(|| Secret::ModelKey.get()),

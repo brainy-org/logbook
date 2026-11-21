@@ -1,27 +1,109 @@
 //! The language model that writes the meeting's report (report.rs): an
 //! OpenAI-compatible endpoint (Ollama, llama.cpp's server, vLLM, a hosted
-//! provider), its chat completions and the models it lists.
+//! provider), its chat completions and the models it lists; or a coding
+//! agent's CLI signed in with the person's account (`claude`, `codex`),
+//! run as a subprocess (llm_cli.rs).
 
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use tracing::warn;
 
-/// Seconds a request may take by default.
+use crate::llm_cli::{self, Cli};
+
+/// Seconds a request to an API may take by default.
 pub const TIMEOUT: u64 = 120;
+/// Seconds a request to a CLI may take by default: an agent's model on a
+/// meeting's transcript, reasoning first (Codex), takes minutes.
+pub const CLI_TIMEOUT: u64 = 600;
+
+/// What answers: an OpenAI-compatible API, or a CLI on this computer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    /// At `Options::url`, with `Options::key`.
+    #[default]
+    Api,
+    /// Claude Code's `claude -p`, signed in on this computer.
+    Claude,
+    /// Codex's `codex exec`, signed in on this computer.
+    Codex,
+}
+
+impl Provider {
+    pub fn cli(self) -> Option<Cli> {
+        match self {
+            Provider::Api => None,
+            Provider::Claude => Some(Cli::Claude),
+            Provider::Codex => Some(Cli::Codex),
+        }
+    }
+
+    /// A request's default time.
+    pub fn timeout(self) -> Duration {
+        Duration::from_secs(match self {
+            Provider::Api => TIMEOUT,
+            _ => CLI_TIMEOUT,
+        })
+    }
+}
+
+impl std::str::FromStr for Provider {
+    type Err = String;
+
+    /// As on a command line: `api`, `claude`, `codex`.
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s.trim().to_lowercase().as_str() {
+            "api" | "" => Ok(Provider::Api),
+            "claude" => Ok(Provider::Claude),
+            "codex" => Ok(Provider::Codex),
+            other => Err(format!("{other}: not api, claude or codex")),
+        }
+    }
+}
 
 /// Where the model is and how to ask it.
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// The API's base, up to `/v1`: `http://localhost:11434/v1` for Ollama.
+    pub provider: Provider,
+    /// The API's base, up to `/v1`: `http://localhost:11434/v1` for
+    /// Ollama. Not used by a CLI.
     pub url: String,
+    /// For a CLI, empty for its default model.
     pub model: String,
-    /// Sent as a bearer token; none for a local server.
+    /// Sent as a bearer token; none for a local server or a CLI.
     pub key: Option<String>,
     /// For one request.
     pub timeout: Duration,
+}
+
+/// An error if the model cannot be asked now, saying what to do: a CLI
+/// missing or not signed in. Nothing is asked of an API (its key is
+/// checked by its first answer).
+pub fn check(options: &Options) -> Result<()> {
+    match options.provider.cli() {
+        Some(cli) => llm_cli::check(cli),
+        None => Ok(()),
+    }
+}
+
+/// The model's answer to `user`, told `instructions`: a chat completion
+/// of the API, or the CLI's answer. Blocks.
+pub fn ask(agent: &Agent, options: &Options, instructions: &str, user: String) -> Result<String> {
+    if let Some(cli) = options.provider.cli() {
+        return llm_cli::complete(cli, &options.model, options.timeout, instructions, &user);
+    }
+    let body = json!({
+        "model": options.model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": user},
+        ],
+    });
+    complete(agent, options, body)
 }
 
 /// The HTTP client of model requests (ureq's).
@@ -136,8 +218,13 @@ const NOT_TEXT: [&str; 11] = [
 
 /// The text models `options.url` offers (its `/models`, which Ollama,
 /// vLLM and the hosted providers all answer), sorted by name; `model`
-/// and `timeout` are not used.
+/// and `timeout` are not used. A CLI's: the names it takes, once it is
+/// found signed in.
 pub fn models(options: &Options) -> Result<Vec<String>> {
+    if let Some(cli) = options.provider.cli() {
+        llm_cli::check(cli)?;
+        return Ok(cli.models());
+    }
     let url = format!("{}/models", options.url.trim_end_matches('/'));
     let mut request = agent(options).get(&url);
     if let Some(key) = &options.key {
@@ -291,6 +378,7 @@ mod tests {
 
     fn options(url: String) -> Options {
         Options {
+            provider: Provider::Api,
             url,
             model: "test".into(),
             key: Some("secret".into()),

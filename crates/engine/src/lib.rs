@@ -8,7 +8,7 @@
 //! models: libparakeet, the mirror, the pipeline, the session. Without it
 //! only what a client that streams to a server needs is built: the
 //! protocol, the Opus codec, recordings, the language model's report
-//! (plain HTTP). The Android app is built so: it links no model code.
+//! (plain HTTP, or a CLI's subprocess). The Android app is built so: it links no model code.
 
 #[cfg(feature = "models")]
 pub mod batcher;
@@ -23,6 +23,7 @@ pub mod final_pass;
 pub mod finalizer;
 pub mod finals;
 pub mod llm;
+pub mod llm_cli;
 #[cfg(feature = "models")]
 pub mod mirror;
 #[cfg(feature = "models")]

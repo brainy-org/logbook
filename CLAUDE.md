@@ -19,7 +19,7 @@ crates/engine/   the engine, a library: libparakeet loaded at run time (parakeet
                  the wire protocol (protocol.rs), Opus for the live socket and
                  the upload (codec.rs),
                  the meeting's report written by a language model (report.rs,
-                 its endpoint: llm.rs),
+                 its endpoint: llm.rs, or the claude or codex CLI: llm_cli.rs),
                  libparakeet and the models from the mirror (mirror.rs),
                  files replaced whole in a folder replicas share (store.rs);
                  a meeting's session, one thread each (session.rs), and what sessions

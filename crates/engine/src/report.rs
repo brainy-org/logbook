@@ -4,8 +4,8 @@
 //! decisions, the action items and the details of what else was said
 //! (docs/pipeline.md, "Report").
 //!
-//! One request to an OpenAI-compatible endpoint (llm.rs), with the whole
-//! transcript, when it is up to
+//! One request to the model (llm.rs: an OpenAI-compatible endpoint or a
+//! CLI), with the whole transcript, when it is up to
 //! `ONE_REQUEST`: six to nine hours. A longer meeting is reported in
 //! steps: the model takes detailed notes of each part of the transcript
 //! (`PART`, two to three hours), in order, and writes the report from
@@ -16,7 +16,6 @@
 //! voices), so the report names people as the page does.
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Value, json};
 use tracing::info;
 
 use crate::llm::{self, Options};
@@ -131,12 +130,8 @@ pub fn write(agent: &llm::Agent, options: &Options, request: &ReportRequest) -> 
                 header(request),
                 i + 1
             );
-            let answer = llm::complete(
-                agent,
-                options,
-                chat(&options.model, PART_INSTRUCTIONS, user),
-            )
-            .with_context(|| format!("the notes of part {} of {total}", i + 1))?;
+            let answer = llm::ask(agent, options, PART_INSTRUCTIONS, user)
+                .with_context(|| format!("the notes of part {} of {total}", i + 1))?;
             let taken = clean(&answer);
             if taken.is_empty() {
                 bail!("the model wrote no notes for part {} of {total}", i + 1);
@@ -164,7 +159,7 @@ pub fn write(agent: &llm::Agent, options: &Options, request: &ReportRequest) -> 
             header(request)
         ),
     };
-    let answer = llm::complete(agent, options, chat(&options.model, INSTRUCTIONS, user))?;
+    let answer = llm::ask(agent, options, INSTRUCTIONS, user)?;
     let markdown = clean(&answer);
     if markdown.is_empty() {
         bail!("the model wrote an empty report");
@@ -244,17 +239,6 @@ fn header(request: &ReportRequest) -> String {
     user
 }
 
-pub(crate) fn chat(model: &str, instructions: &str, user: String) -> Value {
-    json!({
-        "model": model,
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": instructions},
-            {"role": "user", "content": user},
-        ],
-    })
-}
-
 /// The Markdown past what models put around it: a `<think>` block, a
 /// code fence around the whole answer.
 pub(crate) fn clean(answer: &str) -> String {
@@ -276,6 +260,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::Duration;
+
+    use serde_json::json;
 
     use super::*;
 
@@ -340,6 +326,7 @@ mod tests {
             requests
         });
         let options = Options {
+            provider: llm::Provider::Api,
             url: format!("http://{address}/v1"),
             model: "m".into(),
             key: None,

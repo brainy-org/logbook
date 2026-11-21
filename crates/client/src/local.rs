@@ -39,8 +39,11 @@ pub struct Config {
     /// Folder of the GGUF files, used as it is; by default the pinned
     /// ones in ~/.cache/brainy-org, fetched from the mirror when missing.
     pub models: Option<std::path::PathBuf>,
-    /// An OpenAI-compatible API, up to `/v1`, whose model writes the
-    /// report. The meeting's text goes there.
+    /// What writes the report: the API at `llm_url`, or a CLI on this
+    /// computer (its default model without `llm_model`). The meeting's
+    /// text goes there.
+    pub llm_provider: llm::Provider,
+    /// An OpenAI-compatible API, up to `/v1`.
     pub llm_url: Option<String>,
     pub llm_model: Option<String>,
     pub llm_key: Option<String>,
@@ -48,11 +51,20 @@ pub struct Config {
 
 impl Config {
     fn model(&self) -> Option<llm::Options> {
+        let provider = self.llm_provider;
+        let (url, model) = match provider {
+            llm::Provider::Api => (self.llm_url.clone()?, self.llm_model.clone()?),
+            _ => (String::new(), self.llm_model.clone().unwrap_or_default()),
+        };
         Some(llm::Options {
-            url: self.llm_url.clone()?,
-            model: self.llm_model.clone()?,
-            key: self.llm_key.clone(),
-            timeout: Duration::from_secs(llm::TIMEOUT),
+            provider,
+            url,
+            model,
+            key: self
+                .llm_key
+                .clone()
+                .filter(|_| provider == llm::Provider::Api),
+            timeout: provider.timeout(),
         })
     }
 }
@@ -106,16 +118,19 @@ impl Local {
         self
     }
 
-    /// A report needs a model here: an error now, not at the
-    /// meeting's end.
+    /// A report needs a model here, and a CLI's signed in: an error
+    /// now, not at the meeting's end.
     pub fn check_model(&self, needed: bool) -> Result<()> {
-        if needed && self.config.model().is_none() {
+        if !needed {
+            return Ok(());
+        }
+        let Some(options) = self.config.model() else {
             bail!(
                 "the report without a server needs a language model \
-                 (LOGBOOK_LLM_URL and LOGBOOK_LLM_MODEL)"
+                 (LOGBOOK_LLM_URL and LOGBOOK_LLM_MODEL, or LOGBOOK_LLM_PROVIDER=claude|codex)"
             );
-        }
-        Ok(())
+        };
+        llm::check(&options).context("the report's language model")
     }
 
     /// The meeting's report by the language model of `Config`.

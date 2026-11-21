@@ -20,6 +20,7 @@ use logbook_client::audio::{Echo, Source};
 use logbook_client::local;
 use logbook_client::meeting::{Backend, Credentials, Publish};
 use logbook_client::remote::Server;
+use logbook_engine::llm;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,8 +114,12 @@ pub struct ModelSettings {
     /// Write the report at the end (summary, notes, decisions, actions).
     pub report: bool,
     /// The model used without a server (with one, the server's is): an
-    /// OpenAI-compatible API up to `/v1`, and the model's name.
+    /// OpenAI-compatible API up to `/v1`, or the claude or codex CLI on
+    /// this computer, signed in with the person's account.
+    pub provider: llm::Provider,
+    /// The API's address; not used by a CLI.
     pub url: String,
+    /// The model's name; for a CLI, empty for its default.
     pub name: String,
 }
 
@@ -154,6 +159,7 @@ impl Default for ModelSettings {
     fn default() -> Self {
         Self {
             report: true,
+            provider: llm::Provider::Api,
             url: "https://api.groq.com/openai/v1".into(),
             name: "qwen/qwen3.8-27b".into(),
         }
@@ -186,6 +192,7 @@ impl Settings {
         let set = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
         local::Config {
             models: None,
+            llm_provider: self.model.provider,
             llm_url: set(&self.model.url),
             llm_model: set(&self.model.name),
             llm_key: Secret::ModelKey.get(),
@@ -428,7 +435,8 @@ impl Backends {
         }
         let config = settings.local_config();
         let key = format!(
-            "{:?}|{:?}|{}",
+            "{:?}|{:?}|{:?}|{}",
+            config.llm_provider,
             config.llm_url,
             config.llm_model,
             config.llm_key.is_some()
