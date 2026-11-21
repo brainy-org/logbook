@@ -81,7 +81,18 @@ scripts/app.sh cert      # once per Mac: a self-signed signing certificate
 scripts/app.sh build     # Logbook.app and a .dmg in target/release/bundle/
 scripts/app.sh windows   # the Windows installer (x64), built on this Mac
 scripts/app.sh android   # the Android app (arm64), a debug APK
+scripts/release.sh 0.2.0 # both desktop installers on a draft GitHub release
 ```
+
+`scripts/release.sh X.Y.Z` sets the version (`tauri.conf.json`,
+`Cargo.toml`), builds the `.dmg` and the Windows installer, commits
+"Logbook X.Y.Z", tags `vX.Y.Z`, pushes both and makes a draft release on
+GitHub with the two installers and how to open them; publish it with
+`gh release edit vX.Y.Z --draft=false`. It runs from a clean `main` equal
+to `origin/main`, on the Mac with the signing certificate: every release
+must be signed with the same one, or macOS asks every user for the
+microphone and the call's audio again. The repository is private: only
+people with access to it can download a release.
 
 Say what the meeting is (a call, people in the room, or a room on a
 call: the app records the call and tells apart the voices around the
