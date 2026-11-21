@@ -508,7 +508,7 @@ export function SettingsPage({
                       type="button"
                       disabled={listed.state === 'listing' || (!cli && !s.model.url.trim())}
                       onClick={() => void listModels(provider.kind, s.model.url, key)}
-                      className={`${secondaryButtonSmClass} !h-8`}
+                      className={`${secondaryButtonSmClass} !h-8 shrink-0 whitespace-nowrap`}
                     >
                       {listed.state === 'listing'
                         ? cli
@@ -548,9 +548,9 @@ export function SettingsPage({
                   </Field>
                 )}
                 {provider.reader && (
-                  <p className="rounded-md bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/30">
-                    {provider.reader} reads the text of every meeting it reports on: fine for
-                    testing, not for meetings that must stay in the company.
+                  <p className={`text-xs ${mutedTextClass}`}>
+                    The text of every meeting it reports on goes to {provider.reader}, under the
+                    terms of your account with them (your company's agreement, on a business plan).
                   </p>
                 )}
               </>
@@ -780,7 +780,7 @@ function CheckButton({
       type="button"
       disabled={check.state === 'checking'}
       onClick={onClick}
-      className={`${secondaryButtonSmClass} !h-8`}
+      className={`${secondaryButtonSmClass} !h-8 shrink-0 whitespace-nowrap`}
     >
       {check.state === 'checking' ? 'Checking…' : label}
     </button>

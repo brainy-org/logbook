@@ -106,9 +106,10 @@ shown again.
   voiceprint is personal data: ask before you name someone). The server
   sends a meeting's voices back and keeps none.
 - **The report's model** reads the meeting's text: a hosted provider, or
-  Anthropic and OpenAI behind Claude Code and Codex, reads every meeting it
-  reports on. For meetings that must stay in the company, use a model you
-  host, or no report.
+  Anthropic and OpenAI behind Claude Code and Codex, receives every meeting
+  it reports on, under the terms of your account with them (on a business
+  plan, your company's agreement). A model you host keeps it in the
+  company; no report sends it nowhere.
 
 ## The CLI
 
