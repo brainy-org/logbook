@@ -120,8 +120,14 @@ builds for Android, as a recorder for a server ("Android" below).
   SmartScreen warns at first open (More info → Run anyway). libparakeet
   comes from the mirror as on macOS (`win-vulkan-x64` when System32 has
   the GPU driver's `vulkan-1.dll`, `win-cpu-x64` otherwise) and needs the
-  Visual C++ Redistributable x64, which the installer does not bring: the
-  error opening it says so.
+  Visual C++ runtime (msvcp140, vcomp140). The installer carries
+  Microsoft's `vc_redist.x64.exe` (`tauri.windows.conf.json`, fetched by
+  `scripts/app.sh windows`, 30 days at most old) and its hook
+  (`src-tauri/windows/hooks.nsh`) runs it quietly only when the runtime is
+  missing or older than 14.40, through ShellExecute since it needs
+  administrator rights a per-user installer lacks; an update finds it there
+  and asks nothing. Refused, the error opening libparakeet says what is
+  missing.
 - **The app ends with `parakeet::exit`** (`RunEvent::Exit`, `lib.rs`),
   never `process::exit`: that runs libparakeet's static teardown, which
   on Windows crashes in the GPU driver after a meeting (0xc0000409) and

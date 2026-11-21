@@ -34,10 +34,9 @@ Download the latest release from
   Security → Open Anyway (or `xattr -dr com.apple.quarantine
   /Applications/Logbook.app` in a terminal).
 - **Windows** (x64): `Logbook_<version>_x64-setup.exe`. It is not signed,
-  so SmartScreen warns: More info → Run anyway. Transcribing on the
-  computer itself needs the
-  [Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe);
-  with a server it does not.
+  so SmartScreen warns: More info → Run anyway. It installs Microsoft's
+  Visual C++ runtime too when the computer lacks it (Windows then asks
+  once for administrator rights).
 
 The speech models (about 1 GB) download at the first meeting transcribed
 on the computer, once. An M3 laptop keeps up with four meetings' worth of
@@ -400,7 +399,9 @@ scripts/app.sh android   # the Android app (arm64), a debug APK
   from one build to the next; `LOGBOOK_SIGNING_IDENTITY` picks another one.
 - **Windows**: needs `brew install llvm nsis` and `cargo install --locked
   cargo-xwin` on the Mac that builds it; the installer is in
-  `target/x86_64-pc-windows-msvc/release/bundle/nsis/`.
+  `target/x86_64-pc-windows-msvc/release/bundle/nsis/`. It carries
+  Microsoft's `vc_redist.x64.exe`, fetched at build time, and runs it when
+  the runtime is missing (`apps/logbook/src-tauri/windows/hooks.nsh`).
 - **Android**: the Android SDK and NDK and a JDK (`brew install --cask
   android-commandlinetools` and `brew install openjdk@21`, then
   `sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"

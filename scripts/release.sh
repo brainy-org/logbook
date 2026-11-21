@@ -104,7 +104,7 @@ notes=$(
 
 **macOS** (Apple Silicon): open the `.dmg` and drag Logbook to Applications. The app is not notarized, so macOS blocks it the first time: System Settings → Privacy & Security → Open Anyway (or `xattr -dr com.apple.quarantine /Applications/Logbook.app` in a terminal).
 
-**Windows** (x64): run the `-setup.exe`. It is not signed, so SmartScreen warns: More info → Run anyway. Transcribing on the computer itself needs the [Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe); with a logbook-server it does not.
+**Windows** (x64): run the `-setup.exe`. It is not signed, so SmartScreen warns: More info → Run anyway. It installs Microsoft's Visual C++ runtime too when the computer lacks it (Windows then asks once for administrator rights).
 
 The speech models (about 1 GB) download at the first meeting transcribed on the computer. Once installed, Logbook offers each new version itself.
 EOF

@@ -130,6 +130,15 @@ windows)
     fi
   done
   rustup target add x86_64-pc-windows-msvc >/dev/null
+  # Microsoft's Visual C++ redistributable, which the installer carries and
+  # runs when the runtime is missing (src-tauri/windows/hooks.nsh): fetched
+  # again when older than 30 days, Microsoft's link giving the latest.
+  redist="$app/src-tauri/windows/vc_redist.x64.exe"
+  if [[ ! -s "$redist" ]] || [[ -n "$(find "$redist" -mtime +30)" ]]; then
+    curl -fsSL -o "$redist.part" https://aka.ms/vs/17/release/vc_redist.x64.exe
+    [[ "$(head -c 2 "$redist.part")" == MZ ]] || { echo "vc_redist.x64.exe is not a Windows program" >&2; exit 1; }
+    mv "$redist.part" "$redist"
+  fi
   install
   cd "$app"
   PATH="$(brew --prefix llvm)/bin:$PATH" pnpm tauri build \
