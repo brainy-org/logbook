@@ -1,0 +1,48 @@
+# The checks of CLAUDE.md's commands on every push and pull request: the
+# workspace's tests, clippy and formatting, and the app (its pages
+# type-checked and built, its Rust side linted). On macOS, where the app is
+# used; the Windows build is checked by each release.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.10.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/logbook/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci
+      - name: Pages
+        working-directory: apps/logbook
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm format:check
+          pnpm build
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy -p logbook-app -- -D warnings
+      - run: cargo test

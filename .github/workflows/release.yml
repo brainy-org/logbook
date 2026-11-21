@@ -1,0 +1,197 @@
+# A release of the desktop app, from a tag pushed by `scripts/release.sh
+# X.Y.Z` (which sets the version, commits and tags it): the macOS .dmg
+# (Apple Silicon, signed with the self-signed certificate every release
+# shares) and the Windows installer (x64, with the Visual C++ runtime), and
+# what the installed apps update from (latest.json and the signed update
+# files). Published once both are built, never half: until then the
+# release is a draft, and apps are offered only published ones
+# (docs/decisions/2026-11-21-releases-built-on-github.md).
+#
+# Secrets: MACOS_CERTIFICATE (the certificate's .p12, base64) and
+# MACOS_CERTIFICATE_PASSWORD; TAURI_SIGNING_PRIVATE_KEY (the updater's key,
+# ~/.config/logbook/updater.key, whose public half is in tauri.conf.json).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    outputs:
+      made: ${{ steps.draft.outputs.made }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is the app's version
+        run: |
+          version=$(jq -r .version apps/logbook/src-tauri/tauri.conf.json)
+          if [[ "${GITHUB_REF_NAME}" != "v$version" ]]; then
+            echo "tag ${GITHUB_REF_NAME}, but tauri.conf.json says $version" >&2
+            exit 1
+          fi
+      - name: Draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Released from this Mac already (scripts/release.sh --local).
+          if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$GITHUB_REF_NAME has a release already: nothing to build"
+            echo "made=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          notes=$(cat <<'EOF'
+          ## Install
+
+          **macOS** (Apple Silicon): open the `.dmg` and drag Logbook to Applications. The app is not notarized, so macOS blocks it the first time: System Settings → Privacy & Security → Open Anyway (or `xattr -dr com.apple.quarantine /Applications/Logbook.app` in a terminal).
+
+          **Windows** (x64): run the `-setup.exe`. It is not signed, so SmartScreen warns: More info → Run anyway. It installs Microsoft's Visual C++ runtime too when the computer lacks it (Windows then asks once for administrator rights).
+
+          The speech models (about 1 GB) download at the first meeting transcribed on the computer. Once installed, Logbook offers each new version itself.
+          EOF
+          )
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "Logbook ${GITHUB_REF_NAME#v}" --notes "$notes" --generate-notes
+          echo "made=true" >>"$GITHUB_OUTPUT"
+
+  build:
+    needs: draft
+    if: needs.draft.outputs.made == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-15
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.10.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/logbook/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      # The certificate every release is signed with, in a keychain of
+      # this run's own, trusted for code signing: a new one would have
+      # macOS ask every user for the microphone again.
+      - name: Signing certificate (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          secret=$(openssl rand -hex 16)
+          echo "$CERTIFICATE" | base64 --decode >"$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$secret" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$secret" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$secret" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security find-certificate -c "Logbook Self-Signed" -p "$keychain" >"$RUNNER_TEMP/cert.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
+          rm "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$keychain"
+
+      # Microsoft's Visual C++ redistributable, carried by the installer and
+      # run when the runtime is missing (src-tauri/windows/hooks.nsh).
+      - name: Visual C++ redistributable (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL -o apps/logbook/src-tauri/windows/vc_redist.x64.exe \
+            https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+      - name: Pages' dependencies
+        working-directory: apps/logbook
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        working-directory: apps/logbook
+        env:
+          CI: "true"
+          APPLE_SIGNING_IDENTITY: Logbook Self-Signed
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          pnpm tauri build
+          bundle=../../target/release/bundle/macos/Logbook.app
+          codesign --verify --deep --strict "$bundle"
+          codesign -d --entitlements - --xml "$bundle" 2>/dev/null | grep -q disable-library-validation
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        working-directory: apps/logbook
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: pnpm tauri build --bundles nsis
+
+      # Each platform's files under the names latest.json gives them; the
+      # signatures beside them, read by the publish job.
+      - name: Upload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          out="$RUNNER_TEMP/assets"
+          mkdir -p "$out"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            cp "target/release/bundle/dmg/Logbook_${version}_aarch64.dmg" "$out/"
+            cp target/release/bundle/macos/Logbook.app.tar.gz "$out/Logbook_${version}_aarch64.app.tar.gz"
+            cp target/release/bundle/macos/Logbook.app.tar.gz.sig "$out/Logbook_${version}_aarch64.app.tar.gz.sig"
+          else
+            cp "target/release/bundle/nsis/Logbook_${version}_x64-setup.exe"{,.sig} "$out/"
+          fi
+          gh release upload "$GITHUB_REF_NAME" "$out"/* --clobber
+
+  # latest.json from both platforms' signatures, then the release
+  # published: the apps see it only now, whole.
+  publish:
+    needs: [draft, build]
+    if: needs.draft.outputs.made == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: latest.json, and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          repo="$GITHUB_REPOSITORY"
+          mac="Logbook_${version}_aarch64.app.tar.gz"
+          win="Logbook_${version}_x64-setup.exe"
+          gh release download "$GITHUB_REF_NAME" -R "$repo" -p "$mac.sig" -p "$win.sig"
+          download="https://github.com/$repo/releases/download/$GITHUB_REF_NAME"
+          jq -n --arg version "$version" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg notes "See https://github.com/$repo/releases/tag/$GITHUB_REF_NAME" \
+            --arg mac_url "$download/$mac" --arg mac_sig "$(<"$mac.sig")" \
+            --arg win_url "$download/$win" --arg win_sig "$(<"$win.sig")" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: {
+               "darwin-aarch64": {url: $mac_url, signature: $mac_sig},
+               "windows-x86_64": {url: $win_url, signature: $win_sig}}}' >latest.json
+          gh release upload "$GITHUB_REF_NAME" -R "$repo" latest.json --clobber
+          gh release edit "$GITHUB_REF_NAME" -R "$repo" --draft=false --latest
+          gh release view "$GITHUB_REF_NAME" -R "$repo" --json assets --jq '.assets[].name'

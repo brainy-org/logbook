@@ -19,8 +19,10 @@ for it: the updater downloads without credentials.
 - **Signatures**: the updater checks a minisign signature against the
   public key in `tauri.conf.json`, separate from macOS code signing and
   from any Windows signing. The private key, made with `tauri signer
-  generate`, no password (releases are built unattended), lives only in
-  `~/.config/logbook/updater.key` on the Mac that releases. Lost or
+  generate`, no password (releases are built unattended), lives in
+  `~/.config/logbook/updater.key` on the Mac that releases and in the
+  repository's `TAURI_SIGNING_PRIVATE_KEY` secret, for the pipeline
+  (`2026-11-21-releases-built-on-github.md`). Lost or
   replaced, every app already installed refuses every later update and
   must be reinstalled by hand. `scripts/app.sh` signs with it when it is
   there; without it a build has no updater files (`createUpdaterArtifacts`

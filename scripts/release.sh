@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# A release of the desktop app on GitHub, from this Mac:
+# A release of the desktop app on GitHub:
 #
-#   scripts/release.sh 0.2.0
+#   scripts/release.sh 0.2.3           the pipeline builds and publishes it
+#   scripts/release.sh 0.2.3 --local   this Mac builds it, as a draft
 #
 # Sets the version (tauri.conf.json, the workspace's Cargo.toml and
-# Cargo.lock), builds the macOS .dmg (Apple Silicon, signed with the
-# certificate of `scripts/app.sh cert`) and the Windows installer (x64,
-# cross-built, not signed), then commits "Logbook 0.2.0", tags v0.2.0,
-# pushes both and makes a draft release with the two installers attached,
-# and what the installed apps update from: `latest.json`, the macOS bundle
-# as a .tar.gz and the Windows installer, signed with the updater's key
-# (~/.config/logbook/updater.key, LOGBOOK_UPDATER_KEY; lost, the apps out
-# there can never be updated again: keep a copy). The draft is published by
-# hand once looked at, and only then do the apps offer it:
-#   gh release edit v0.2.0 --draft=false
+# Cargo.lock), commits "Logbook 0.2.3", tags v0.2.3 and pushes both. The
+# tag starts .github/workflows/release.yml, which builds the macOS .dmg and
+# the Windows installer on GitHub's runners and publishes the release once
+# both are there, with what the installed apps update from (latest.json
+# and the signed update files): `gh run watch` follows it.
+#
+# With --local this Mac builds both first (`scripts/app.sh build` and
+# `windows`, which need the signing certificate and the updater's key,
+# ~/.config/logbook/updater.key or LOGBOOK_UPDATER_KEY) and makes a draft
+# release, published by hand once looked at:
+#   gh release edit v0.2.3 --draft=false
+# Only a published release is offered to the apps. --local pushes the tag
+# after the draft is made, and the pipeline leaves a tag with a release
+# alone.
 #
 # The macOS build must be signed with the same certificate every time:
 # macOS ties the microphone's and the call's permissions to it, and a
@@ -27,8 +32,10 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
 version="${1:-}"
+local_build=false
+[[ "${2:-}" == --local ]] && local_build=true
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: scripts/release.sh X.Y.Z" >&2
+  echo "usage: scripts/release.sh X.Y.Z [--local]" >&2
   exit 1
 fi
 tag="v$version"
@@ -53,7 +60,7 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
 fi
 gh auth status >/dev/null
 updater_key="${LOGBOOK_UPDATER_KEY:-$HOME/.config/logbook/updater.key}"
-if [[ ! -s "$updater_key" ]]; then
+if $local_build && [[ ! -s "$updater_key" ]]; then
   echo "no updater key at $updater_key: the apps could not update to this release" >&2
   exit 1
 fi
@@ -71,6 +78,19 @@ undo() {
   git checkout -q -- apps/logbook/src-tauri/tauri.conf.json Cargo.toml Cargo.lock
 }
 trap undo ERR
+
+versioned=(apps/logbook/src-tauri/tauri.conf.json Cargo.toml Cargo.lock)
+if ! $local_build; then
+  # A version already set (a release made again) has nothing to commit.
+  if ! git diff --quiet -- "${versioned[@]}"; then
+    git commit -q -m "Logbook $version" -- "${versioned[@]}"
+  fi
+  trap - ERR
+  git tag -a "$tag" -m "Logbook $version"
+  git push -q origin main "$tag"
+  echo "$tag pushed: the pipeline builds and publishes it (gh run watch)"
+  exit 0
+fi
 
 scripts/app.sh build
 scripts/app.sh windows
@@ -95,7 +115,6 @@ jq -n --arg version "$version" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 
 # A version already set (a release made again after its draft was
 # deleted) has nothing to commit.
-versioned=(apps/logbook/src-tauri/tauri.conf.json Cargo.toml Cargo.lock)
 if ! git diff --quiet -- "${versioned[@]}"; then
   git commit -q -m "Logbook $version" -- "${versioned[@]}"
 fi

@@ -415,28 +415,38 @@ server's API), `docs/app.md` (the app), `docs/decisions/` (why).
 ### Releasing
 
 ```bash
-scripts/release.sh 0.2.0
-gh release edit v0.2.0 --draft=false     # once the draft is checked
+scripts/release.sh 0.2.3          # sets the version, tags v0.2.3 and pushes: the pipeline does the rest
+gh run watch                      # follow it (15 to 20 minutes)
 ```
 
-`scripts/release.sh X.Y.Z` sets the version, builds the `.dmg` and the
-Windows installer, commits "Logbook X.Y.Z", tags `vX.Y.Z`, pushes both and
-makes a draft release with the installers and what the installed apps
-update from (`latest.json`, the macOS bundle as a `.tar.gz`, the Windows
-installer, each signed with the updater's key). The apps are offered a
-version only once its release is published. It runs from a clean `main`
-equal to `origin/main`, on the Mac that holds two keys, never committed:
+`scripts/release.sh X.Y.Z` sets the version, commits "Logbook X.Y.Z", tags
+`vX.Y.Z` and pushes both, from a clean `main` equal to `origin/main`. The
+tag starts `.github/workflows/release.yml`: the `.dmg` built on a macOS
+runner, the Windows installer on a Windows one, and the release published
+once both are there, with what the installed apps update from
+(`latest.json`, the macOS bundle as a `.tar.gz`, the Windows installer,
+each signed with the updater's key). Apps are offered a version only once
+its release is published. `.github/workflows/ci.yml` runs the tests,
+clippy, formatting and the app's build on every push and pull request.
 
-- the macOS signing certificate (in the login keychain): every release
-  must be signed with the same one, or macOS asks every user for the
-  microphone and the call's audio again;
-- the updater's key, `~/.config/logbook/updater.key`
-  (`LOGBOOK_UPDATER_KEY`), whose public half is in
-  `apps/logbook/src-tauri/tauri.conf.json`: lost, the apps already
-  installed can never be updated again. Keep a copy somewhere safe.
+The pipeline signs with two keys kept as the repository's secrets, never
+committed:
 
-A build without the updater's key has no update files (a build to try,
-not one to release).
+- `MACOS_CERTIFICATE` and `MACOS_CERTIFICATE_PASSWORD`: the certificate of
+  `scripts/app.sh cert`, exported as a base64 `.p12`. Every release must be
+  signed with the same one, or macOS asks every user for the microphone
+  and the call's audio again;
+- `TAURI_SIGNING_PRIVATE_KEY`: the updater's key,
+  `~/.config/logbook/updater.key`, whose public half is in
+  `apps/logbook/src-tauri/tauri.conf.json`. Lost, the apps already
+  installed can never be updated again: keep a copy somewhere safe.
+
+`scripts/release.sh X.Y.Z --local` builds both installers on this Mac
+instead (it needs the certificate in the login keychain and the updater's
+key) and makes a draft release, published with `gh release edit vX.Y.Z
+--draft=false`; the pipeline leaves a tag that has a release alone. A
+build without the updater's key has no update files (a build to try, not
+one to release).
 
 ## Licences
 
