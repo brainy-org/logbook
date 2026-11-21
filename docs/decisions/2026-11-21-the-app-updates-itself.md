@@ -32,6 +32,13 @@ for it: the updater downloads without credentials.
   recorded: the recording would end mid-sentence. A pending meeting being
   finished is not waited for: its `.lock` goes with the process and the
   finisher takes it up at the next start, as after a crash.
+- **The restart is the app's own on macOS**: Tauri's `app.restart()`
+  starts the new process only after the exit event, and the app ends
+  there with `parakeet::exit`, which never returns (it skips libparakeet's
+  teardown): 0.2.0 installed 0.2.1 and quit without coming back. A
+  detached `sh` waits for the old process to be gone, since a second
+  instance started earlier hands over to it and quits (single-instance),
+  then runs `open` on the bundle.
 - **macOS**: the bundle is replaced in place and keeps its code signature
   (the self-signed certificate of `scripts/app.sh cert`), so the
   permissions (microphone, the call's audio) carry over. The download is

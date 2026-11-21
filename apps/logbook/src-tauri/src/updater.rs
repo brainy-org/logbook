@@ -126,6 +126,45 @@ mod desktop {
                 || {},
             )
             .await?;
-        app.restart();
+        relaunch(app)
+    }
+
+    /// The new version started in place of this one. Not `app.restart()`:
+    /// it starts the new process only after the exit event, where the app
+    /// ends with `parakeet::exit` (lib.rs), which never returns, so the app
+    /// quit and nothing came back. A detached shell waits for this process
+    /// to be gone (a second instance started before would hand over to it
+    /// and quit: single-instance), then opens the bundle again.
+    #[cfg(target_os = "macos")]
+    fn relaunch(app: &AppHandle) -> Result<()> {
+        use anyhow::Context;
+        use std::process::{Command, Stdio};
+        let exe = std::env::current_exe()?;
+        let bundle = exe
+            .ancestors()
+            .find(|p| p.extension().is_some_and(|e| e == "app"))
+            .context("the app is not in an .app bundle: start it again by hand")?;
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open "$2""#,
+                "sh",
+            ])
+            .arg(std::process::id().to_string())
+            .arg(bundle)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("could not start the new version")?;
+        let _ = app;
+        logbook_engine::parakeet::exit(0)
+    }
+
+    /// Windows' installer closes and starts the app itself; elsewhere
+    /// Tauri's restart.
+    #[cfg(not(target_os = "macos"))]
+    fn relaunch(app: &AppHandle) -> Result<()> {
+        app.restart()
     }
 }
