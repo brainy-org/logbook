@@ -93,7 +93,12 @@ jq -n --arg version "$version" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      "darwin-aarch64": {url: $mac_url, signature: $mac_sig},
      "windows-x86_64": {url: $win_url, signature: $win_sig}}}' >"$assets/latest.json"
 
-git commit -q -m "Logbook $version" -- apps/logbook/src-tauri/tauri.conf.json Cargo.toml Cargo.lock
+# A version already set (a release made again after its draft was
+# deleted) has nothing to commit.
+versioned=(apps/logbook/src-tauri/tauri.conf.json Cargo.toml Cargo.lock)
+if ! git diff --quiet -- "${versioned[@]}"; then
+  git commit -q -m "Logbook $version" -- "${versioned[@]}"
+fi
 trap - ERR
 git tag -a "$tag" -m "Logbook $version"
 git push -q origin main "$tag"
