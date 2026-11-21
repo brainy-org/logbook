@@ -74,9 +74,9 @@ struct Publish {
     /// phrases) and print the final transcript as Markdown.
     #[arg(long = "final")]
     final_pass: bool,
-    /// Have the language model (the server's, or LOGBOOK_LLM_URL without
-    /// one) write the meeting's report: summary, decisions, action items
-    /// (implies --final). It reads the meeting's text.
+    /// Have the language model (the server's, or without one that of
+    /// --llm-provider and --llm-url) write the meeting's report: summary,
+    /// decisions, action items (implies --final). It reads the meeting's text.
     #[arg(long)]
     report: bool,
     /// Write the meeting as a page in brainy once it ends: its report
