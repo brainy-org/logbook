@@ -6,7 +6,7 @@ spoken, tells the speakers apart, and once the meeting ends reads it all
 again for a final transcript. A language model can then write its report
 from the transcript and the notes you took (summary, your notes
 completed, decisions, action items), and the report can become a page in
-[brainy](https://github.com/brainy-org/brainy).
+brainy, a self-hosted workspace.
 
 The speech models (parakeet.cpp: Silero VAD, NVIDIA
 parakeet-tdt-0.6b-v3, Nemotron-3-Diarization, a WeSpeaker voice encoder)
@@ -302,9 +302,8 @@ The audio goes to the server in Opus, 32 kbit/s a channel (15 MB an
 hour). On its first start the server (or the CLI or app without one)
 fetches what it lacks into `~/.cache/brainy-org`: libparakeet v0.6.1 for
 this platform (Metal on Apple Silicon, CUDA on Linux with NVIDIA's driver,
-CPU otherwise) and the models, from the mirror on ghcr.io/brainy-org
-([brainy-org/models](https://github.com/brainy-org/models), the same files
-brainy-worker uses), checked by sha256, with no token and no other tool.
+CPU otherwise) and the models, from the public mirror on
+ghcr.io/brainy-org, checked by sha256, with no token and no other tool.
 
 ### Server options
 
