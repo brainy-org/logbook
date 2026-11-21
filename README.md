@@ -449,7 +449,9 @@ one to release).
 
 ## Licences
 
-Code: parakeet.cpp and ggml MIT; the server's admin page carries the
+Logbook is under the MIT licence (`LICENSE`).
+
+What it uses: parakeet.cpp and ggml MIT; the server's admin page carries the
 Geist typeface, SIL OFL 1.1 (`crates/server/src/assets/geist-OFL.txt`);
 the CUDA build of libparakeet carries NVIDIA's cudart and cuBLAS under
 their redistributable EULA. Weights: parakeet-tdt-0.6b-v3 CC-BY-4.0

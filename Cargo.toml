@@ -8,5 +8,5 @@ default-members = ["crates/engine", "crates/client", "crates/server", "crates/cl
 [workspace.package]
 version = "0.2.2"
 edition = "2024"
-license = "UNLICENSED"
+license = "MIT"
 publish = false
