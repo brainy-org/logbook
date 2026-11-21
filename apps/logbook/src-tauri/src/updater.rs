@@ -84,7 +84,15 @@ mod desktop {
 
     /// The newest version, if newer than this one; the page hears it.
     pub async fn check(app: &AppHandle) -> Result<Option<Available>> {
-        let found = app.updater()?.check().await?.map(|update| Available {
+        let update = match app.updater()?.check().await {
+            Ok(update) => update,
+            // GitHub answered, with no latest.json: no release is published
+            // yet (drafts are not `latest`), so nothing is newer. Offline
+            // is another error, and stays one.
+            Err(tauri_plugin_updater::Error::ReleaseNotFound) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let found = update.map(|update| Available {
             version: update.version,
             current: update.current_version,
             notes: update.body,
