@@ -155,6 +155,15 @@ fn command(bin: &Path) -> Command {
     if let Ok(path) = std::env::join_paths(dirs) {
         command.env("PATH", path);
     }
+    // A GUI process (the app) starting a console one gives it a window of
+    // its own: one flashing up for every check and every report. No window,
+    // and what the CLI starts in turn inherits the hidden console.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command
 }
 

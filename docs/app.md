@@ -128,6 +128,10 @@ builds for Android, as a recorder for a server ("Android" below).
   administrator rights a per-user installer lacks; an update finds it there
   and asks nothing. Refused, the error opening libparakeet says what is
   missing.
+- **On Windows a console program the app starts opens a window** unless
+  it is started with `CREATE_NO_WINDOW`: the claude and codex CLIs are
+  (`command` in engine `llm_cli.rs`), and a new subprocess must be too, or
+  a console flashes up every time it runs.
 - **The app ends with `parakeet::exit`** (`RunEvent::Exit`, `lib.rs`),
   never `process::exit`: that runs libparakeet's static teardown, which
   on Windows crashes in the GPU driver after a meeting (0xc0000409) and
