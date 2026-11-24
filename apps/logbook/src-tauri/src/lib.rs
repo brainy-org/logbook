@@ -552,6 +552,10 @@ async fn write_report(app: State<'_, App>, id: String) -> Answer<MeetingView> {
     };
     let images = history::images(&app.data, &id).map_err(text)?;
     meeting::write_report(&backend, brainy.as_ref(), &mut kept, &images).await;
+    // Renamed from the list while the report was written: that title stays.
+    if let Ok(now) = history::load(&app.data, &id) {
+        kept.title = now.title;
+    }
     history::save(&app.data, &kept).map_err(text)?;
     Ok(view(kept))
 }
@@ -570,6 +574,21 @@ async fn send_to_brainy(app: State<'_, App>, id: String) -> Answer<MeetingView> 
         .await
         .map_err(text)?;
     Ok(view(kept))
+}
+
+/// Gives a kept meeting a new title: there and on its page.
+#[tauri::command]
+async fn rename_meeting(app: State<'_, App>, id: String, title: String) -> Answer<MeetingView> {
+    let settings = app.settings();
+    let kept = history::load(&app.data, &id).map_err(text)?;
+    let brainy = match &kept.page {
+        Some(_) => Some(settings.credentials().any(None).map_err(text)?),
+        None => None,
+    };
+    meeting::rename_meeting(&app.data, &id, &title, brainy.as_ref())
+        .await
+        .map(view)
+        .map_err(text)
 }
 
 /// The notes of a kept meeting, edited after it.
@@ -825,6 +844,7 @@ pub fn run() {
             list_meetings,
             get_meeting,
             rename_speaker,
+            rename_meeting,
             save_voice,
             speaker_candidates,
             write_report,

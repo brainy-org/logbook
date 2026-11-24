@@ -253,6 +253,9 @@ export const api = {
   writeReport: (id: string) => invoke<MeetingView>('write_report', { id }),
   /** A meeting published without brainy, written to a new page. */
   sendToBrainy: (id: string) => invoke<MeetingView>('send_to_brainy', { id }),
+  /** A new title, here and on the brainy page; empty: "Meeting <start>". */
+  renameMeeting: (id: string, title: string) =>
+    invoke<MeetingView>('rename_meeting', { id, title }),
   saveMeetingNotes: (id: string, notes: string) =>
     invoke<void>('save_meeting_notes', { id, notes }),
   /** Into the trash: `restoreMeeting` undoes it, `purgeMeeting` makes it final. */

@@ -823,6 +823,43 @@ pub async fn rename_speaker(
     })
 }
 
+/// Gives kept meeting `id` a new title: there and on its page. An empty
+/// one is the title a meeting given none gets, "Meeting <displayed start>".
+/// The page is renamed first: a title brainy refused is not kept here. A
+/// page no longer there (deleted, or in brainy's trash, which takes no
+/// changes) does not hold the meeting's title: it is renamed here alone,
+/// its link kept, since a page in the trash can come back.
+pub async fn rename_meeting(
+    data: &Path,
+    id: &str,
+    title: &str,
+    brainy: Option<&Brainy>,
+) -> Result<history::Kept> {
+    let mut kept = history::load(data, id)?;
+    let title = match title.trim() {
+        "" => {
+            let started = DateTime::parse_from_rfc3339(&kept.started)
+                .with_context(|| format!("the meeting's start {} is not a time", kept.started))?;
+            format!("Meeting {}", minute(&started))
+        }
+        t => t.to_string(),
+    };
+    if title == kept.title {
+        return Ok(kept);
+    }
+    if let (Some(b), Some(page)) = (brainy, &kept.page) {
+        match b.rename_page(&page.id, &title).await {
+            Err(error) if page_gone(&error) => {
+                warn!("{error:#}: the meeting is renamed, its page is not")
+            }
+            renamed => renamed?,
+        }
+    }
+    kept.title = title;
+    history::save(data, &kept)?;
+    Ok(kept)
+}
+
 /// The meeting's speakers, by their labels on the page, kept to be named
 /// (voices.rs).
 fn remember_voices(pending: &Pending, shown: &DateTime<FixedOffset>) -> Result<()> {
@@ -1347,5 +1384,37 @@ mod tests {
         p.meeting.writer = None;
         assert_eq!(offset(&p, &[seg(432.0)]), 0.0);
         let _ = std::fs::remove_dir_all(p.dir.parent().unwrap().parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_kept_meeting_is_renamed_and_an_empty_title_is_its_start() {
+        let data = std::env::temp_dir().join(format!("logbook-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let kept = history::Kept {
+            id: "20261027-091500".into(),
+            title: "Weekly".into(),
+            started: "2026-10-27T09:15:00+01:00".into(),
+            duration_s: 5.0,
+            page: None,
+            writer: transcript::Writer::new("Me", 0.0),
+            utterances: Vec::new(),
+            warnings: Vec::new(),
+            notes: String::new(),
+            report: None,
+            report_blocks: Vec::new(),
+            report_error: None,
+        };
+        history::save(&data, &kept).unwrap();
+        let renamed = rename_meeting(&data, &kept.id, "  Budget review ", None)
+            .await
+            .unwrap();
+        assert_eq!(renamed.title, "Budget review");
+        assert_eq!(
+            history::load(&data, &kept.id).unwrap().title,
+            "Budget review"
+        );
+        let renamed = rename_meeting(&data, &kept.id, " ", None).await.unwrap();
+        assert_eq!(renamed.title, "Meeting 2026-10-27 09:15");
+        let _ = std::fs::remove_dir_all(&data);
     }
 }

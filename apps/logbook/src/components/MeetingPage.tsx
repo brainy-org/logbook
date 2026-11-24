@@ -25,9 +25,11 @@ interface Props {
   /** Deleted at once: the app offers to undo it. */
   onDelete: () => void;
   onChanged: () => void;
+  /** Its title in the list: renamed there, this page follows. */
+  listedTitle?: string;
 }
 
-export function MeetingPage({ id, onDelete, onChanged }: Props) {
+export function MeetingPage({ id, onDelete, onChanged, listedTitle }: Props) {
   const [meeting, setMeeting] = useState<MeetingView | null>(null);
   const [tab, setTab] = useState<Tab>('report');
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +44,8 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
   // A rename waiting for the report to be written again with it.
   const due = useRef<{ id: string; timer: number } | null>(null);
   const naming = useRef(false);
+  // A title being saved: no report written meanwhile, nor the other way.
+  const renaming = useRef(false);
 
   useEffect(() => {
     api.getMeeting(id).then(
@@ -52,6 +56,12 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
       (e) => setError(String(e)),
     );
   }, [id]);
+
+  // Renamed from the list's menu.
+  useEffect(() => {
+    if (listedTitle !== undefined)
+      setMeeting((m) => (m && m.title !== listedTitle ? { ...m, title: listedTitle } : m));
+  }, [listedTitle]);
 
   // Leaving the meeting writes its report now, not never.
   useEffect(
@@ -98,7 +108,7 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
   const rewriteSoon = (meetingId: string) => {
     if (due.current) window.clearTimeout(due.current.timer);
     const fire = () => {
-      if (naming.current || sendingNow.current) {
+      if (naming.current || sendingNow.current || renaming.current) {
         due.current = { id: meetingId, timer: window.setTimeout(fire, REWRITE_DELAY_MS) };
         return;
       }
@@ -176,7 +186,17 @@ export function MeetingPage({ id, onDelete, onChanged }: Props) {
       </header>
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-10 pb-16 max-sm:px-4">
-          <h1 className="text-3xl font-semibold tracking-tight">{meeting.title}</h1>
+          <Title
+            key={meeting.id}
+            meeting={meeting}
+            busy={writing || sending}
+            onRenaming={(on) => (renaming.current = on)}
+            onRenamed={(m) => {
+              setMeeting(m);
+              onChanged();
+            }}
+            onError={setError}
+          />
           <p className={`mt-1 text-sm ${mutedTextClass}`}>
             {started.toLocaleString(undefined, {
               weekday: 'long',
@@ -482,6 +502,72 @@ function Speakers({
 
 /** How long typing pauses before a kept meeting's notes are saved. */
 const SAVE_DELAY_MS = 400;
+
+/**
+ * The title, edited in place: saved on Enter or on leaving the field, here
+ * and on the brainy page; Escape gives the change up. Not while the report
+ * is written or the page sent: each loads and saves the meeting, and would
+ * undo the title.
+ */
+function Title({
+  meeting,
+  busy,
+  onRenaming,
+  onRenamed,
+  onError,
+}: {
+  meeting: MeetingView;
+  busy: boolean;
+  onRenaming: (on: boolean) => void;
+  onRenamed: (m: MeetingView) => void;
+  onError: (e: string | null) => void;
+}) {
+  const [title, setTitle] = useState(meeting.title);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setTitle(meeting.title), [meeting.title]);
+  const save = async () => {
+    if (title.trim() === meeting.title) {
+      setTitle(meeting.title);
+      return;
+    }
+    setSaving(true);
+    onRenaming(true);
+    onError(null);
+    try {
+      const m = await api.renameMeeting(meeting.id, title);
+      setTitle(m.title);
+      onRenamed(m);
+    } catch (e) {
+      setTitle(meeting.title);
+      onError(String(e));
+    } finally {
+      onRenaming(false);
+      setSaving(false);
+    }
+  };
+  return (
+    <input
+      value={title}
+      onChange={(e) => setTitle(e.target.value)}
+      onBlur={() => void save()}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') setTitle(meeting.title);
+        if (e.key === 'Enter' || e.key === 'Escape') {
+          // Escape's reset lands before the blur that saves.
+          const field = e.currentTarget;
+          window.setTimeout(() => field.blur());
+        }
+      }}
+      disabled={busy || saving}
+      placeholder={`Meeting ${meeting.started.slice(0, 16).replace('T', ' ')}`}
+      aria-label="Title"
+      title={
+        meeting.page ? "The meeting's title: the page in brainy takes it" : "The meeting's title"
+      }
+      className="w-full bg-transparent text-3xl font-semibold tracking-tight outline-none placeholder:text-neutral-400 disabled:opacity-100"
+    />
+  );
+}
 
 function Notes({ meeting, onSaved }: { meeting: MeetingView; onSaved: (notes: string) => void }) {
   const text = useRef(meeting.notes);

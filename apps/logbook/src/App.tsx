@@ -196,6 +196,7 @@ export function App() {
         id={view.id}
         onDelete={() => void deleteMeeting(view.id)}
         onChanged={refresh}
+        listedTitle={meetings.find((m) => m.id === view.id)?.title}
       />
     );
   } else if (recorder) {
@@ -257,6 +258,7 @@ export function App() {
           meetings={meetings}
           onView={show}
           onDelete={(id) => void deleteMeeting(id)}
+          onRenamed={refresh}
         />
       </div>
       {deleted && (

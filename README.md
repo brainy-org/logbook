@@ -65,7 +65,9 @@ taken up again after the restart.
    screen you select (macOS). The title can be changed while it records.
 3. **Stop it**: the final transcript, the report and the brainy page
    follow. The meeting stays in the list on the left; one ended with
-   brainy off can be sent later.
+   brainy off can be sent later. Its title can still be changed, on its
+   page or with Rename on a right click in the list, and the brainy page
+   takes it.
 4. **Name the speakers**: on the meeting's page, click "Speaker 2" to give
    them a name, or pick one of the names their voice is close to. The
    transcript changes, the report is written again with the new names,

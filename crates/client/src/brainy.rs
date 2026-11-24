@@ -293,6 +293,18 @@ impl Brainy {
         Ok(())
     }
 
+    /// Gives the page a new title; its blocks stay as they are.
+    pub async fn rename_page(&self, page: &str, title: &str) -> Result<()> {
+        let _: serde_json::Value = self
+            .send(
+                Method::PATCH,
+                &format!("/api/v1/pages/{page}"),
+                &json!({ "title": title }),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Gives the speaker labelled `from` the label `to` on the meeting's
     /// page: the heading line of each of its turns ("**from** · 00:04"),
     /// and its name in the header's list of speakers. Returns how many
