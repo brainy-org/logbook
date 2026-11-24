@@ -161,14 +161,26 @@ pub fn watch(handle: tauri::AppHandle) {
     /// notification plugin) delivered nothing and never asked: Logbook was
     /// not even in that list.
     /// Refused, the call going on says so to the pages (`notifications_off`).
+    /// Outside an `.app` (`scripts/app.sh dev` runs the bare binary) there is
+    /// none: UserNotifications throws an Objective-C exception for a
+    /// process with no bundle, which aborts the app.
     fn notify(handle: &tauri::AppHandle, title: &str, body: &str) {
         use block2::RcBlock;
         use objc2::runtime::Bool;
-        use objc2_foundation::{NSError, NSString, NSUUID};
+        use objc2_foundation::{NSBundle, NSError, NSString, NSUUID};
         use objc2_user_notifications::{
             UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
             UNUserNotificationCenter,
         };
+
+        if !NSBundle::mainBundle()
+            .bundlePath()
+            .to_string()
+            .ends_with(".app")
+        {
+            tracing::warn!("no notification for the call: the app is not run from its bundle");
+            return;
+        }
 
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(title));
